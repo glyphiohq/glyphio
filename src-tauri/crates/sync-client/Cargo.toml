@@ -1,0 +1,27 @@
+[package]
+name = "sync-client"
+version = "0.1.0"
+edition = "2021"
+description = "Glyphio sync client: pluggable auth (generic OIDC PKCE / static token) + a sync engine that consumes the snippet store and speaks the v1 wire protocol to any compatible backend."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+snippet-store = { path = "../snippet-store" }
+sync-proto = { path = "../sync-proto" }
+
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "macros"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+openidconnect = { version = "3", default-features = false, features = ["reqwest", "rustls-tls"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "1"
+log = "0.4"
+chrono = { version = "0.4", features = ["clock"] }
+base64 = "0.22"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

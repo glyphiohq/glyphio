@@ -1,0 +1,32 @@
+[package]
+name = "espanso-clipboard"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[features]
+# If the wayland feature is enabled, all X11 dependencies will be dropped
+# and wayland support will be enabled
+wayland = ["wait-timeout"]
+
+# If enabled, avoid linking with the gdiplus library on Windows, which
+# might conflict with wxWidgets
+avoid-gdi = []
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wait-timeout = { version = "0.2.0", optional = true }
+
+[build-dependencies]
+cc.workspace = true

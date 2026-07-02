@@ -1,0 +1,18 @@
+[package]
+name = "snippet-store"
+version = "0.1.0"
+edition = "2021"
+description = "Glyphio local snippet store: SQLite source-of-truth + expansion-engine config generator + change notifications."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["clock"] }
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,700 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 — Glyphio admin dashboard (single file, no build, no external resources) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glyphio — Admin</title>
+<style>
+  :root{
+    --bg:#0b0c0f; --surface:#14161a; --surface-2:#1b1e24; --inset:#0f1114;
+    --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.12);
+    --text:#ecedef; --text-2:#a6aab2; --muted:#64686f;
+    --accent:#d9a54a; --accent-hover:#e6b65f; --accent-on:#171208;
+    --danger:#e07070; --ok:#86c07a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .shell{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+  nav{border-right:1px solid var(--border);padding:24px 14px;background:var(--surface)}
+  .brand{font-size:15px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;
+    padding:0 10px 18px;border-bottom:1px solid var(--border);margin-bottom:14px}
+  .brand b{color:var(--accent)}
+  .navbtn{display:block;width:100%;text-align:left;background:none;border:0;color:var(--text-2);
+    font:inherit;padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:2px}
+  .navbtn:hover{color:var(--text);background:var(--surface-2)}
+  .navbtn.active{color:var(--accent);background:var(--surface-2);font-weight:600}
+  .whoami{margin-top:20px;padding:10px;border-top:1px solid var(--border);
+    color:var(--muted);font-size:12px;word-break:break-all}
+  main{padding:32px 36px;max-width:1040px}
+  h2{font-size:15px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-2);
+    font-weight:600;margin:0 0 18px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:20px;margin-bottom:16px}
+  label{display:block;color:var(--text-2);font-size:12px;letter-spacing:.04em;
+    text-transform:uppercase;margin-bottom:6px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  input,select{background:var(--inset);color:var(--text);border:1px solid var(--border-strong);
+    border-radius:6px;padding:8px 12px;font:inherit}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  button{background:var(--accent);color:var(--accent-on);border:0;border-radius:6px;
+    padding:8px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button:hover{background:var(--accent-hover)}
+  button:disabled{opacity:.45;cursor:default}
+  button.ghost{background:transparent;color:var(--text-2);border:1px solid var(--border-strong)}
+  button.ghost:hover{color:var(--text);border-color:var(--accent)}
+  button.danger{background:transparent;color:var(--danger);border:1px solid var(--border-strong);padding:5px 10px}
+  button.danger:hover{border-color:var(--danger)}
+  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  table{width:100%;border-collapse:collapse}
+  th{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    text-align:left;font-weight:500;padding:8px 10px;border-bottom:1px solid var(--border-strong)}
+  td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+  td.strong{font-weight:600}
+  .dim{color:var(--text-2)} .dimmer{color:var(--muted);font-size:12px}
+  .pill{display:inline-block;border:1px solid var(--border-strong);border-radius:999px;
+    padding:1px 10px;font-size:12px;color:var(--text-2)}
+  .pill.owner,.pill.admin{color:var(--accent);border-color:var(--accent)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .stat .n{font-size:26px;font-weight:700;color:var(--accent);line-height:1.2}
+  .stat .l{color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  .teamchip{background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text-2);
+    border-radius:999px;padding:5px 14px;cursor:pointer;font:inherit}
+  .teamchip:hover{color:var(--text);border-color:var(--accent)}
+  .teamchip.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent);font-weight:600}
+  .empty{color:var(--muted);padding:12px 2px}
+  .spin{color:var(--muted);padding:12px 2px}
+  #status{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    background:var(--surface-2);border:1px solid var(--border-strong);border-radius:8px;
+    padding:10px 18px;font-size:13px;display:none;max-width:80vw;z-index:9}
+  #status.err{color:var(--danger)} #status.ok{color:var(--ok)}
+  #gate{max-width:520px;margin:16vh auto 0;padding:0 24px}
+  #gate .brand{border:0;text-align:center;font-size:18px;padding-bottom:8px}
+  [hidden]{display:none !important}
+  form.orgform .row{margin-bottom:14px}
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="brand">Glyph<b>io</b> admin</div>
+  <div class="card">
+    <label for="token">Bearer token</label>
+    <div class="row">
+      <input type="password" id="token" style="flex:1" placeholder="admin/owner token (OIDC ID token or static token)" autocomplete="off">
+      <button id="connect">Connect</button>
+    </div>
+    <p class="hint">Kept in this tab's memory only — nothing is stored.</p>
+  </div>
+</div>
+
+<div class="shell" id="shell" hidden>
+  <nav>
+    <div class="brand">Glyph<b>io</b></div>
+    <button class="navbtn" data-view="overview">Overview</button>
+    <button class="navbtn" data-view="teams">Teams</button>
+    <button class="navbtn" data-view="members">Members</button>
+    <button class="navbtn" data-view="org" id="nav-org">Org settings</button>
+    <button class="navbtn" data-view="audit" id="nav-audit">Audit</button>
+    <div class="whoami" id="whoami"></div>
+  </nav>
+  <main id="main"></main>
+</div>
+<div id="status"></div>
+
+<script>
+"use strict";
+const ROLES = ["reader","writer","manager","admin","owner"];
+const rank = r => ROLES.indexOf(r);
+let token = "", me = null, myTeams = [], view = "overview";
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, { ...opts,
+    headers: { "Authorization": "Bearer " + token,
+               ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
+  if (!res.ok) {
+    let d = res.status + " " + res.statusText;
+    try { const p = await res.json(); d = p.detail || p.title || d; } catch {}
+    throw new Error(d);
+  }
+  return res.json();
+};
+
+let statusTimer;
+function toast(msg, cls) {
+  const s = $("#status");
+  s.textContent = msg; s.className = cls; s.style.display = "block";
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => s.style.display = "none", 4200);
+}
+
+const isOwner = () => myTeams.some(t => t.role === "owner");
+const isAdmin = () => myTeams.some(t => rank(t.role) >= rank("admin"));
+
+// ---- connect -------------------------------------------------------------------
+
+$("#connect").addEventListener("click", connect);
+$("#token").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+
+async function connect() {
+  token = $("#token").value.trim();
+  if (!token) return toast("Paste a token first.", "err");
+  try {
+    [me, myTeams] = await Promise.all([api("/v1/me"), api("/admin/v1/teams")]);
+    $("#gate").hidden = true;
+    $("#shell").hidden = false;
+    $("#whoami").textContent = me.sub + (me.email ? " · " + me.email : "");
+    $("#nav-org").hidden = !isOwner();
+    $("#nav-audit").hidden = !isAdmin() && !isOwner();
+    show("overview");
+    toast("Connected.", "ok");
+  } catch (e) { toast("Connect failed: " + e.message, "err"); }
+}
+
+document.querySelectorAll(".navbtn").forEach(b =>
+  b.addEventListener("click", () => show(b.dataset.view)));
+
+function show(v) {
+  view = v;
+  document.querySelectorAll(".navbtn").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === v));
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(el("div", "spin", "Loading…"));
+  ({ overview, teams, members, org, audit })[v]().catch(e => {
+    main.innerHTML = "";
+    main.appendChild(el("div", "empty", "Failed to load: " + e.message));
+  });
+}
+
+async function refreshTeams() { myTeams = await api("/admin/v1/teams"); }
+
+// ---- overview ------------------------------------------------------------------
+
+async function overview() {
+  const rosters = await Promise.all(
+    myTeams.map(t => api(`/v1/teams/${encodeURIComponent(t.team)}/members`).catch(() => ({ members: [] }))));
+  const people = new Set();
+  rosters.forEach(r => r.members.forEach(m => people.add(m.sub)));
+
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(el("h2", null, "Overview"));
+  const stats = el("div", "stats");
+  const stat = (n, l) => {
+    const s = el("div", "stat");
+    s.appendChild(el("div", "n", String(n)));
+    s.appendChild(el("div", "l", l));
+    return s;
+  };
+  stats.appendChild(stat(myTeams.length, "teams"));
+  stats.appendChild(stat(people.size, "members"));
+  main.appendChild(stats);
+
+  if (isOwner() || isAdmin()) {
+    const card = el("div", "card");
+    card.appendChild(el("label", null, "Recent activity"));
+    try {
+      const entries = await api("/admin/v1/audit?limit=12");
+      card.appendChild(auditTable(entries));
+    } catch (e) { card.appendChild(el("p", "empty", "Audit unavailable: " + e.message)); }
+    main.appendChild(card);
+  }
+}
+
+// ---- teams ---------------------------------------------------------------------
+
+let currentTeam = null;
+
+async function teams() {
+  await refreshTeams();
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(el("h2", null, "Teams"));
+
+  const list = el("div", "card");
+  list.appendChild(el("label", null, "My teams"));
+  const chips = el("div", "row");
+  if (!myTeams.length) chips.appendChild(el("p", "empty", "No teams you can administer."));
+  for (const t of myTeams) {
+    const c = el("button", "teamchip" + (currentTeam === t.team ? " active" : ""), t.team);
+    c.addEventListener("click", () => { currentTeam = t.team; teams(); });
+    chips.appendChild(c);
+  }
+  list.appendChild(chips);
+
+  // Create (the server enforces the org policy; errors are surfaced as-is).
+  const create = el("div", "row");
+  create.style.marginTop = "14px";
+  const inp = el("input"); inp.placeholder = "new-team-name"; inp.maxLength = 64;
+  const btn = el("button", null, "Create team");
+  btn.addEventListener("click", async () => {
+    const name = inp.value.trim();
+    if (!name) return;
+    try {
+      await api("/admin/v1/teams", { method: "POST", body: JSON.stringify({ team: name }) });
+      toast(`Team ${name} created — you are its owner.`, "ok");
+      inp.value = ""; currentTeam = name;
+      await refreshTeams(); teams();
+    } catch (e) { toast("Create failed: " + e.message, "err"); }
+  });
+  create.appendChild(inp); create.appendChild(btn);
+  list.appendChild(create);
+  list.appendChild(el("p", "hint",
+    "Creation follows the org team-creation policy; the creator becomes owner. Re-creating an archived team's name (as its owner) revives it."));
+  main.appendChild(list);
+
+  if (currentTeam && myTeams.some(t => t.team === currentTeam)) {
+    const t = myTeams.find(x => x.team === currentTeam);
+    main.appendChild(await rosterCard(t));
+    main.appendChild(await groupsCard(t));
+  }
+}
+
+async function rosterCard(t) {
+  const card = el("div", "card");
+  card.appendChild(el("label", null, `Roster — ${t.team} (you: ${t.role})`));
+  try {
+    const [rows, mem] = await Promise.all([
+      api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles`),
+      api(`/v1/teams/${encodeURIComponent(t.team)}/members`),
+    ]);
+    const bySub = new Map();
+    for (const m of mem.members) bySub.set(m.sub, { ...m });
+    for (const r of rows) bySub.set(r.sub, { ...(bySub.get(r.sub) || { sub: r.sub }), role: r.role });
+    card.appendChild(rosterTable(t, [...bySub.values()].sort((a, b) => a.sub.localeCompare(b.sub))));
+  } catch (e) { card.appendChild(el("p", "empty", "Failed: " + e.message)); }
+
+  // Add member by sub — manager+ (their grant ceiling; the server enforces it regardless).
+  const ceiling = t.role === "owner" ? "owner" : t.role === "admin" ? "manager" : "writer";
+  const add = el("div", "row"); add.style.marginTop = "12px";
+  const sub = el("input"); sub.placeholder = "add member by sub (identity)"; sub.style.flex = "1";
+  const sel = el("select");
+  for (const r of ROLES) if (rank(r) <= rank(ceiling)) sel.append(new Option(r, r));
+  sel.value = "reader";
+  const btn = el("button", null, "Add / set role");
+  btn.addEventListener("click", async () => {
+    const s = sub.value.trim();
+    if (!s) return;
+    try {
+      await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles/${encodeURIComponent(s)}`,
+        { method: "PUT", body: JSON.stringify({ role: sel.value }) });
+      toast(`${s} → ${sel.value}.`, "ok"); sub.value = ""; teams();
+    } catch (e) { toast("Failed: " + e.message, "err"); }
+  });
+  add.appendChild(sub); add.appendChild(sel); add.appendChild(btn);
+  card.appendChild(add);
+
+  card.appendChild(inviteSection(t));
+
+  if (t.role === "owner") {
+    const arch = el("div", "row"); arch.style.marginTop = "14px";
+    const b = el("button", "danger", "Archive team");
+    b.addEventListener("click", async () => {
+      if (!confirm(`Archive ${t.team}? Data is kept; sync stops; re-create with the same name to revive.`)) return;
+      try {
+        await api(`/admin/v1/teams/${encodeURIComponent(t.team)}`, { method: "DELETE" });
+        toast(`${t.team} archived.`, "ok"); currentTeam = null;
+        await refreshTeams(); teams();
+      } catch (e) { toast("Archive failed: " + e.message, "err"); }
+    });
+    arch.appendChild(b);
+    card.appendChild(arch);
+  }
+  return card;
+}
+
+function rosterTable(t, people) {
+  const table = el("table");
+  table.innerHTML = `<thead><tr><th>Member</th><th>Last seen</th><th>Role</th><th></th></tr></thead>`;
+  const tb = el("tbody");
+  const myRank = rank(t.role);
+  const assignCeiling = t.role === "owner" ? rank("owner")
+                      : t.role === "admin" ? rank("manager") : rank("writer");
+  for (const p of people) {
+    const tr = el("tr");
+    const who = el("td", "strong");
+    who.innerHTML = esc(p.sub) + (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
+    tr.appendChild(who);
+    const seen = el("td");
+    seen.innerHTML = `<span class="dimmer">${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—"}</span>`;
+    tr.appendChild(seen);
+
+    const targetRank = p.role ? rank(p.role) : -1;
+    const canTouch = p.sub !== me.sub &&
+      (t.role === "owner" || (targetRank <= assignCeiling && myRank > targetRank));
+
+    const roleTd = el("td");
+    if (canTouch) {
+      const sel = el("select");
+      sel.append(new Option("default", ""));
+      for (const r of ROLES) if (rank(r) <= assignCeiling) sel.append(new Option(r, r));
+      sel.value = p.role || "";
+      sel.addEventListener("change", async () => {
+        const url = `/admin/v1/teams/${encodeURIComponent(t.team)}/roles/${encodeURIComponent(p.sub)}`;
+        try {
+          if (sel.value === "") await api(url, { method: "DELETE" });
+          else await api(url, { method: "PUT", body: JSON.stringify({ role: sel.value }) });
+          toast(`${p.sub} → ${sel.value || "default"}.`, "ok"); teams();
+        } catch (e) { toast("Change failed: " + e.message, "err"); teams(); }
+      });
+      roleTd.appendChild(sel);
+    } else {
+      roleTd.innerHTML = `<span class="pill ${p.role || ""}">${p.role || "default"}</span>`;
+    }
+    tr.appendChild(roleTd);
+
+    const act = el("td");
+    if (canTouch && p.role) {
+      const rm = el("button", "danger", "remove role");
+      rm.title = "Remove the explicit role row (falls back to the default role)";
+      rm.addEventListener("click", async () => {
+        try {
+          await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles/${encodeURIComponent(p.sub)}`, { method: "DELETE" });
+          toast(`Removed role row for ${p.sub}.`, "ok"); teams();
+        } catch (e) { toast("Remove failed: " + e.message, "err"); }
+      });
+      act.appendChild(rm);
+    }
+    if (canTouch) {
+      const rv = el("button", "danger", "revoke access");
+      rv.title = "Revoke this member's invite tokens for the team and remove their role row";
+      rv.style.marginLeft = "6px";
+      rv.addEventListener("click", async () => {
+        if (!confirm(`Revoke ${p.sub}'s access to ${t.team}? Their invite tokens for this team stop working.`)) return;
+        try {
+          await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/access/${encodeURIComponent(p.sub)}`, { method: "DELETE" });
+          toast(`Access revoked for ${p.sub}.`, "ok"); teams();
+        } catch (e) { toast("Revoke failed: " + e.message, "err"); }
+      });
+      act.appendChild(rv);
+    }
+    tr.appendChild(act);
+    tb.appendChild(tr);
+  }
+  if (!people.length) tb.innerHTML = `<tr><td colspan="4" class="empty">No members seen yet.</td></tr>`;
+  table.appendChild(tb);
+  return table;
+}
+
+// ---- invite member -----------------------------------------------------------------
+
+function inviteSection(t) {
+  const wrap = el("div");
+  wrap.style.marginTop = "18px";
+  wrap.appendChild(el("label", null, "Invite member"));
+  const row = el("div", "row");
+  const sub = el("input"); sub.placeholder = "sub (identity)"; sub.style.flex = "1";
+  const email = el("input"); email.placeholder = "email (optional)";
+  const role = el("select");
+  role.append(new Option("default role", ""));
+  const ceiling = t.role === "owner" ? "admin" : t.role === "admin" ? "manager" : "writer";
+  for (const r of ROLES) if (rank(r) <= rank(ceiling)) role.append(new Option(r, r));
+  const days = el("input"); days.type = "number"; days.min = 1; days.max = 3650;
+  days.placeholder = "expiry (days)"; days.style.width = "110px";
+  const btn = el("button", null, "Create invite");
+  row.appendChild(sub); row.appendChild(email); row.appendChild(role); row.appendChild(days); row.appendChild(btn);
+  wrap.appendChild(row);
+  const out = el("div"); out.style.marginTop = "10px";
+  wrap.appendChild(out);
+
+  btn.addEventListener("click", async () => {
+    const s = sub.value.trim();
+    if (!s) return toast("Enter a sub (identity) first.", "err");
+    const body = { sub: s };
+    if (email.value.trim()) body.email = email.value.trim();
+    if (role.value) body.role = role.value;
+    if (days.value) body.expiresDays = parseInt(days.value, 10);
+    try {
+      const inv = await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/invites`,
+        { method: "POST", body: JSON.stringify(body) });
+      out.innerHTML = "";
+      const box = el("div", "card");
+      box.style.background = "var(--inset)";
+      box.appendChild(el("label", null, `Invite for ${inv.sub} — copy it now, it will not be shown again`));
+
+      // One-paste invite link: configures the recipient's app (server + auth mode + token).
+      const link = `glyphio://join?server=${encodeURIComponent(window.location.origin)}&mode=token&token=${inv.token}`;
+      const copyRow = (labelText, value, buttonText) => {
+        const row = el("div", "row");
+        row.style.marginBottom = "8px";
+        const inp = el("input"); inp.readOnly = true; inp.value = value; inp.style.flex = "1";
+        inp.style.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        inp.title = labelText;
+        const b = el("button", null, buttonText);
+        b.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(value); toast("Copied.", "ok"); }
+          catch { inp.select(); document.execCommand("copy"); toast("Copied.", "ok"); }
+        });
+        row.appendChild(inp); row.appendChild(b);
+        return row;
+      };
+      box.appendChild(copyRow("Raw token", inv.token, "Copy token"));
+      box.appendChild(copyRow("Invite link", link, "Copy invite link"));
+      box.appendChild(el("p", "hint",
+        "The link configures the recipient's app in one paste — they can also paste it into Glyphio's 'I have an invite' box."));
+      const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(window.location.hostname);
+      if (window.location.protocol === "http:" && !loopback) {
+        const warn = el("p", "hint", "⚠ This server is being accessed over plain http — put it behind HTTPS before using invite links for real.");
+        warn.style.color = "var(--danger)";
+        box.appendChild(warn);
+      }
+      box.appendChild(el("p", "hint",
+        `role: ${inv.role || "default"} · expires: ${inv.expiresAt ? new Date(inv.expiresAt).toLocaleDateString() : "never"} — the raw token also works in Glyphio's sync settings (auth mode: token).`));
+      out.appendChild(box);
+      sub.value = ""; email.value = ""; days.value = "";
+      toast(`Invite created for ${inv.sub}.`, "ok");
+    } catch (e) { toast("Invite failed: " + e.message, "err"); }
+  });
+  return wrap;
+}
+
+// ---- restricted groups ---------------------------------------------------------------
+
+async function groupsCard(t) {
+  const card = el("div", "card");
+  card.appendChild(el("label", null, `Groups — ${t.team}`));
+  let groups;
+  try { groups = await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups`); }
+  catch (e) { card.appendChild(el("p", "empty", "Failed: " + e.message)); return card; }
+  if (!groups.length) {
+    card.appendChild(el("p", "empty", "No groups synced yet."));
+    return card;
+  }
+  for (const g of groups) {
+    const row = el("div", "row");
+    row.style.padding = "8px 0";
+    row.style.borderBottom = "1px solid var(--border)";
+    const name = el("span", "strong", g.name);
+    name.style.minWidth = "180px";
+    row.appendChild(name);
+    const flag = el("button", g.restricted ? "" : "ghost", g.restricted ? "restricted" : "open");
+    flag.title = "Toggle restriction (restricted groups sync only to grant holders and managers+)";
+    flag.addEventListener("click", async () => {
+      try {
+        await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/restricted`,
+          { method: "PUT", body: JSON.stringify({ restricted: !g.restricted }) });
+        toast(`${g.name} is now ${!g.restricted ? "restricted" : "open"}.`, "ok");
+        teams();
+      } catch (e) { toast("Toggle failed: " + e.message, "err"); }
+    });
+    row.appendChild(flag);
+    card.appendChild(row);
+
+    if (g.restricted) {
+      const aclWrap = el("div");
+      aclWrap.style.padding = "6px 0 10px 12px";
+      try {
+        const acl = await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/acl`);
+        for (const a of acl) {
+          const arow = el("div", "row");
+          arow.appendChild(el("span", "dim", a.sub));
+          arow.appendChild(el("span", "pill", a.level));
+          const del = el("button", "danger", "×");
+          del.title = "Remove grant";
+          del.addEventListener("click", async () => {
+            try {
+              await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/acl/${encodeURIComponent(a.sub)}`,
+                { method: "DELETE" });
+              toast(`Grant removed for ${a.sub}.`, "ok"); teams();
+            } catch (e) { toast("Failed: " + e.message, "err"); }
+          });
+          arow.appendChild(del);
+          aclWrap.appendChild(arow);
+        }
+      } catch (e) { aclWrap.appendChild(el("p", "empty", "ACL load failed: " + e.message)); }
+      const grow = el("div", "row");
+      grow.style.marginTop = "6px";
+      const gsub = el("input"); gsub.placeholder = "grant sub…"; gsub.style.flex = "1";
+      const glevel = el("select");
+      glevel.append(new Option("read", "read")); glevel.append(new Option("write", "write"));
+      const gbtn = el("button", null, "Grant");
+      gbtn.addEventListener("click", async () => {
+        const sv = gsub.value.trim();
+        if (!sv) return;
+        try {
+          await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/acl/${encodeURIComponent(sv)}`,
+            { method: "PUT", body: JSON.stringify({ level: glevel.value }) });
+          toast(`${sv} → ${glevel.value} on ${g.name}.`, "ok"); teams();
+        } catch (e) { toast("Grant failed: " + e.message, "err"); }
+      });
+      grow.appendChild(gsub); grow.appendChild(glevel); grow.appendChild(gbtn);
+      aclWrap.appendChild(grow);
+      card.appendChild(aclWrap);
+    }
+  }
+  card.appendChild(el("p", "hint",
+    "Restricted groups sync only to members holding a read/write grant (managers+ always see them). Write is required to push changes into the group."));
+  return card;
+}
+
+// ---- members (cross-team, deduped) ------------------------------------------------
+
+async function members() {
+  await refreshTeams();
+  const main = $("#main");
+  const results = await Promise.all(myTeams.map(async t => {
+    const [mem, rows] = await Promise.all([
+      api(`/v1/teams/${encodeURIComponent(t.team)}/members`).catch(() => ({ members: [] })),
+      api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles`).catch(() => []),
+    ]);
+    return { team: t.team, mem: mem.members, rows };
+  }));
+  const people = new Map();
+  for (const r of results) {
+    const roleBySub = new Map(r.rows.map(x => [x.sub, x.role]));
+    for (const m of r.mem) {
+      const p = people.get(m.sub) || { sub: m.sub, email: m.email, lastSeen: m.lastSeen, teams: [] };
+      p.email = p.email || m.email;
+      if (m.lastSeen && (!p.lastSeen || m.lastSeen > p.lastSeen)) p.lastSeen = m.lastSeen;
+      p.teams.push({ team: r.team, role: roleBySub.get(m.sub) || "default" });
+      people.set(m.sub, p);
+    }
+    for (const [sub, role] of roleBySub) {
+      if (!people.has(sub)) people.set(sub, { sub, teams: [{ team: r.team, role }] });
+      else if (!people.get(sub).teams.some(x => x.team === r.team))
+        people.get(sub).teams.push({ team: r.team, role });
+    }
+  }
+  main.innerHTML = "";
+  main.appendChild(el("h2", null, "Members"));
+  const card = el("div", "card");
+  const table = el("table");
+  table.innerHTML = `<thead><tr><th>Member</th><th>Last seen</th><th>Teams · roles</th></tr></thead>`;
+  const tb = el("tbody");
+  for (const p of [...people.values()].sort((a, b) => a.sub.localeCompare(b.sub))) {
+    const tr = el("tr");
+    const who = el("td", "strong");
+    who.innerHTML = esc(p.sub) + (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
+    tr.appendChild(who);
+    const seen = el("td");
+    seen.innerHTML = `<span class="dimmer">${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—"}</span>`;
+    tr.appendChild(seen);
+    const tt = el("td");
+    tt.innerHTML = p.teams.map(x =>
+      `<span class="pill ${x.role}">${esc(x.team)} · ${x.role}</span>`).join(" ");
+    tr.appendChild(tt);
+    tb.appendChild(tr);
+  }
+  if (!people.size) tb.innerHTML = `<tr><td colspan="3" class="empty">Nobody seen yet.</td></tr>`;
+  table.appendChild(tb);
+  card.appendChild(table);
+  main.appendChild(card);
+}
+
+// ---- org settings ----------------------------------------------------------------
+
+async function org() {
+  const settings = await api("/admin/v1/org");
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(el("h2", null, "Org settings"));
+  const card = el("div", "card");
+  card.innerHTML = `
+    <form class="orgform">
+      <div class="row"><label style="width:220px;margin:0">Default role</label>
+        <select id="o-default">
+          <option value="">(env DEFAULT_ROLE)</option>
+          ${ROLES.map(r => `<option ${settings.defaultRole === r ? "selected" : ""}>${r}</option>`).join("")}
+        </select></div>
+      <div class="row"><label style="width:220px;margin:0">Team creation</label>
+        <select id="o-create">
+          ${["owners","admins","bootstrap"].map(v =>
+            `<option ${settings.teamCreation === v ? "selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <div class="row"><label style="width:220px;margin:0">Export team groups</label>
+        <select id="o-export">
+          ${["open","managers","disabled"].map(v =>
+            `<option ${settings.exportTeamGroups === v ? "selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <div class="row"><label style="width:220px;margin:0">Audit retention (days)</label>
+        <input id="o-retention" type="number" min="1" max="3650" value="${settings.auditRetentionDays}"></div>
+      <div class="row"><button type="button" id="o-save">Save</button></div>
+    </form>
+    <p class="hint">Single-org server: team owners are the org's owners. “bootstrap” team
+      creation = legacy touch-to-own (only for identities carrying the team in their IdP
+      claim). The export policy reaches the app via <code>/v1/me</code>.</p>`;
+  card.querySelector("#o-save").addEventListener("click", async () => {
+    const body = {
+      defaultRole: card.querySelector("#o-default").value || null,
+      teamCreation: card.querySelector("#o-create").value,
+      exportTeamGroups: card.querySelector("#o-export").value,
+      auditRetentionDays: parseInt(card.querySelector("#o-retention").value, 10) || 365,
+    };
+    try {
+      await api("/admin/v1/org", { method: "PUT", body: JSON.stringify(body) });
+      toast("Org settings saved.", "ok");
+    } catch (e) { toast("Save failed: " + e.message, "err"); }
+  });
+  main.appendChild(card);
+}
+
+// ---- audit -------------------------------------------------------------------------
+
+async function audit() {
+  await refreshTeams();
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(el("h2", null, "Audit log"));
+  const card = el("div", "card");
+  const filter = el("div", "row");
+  const sel = el("select");
+  sel.append(new Option("all my teams", ""));
+  for (const t of myTeams) if (rank(t.role) >= rank("admin")) sel.append(new Option(t.team, t.team));
+  const n = el("input"); n.type = "number"; n.min = 1; n.max = 500; n.value = 100; n.style.width = "90px";
+  const go = el("button", null, "Load");
+  filter.appendChild(sel); filter.appendChild(n); filter.appendChild(go);
+  card.appendChild(filter);
+  const holder = el("div"); holder.style.marginTop = "12px";
+  card.appendChild(holder);
+  main.appendChild(card);
+
+  async function load() {
+    holder.innerHTML = "";
+    holder.appendChild(el("div", "spin", "Loading…"));
+    try {
+      const q = sel.value ? `team=${encodeURIComponent(sel.value)}&` : "";
+      const entries = await api(`/admin/v1/audit?${q}limit=${n.value}`);
+      holder.innerHTML = "";
+      holder.appendChild(auditTable(entries));
+    } catch (e) { holder.innerHTML = ""; holder.appendChild(el("p", "empty", "Failed: " + e.message)); }
+  }
+  go.addEventListener("click", load);
+  load();
+}
+
+function auditTable(entries) {
+  const table = el("table");
+  table.innerHTML = `<thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Team</th><th>Target</th><th>Detail</th></tr></thead>`;
+  const tb = el("tbody");
+  for (const e of entries) {
+    const tr = el("tr");
+    tr.innerHTML = `
+      <td class="dimmer">${new Date(e.ts).toLocaleString()}</td>
+      <td class="strong">${esc(e.actor)}</td>
+      <td><span class="pill">${esc(e.action)}</span></td>
+      <td class="dim">${esc(e.team || "—")}</td>
+      <td class="dim">${esc(e.target || "—")}</td>
+      <td class="dimmer">${esc(e.detail || "")}</td>`;
+    tb.appendChild(tr);
+  }
+  if (!entries.length) tb.innerHTML = `<tr><td colspan="6" class="empty">No entries.</td></tr>`;
+  table.appendChild(tb);
+  return table;
+}
+</script>
+</body>
+</html>

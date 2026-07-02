@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in — placeholders only, never commit real values.
+region        = "<AWS_REGION>"                       # e.g. eu-west-1
+name_prefix   = "glyphio-sandbox"
+image_tag     = "latest"
+oidc_issuer   = "<OIDC_ISSUER_URL>"                  # e.g. https://<TENANT>.okta.com/oauth2/default
+oidc_audience = "<OIDC_CLIENT_ID>"
+teams_claim   = "groups"

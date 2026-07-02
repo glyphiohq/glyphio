@@ -1,0 +1,18 @@
+[package]
+name = "espanso-ipc"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+named_pipe = "0.4.1"

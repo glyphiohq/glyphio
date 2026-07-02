@@ -1,0 +1,36 @@
+[package]
+name = "espanso-ui"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[features]
+# If enabled, avoid linking with the gdiplus library on Windows, which
+# might conflict with wxWidgets
+avoid-gdi = []
+
+[dependencies]
+log.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+lazycell.workspace = true
+tauri-winrt-notification.workspace = true
+
+[target.'cfg(target_os="macos")'.dependencies]
+lazycell.workspace = true
+
+[target.'cfg(target_os="linux")'.dependencies]
+notify-rust.workspace = true
+crossbeam.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

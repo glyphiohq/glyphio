@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Select scrolling region</title>
+    <style>
+      /* Transparent selection overlay — Ink & Brass accents on a dimmed screen. */
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body { background: rgba(8, 9, 11, 0.28); cursor: crosshair; user-select: none;
+             font: 12px/1.4 -apple-system, "SF Pro Text", sans-serif; }
+      #rect { position: fixed; display: none; border: 1.5px solid #d9a54a;
+              box-shadow: 0 0 0 100vmax rgba(8, 9, 11, 0.35); pointer-events: none; }
+      #hint { position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
+              background: #14161a; color: #ecedef; border: 1px solid rgba(255,255,255,0.12);
+              border-radius: 8px; padding: 7px 14px; pointer-events: none; }
+      #hint b { color: #d9a54a; }
+      #size { position: fixed; display: none; background: #14161a; color: #d9a54a;
+              border: 1px solid rgba(217,165,74,0.35); border-radius: 5px; padding: 2px 7px;
+              font: 11px/1.3 ui-monospace, "SF Mono", monospace; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="hint">Drag over the area that scrolls — a page, or just a panel. <b>Esc</b> cancels.</div>
+    <div id="rect"></div>
+    <div id="size"></div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const rectEl = document.getElementById('rect');
+      const sizeEl = document.getElementById('size');
+      let sx = 0, sy = 0, dragging = false, cur = null;
+
+      const upd = (x, y) => {
+        const l = Math.min(sx, x), t = Math.min(sy, y);
+        const w = Math.abs(x - sx), h = Math.abs(y - sy);
+        cur = { x: l, y: t, w, h };
+        Object.assign(rectEl.style, { display: 'block', left: l + 'px', top: t + 'px', width: w + 'px', height: h + 'px' });
+        sizeEl.style.display = 'block';
+        sizeEl.textContent = `${Math.round(w)} × ${Math.round(h)}`;
+        sizeEl.style.left = l + 'px';
+        sizeEl.style.top = (t > 26 ? t - 24 : t + h + 6) + 'px';
+      };
+
+      addEventListener('mousedown', (e) => { dragging = true; sx = e.clientX; sy = e.clientY; upd(e.clientX, e.clientY); });
+      addEventListener('mousemove', (e) => { if (dragging) upd(e.clientX, e.clientY); });
+      addEventListener('mouseup', async (e) => {
+        if (!dragging) return;
+        dragging = false;
+        upd(e.clientX, e.clientY);
+        if (!cur || cur.w < 40 || cur.h < 40) { invoke('scroll_capture_cancel'); return; }
+        // Window-logical px == points; Rust adds the overlay's global origin.
+        invoke('scroll_capture_run', { x: cur.x, y: cur.y, w: cur.w, h: cur.h });
+      });
+      addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('scroll_capture_cancel'); });
+    </script>
+  </body>
+</html>

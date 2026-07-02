@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyphio — Edit Capture</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="toolbar-row">
+      <label class="note-label">
+        <span>Note</span>
+        <input id="note" type="text" placeholder="e.g. a ticket id or short context" autocomplete="off">
+      </label>
+      <div class="actions">
+        <button id="copy" class="primary" type="button">Copy to clipboard</button>
+        <button id="download" class="secondary" type="button">Download</button>
+        <div class="edit-menu" id="edit-menu">
+          <button id="edit" class="secondary" type="button" aria-haspopup="menu" aria-expanded="false" title="Edit the image">Edit ▾</button>
+          <div class="edit-dropdown" id="edit-dropdown" role="menu" hidden>
+            <button id="crop" class="edit-item" role="menuitem" type="button">Crop</button>
+            <button id="redact" class="edit-item" role="menuitem" type="button">Redact</button>
+            <button id="draw" class="edit-item" role="menuitem" type="button">Draw</button>
+            <button id="text" class="edit-item" role="menuitem" type="button">Text</button>
+          </div>
+        </div>
+        <button id="retry" class="secondary" type="button">Retry</button>
+        <button id="history" class="ghost" type="button" title="Open capture history">History</button>
+        <button id="options" class="ghost" type="button" title="Open settings">Settings</button>
+      </div>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="meta-line" class="meta-line" aria-hidden="true"></div>
+    <div id="shortcut-hint" class="shortcut-hint" aria-hidden="true"></div>
+  </header>
+  <main>
+    <div id="crop-toolbar" class="crop-toolbar" hidden>
+      <span class="crop-hint">Drag on the image to select a region, then Apply. Esc cancels.</span>
+      <button id="crop-apply" class="primary" type="button">Apply</button>
+      <button id="crop-cancel" type="button">Cancel</button>
+    </div>
+    <div id="redact-toolbar" class="crop-toolbar" hidden>
+      <span class="crop-hint">Drag any number of regions on the image, then Apply. Esc cancels.</span>
+      <label class="redact-mode"><input type="radio" name="redact-mode" value="black" checked> Black</label>
+      <label class="redact-mode"><input type="radio" name="redact-mode" value="blur"> Blur</label>
+      <button id="redact-apply" class="primary" type="button">Apply</button>
+      <button id="redact-cancel" type="button">Cancel</button>
+    </div>
+    <div id="draw-toolbar" class="crop-toolbar" hidden>
+      <div class="draw-tools" role="radiogroup" aria-label="Drawing tool">
+        <button class="draw-tool" data-draw-tool="rect" title="Rectangle outline" aria-label="Rectangle outline" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="6" width="16" height="12" rx="1"/>
+          </svg>
+        </button>
+        <button class="draw-tool" data-draw-tool="rect-fill" title="Rectangle filled" aria-label="Rectangle filled" type="button">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="4" y="6" width="16" height="12" rx="1"/>
+          </svg>
+        </button>
+        <button class="draw-tool" data-draw-tool="arrow" title="Arrow" aria-label="Arrow" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="5" y1="19" x2="17" y2="7"/>
+            <polyline points="9 7 17 7 17 15"/>
+          </svg>
+        </button>
+        <button class="draw-tool" data-draw-tool="marker" title="Freehand marker" aria-label="Freehand marker" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 20 C 7 17, 10 14, 13 11 S 19 6, 21 4"/>
+            <path d="M4 20 L 7 20"/>
+          </svg>
+        </button>
+      </div>
+      <div class="draw-colors" role="radiogroup" aria-label="Colour">
+        <button class="draw-color" data-draw-color="#ff3b30" aria-label="Red"   type="button" style="background:#ff3b30"></button>
+        <button class="draw-color" data-draw-color="#ff591a" aria-label="Orange" type="button" style="background:#ff591a"></button>
+        <button class="draw-color" data-draw-color="#ffcc00" aria-label="Yellow" type="button" style="background:#ffcc00"></button>
+        <button class="draw-color" data-draw-color="#34c759" aria-label="Green"  type="button" style="background:#34c759"></button>
+        <button class="draw-color" data-draw-color="#186aff" aria-label="Blue"   type="button" style="background:#186aff"></button>
+        <button class="draw-color" data-draw-color="#000000" aria-label="Black"  type="button" style="background:#000000"></button>
+      </div>
+      <button id="draw-undo" type="button" title="Undo last shape">Undo</button>
+      <button id="draw-apply" class="primary" type="button">Apply</button>
+      <button id="draw-cancel" type="button">Cancel</button>
+    </div>
+    <div id="text-toolbar" class="crop-toolbar" hidden>
+      <span class="crop-hint">Click on the image, type, Enter commits. Esc cancels.</span>
+      <label class="text-size-control">
+        <span class="text-size-label">Size</span>
+        <input id="text-size" type="range" min="12" max="56" step="2" value="24" aria-label="Font size">
+        <span id="text-size-value" class="text-size-value" aria-hidden="true">24</span>
+      </label>
+      <div class="draw-colors" role="radiogroup" aria-label="Colour">
+        <button class="draw-color" data-text-color="#ff3b30" aria-label="Red"    type="button" style="background:#ff3b30"></button>
+        <button class="draw-color" data-text-color="#ff591a" aria-label="Orange" type="button" style="background:#ff591a"></button>
+        <button class="draw-color" data-text-color="#ffcc00" aria-label="Yellow" type="button" style="background:#ffcc00"></button>
+        <button class="draw-color" data-text-color="#34c759" aria-label="Green"  type="button" style="background:#34c759"></button>
+        <button class="draw-color" data-text-color="#186aff" aria-label="Blue"   type="button" style="background:#186aff"></button>
+        <button class="draw-color" data-text-color="#000000" aria-label="Black"  type="button" style="background:#000000"></button>
+      </div>
+      <button id="text-undo" type="button" title="Undo last text">Undo</button>
+      <button id="text-apply" class="primary" type="button">Apply</button>
+      <button id="text-cancel" type="button">Cancel</button>
+    </div>
+    <div id="canvas-wrap" class="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <canvas id="crop-overlay" class="crop-overlay" hidden></canvas>
+      <canvas id="redact-overlay" class="crop-overlay" hidden></canvas>
+      <canvas id="draw-overlay" class="crop-overlay" hidden></canvas>
+      <canvas id="text-overlay" class="crop-overlay" hidden></canvas>
+    </div>
+  </main>
+  <script type="module" src="editor.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# Self-host quickstart: `cp .env.example .env`, edit it, then `docker compose up -d`.
+# Terminate TLS in front of this (Caddy, Traefik, nginx, or your cloud LB) — the server
+# itself speaks plain HTTP.
+services:
+  glyphio-server:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+      target: runtime
+    ports:
+      - "8787:8787"
+    env_file: .env
+    volumes:
+      - glyphio-data:/data
+    restart: unless-stopped
+
+volumes:
+  glyphio-data:

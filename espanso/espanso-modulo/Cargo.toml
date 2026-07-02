@@ -1,0 +1,22 @@
+[package]
+name = "espanso-modulo"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+regex.workspace = true
+zip = { version = "0.5.12", default-features = false, features = ["deflate", "bzip2"] }
+winres = "0.1.11"
+glob.workspace = true
+
+[lints]
+workspace = true

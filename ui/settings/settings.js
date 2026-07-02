@@ -1,0 +1,1532 @@
+// settings/settings.js — Glyphio main window.
+// Sidebar (groups) → snippet list → editor, plus a Settings view.
+// All snippet edits go through the SQLite store; every change regenerates the expansion
+// engine's config, which hot-reloads. Rich snippets use the engine's native rich injection.
+
+import { icon } from '../shared/icons.js';
+
+const { invoke, convertFileSrc } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const app = document.getElementById('app');
+
+const state = {
+  snippets: [],
+  groups: [],
+  settings: null,
+  selected: 'all', // 'all' | 'ungrouped' | 'settings' | <groupId>
+  settingsTab: 'general',
+  search: '',
+  groupSearch: '',        // sidebar group filter
+  syncStatus: null,
+  syncConfig: null,
+  selectedTeam: null,     // team whose roster is shown in the sync panel
+  teamMembers: {},        // team -> [{sub,email,lastSeen}]
+  memberSearch: '',
+};
+
+const FORMATS = [
+  { id: 'plain', label: 'Plain', badge: 'Aa' },
+  { id: 'html', label: 'Rich', badge: '❛❜' },
+  { id: 'markdown', label: 'Markdown', badge: 'M↓' },
+];
+
+const SETTINGS_SECTIONS = [
+  { title: 'Capture modes', fields: [
+    ['enableVisibleCapture', 'toggle', 'Visible-area (current screen)'],
+    ['enableSnipCapture', 'toggle', 'Region / snip (picker)'],
+    ['enableFullWindowCapture', 'toggle', 'Full window (picker)'],
+    ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
+  ]},
+  { title: 'Edit tools', fields: [
+    ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
+    ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
+  ]},
+  { title: 'Banner', fields: [
+    ['showTimestamp', 'toggle', 'Show timestamp'],
+    ['showUrl', 'toggle', 'Show window / app title'],
+    ['timestampFormat', 'select', 'Timestamp format', ['device-locale', 'iso-8601', 'utc-human']],
+    ['timezone', 'text', 'Timezone'], ['locale', 'text', 'Locale'],
+    ['bannerBg', 'color', 'Banner background'], ['bannerFg', 'color', 'Banner text'],
+    ['bannerMuted', 'color', 'Banner muted text'],
+  ]},
+  { title: 'History & downloads', fields: [
+    ['historyEnabled', 'toggle', 'Save captures to history'],
+    ['historyMaxCount', 'number', 'Max captures kept'],
+    ['autoCopyOnOpen', 'toggle', 'Auto-copy on capture'],
+    ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
+  ]},
+  { title: 'Global hotkeys (e.g. Alt+Shift+S)', fields: [
+    ['shortcutCaptureFull', 'text', 'Capture full window'],
+    ['shortcutCaptureVisible', 'text', 'Capture visible area'],
+    ['shortcutCaptureSnip', 'text', 'Capture region (snip)'],
+    ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
+    ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
+    ['shortcutOpenHistory', 'text', 'Open history'],
+  ]},
+];
+
+init().catch((e) => setStatus(e.message, 'err'));
+
+async function init() {
+  renderShell();
+  await reloadAll();
+  wireAccessibility();
+  wireScreenRecording();
+  await wireSync();
+  wireInvites();
+  maybeShowWelcome();
+  await listen('snippets-changed', reloadSnippets);
+  await listen('groups-changed', reloadGroups);
+}
+
+async function reloadAll() {
+  [state.settings, state.snippets, state.groups] = await Promise.all([
+    invoke('get_settings'), invoke('list_snippets'), invoke('list_groups'),
+  ]);
+  renderSidebar();
+  renderMain();
+}
+async function reloadSnippets() { state.snippets = await invoke('list_snippets'); renderSidebar(); renderMain(); }
+async function reloadGroups() { state.groups = await invoke('list_groups'); renderSidebar(); renderMain(); }
+
+// --- Shell ------------------------------------------------------------------
+
+function renderShell() {
+  app.innerHTML = `
+    <header class="app-header">
+      <h1>Glyphio</h1>
+      <div class="spacer"></div>
+    </header>
+    <div class="ax-banner" id="ax-banner">
+      <div class="ax-text">
+        <strong>Text expansion is off — grant Accessibility to Glyphio.</strong>
+        <p>Click <strong>Grant access…</strong> and toggle <strong>Glyphio</strong> on in the dialog that opens — macOS adds the entry for you (never use the “+” button; old <em>glyphio-engine</em> entries can be removed, they do nothing). Expansion turns on by itself within a couple of seconds.</p>
+      </div>
+      <div class="ax-actions">
+        <button class="primary" id="ax-grant">Grant access…</button>
+        <button class="secondary" id="ax-open">Open Accessibility settings</button>
+        <button class="ghost" id="ax-restart">Restart engine</button>
+      </div>
+    </div>
+    <div class="ax-banner" id="sr-banner">
+      <div class="ax-text">
+        <strong>Screen capture is off — grant macOS Screen Recording.</strong>
+        <p>Click <strong>Grant access…</strong> and allow <strong>Glyphio</strong> in the dialog — macOS adds the entry for you. Then click <strong>Relaunch Glyphio</strong>: macOS applies this permission on the next launch. (Old or duplicate Glyphio rows in the settings list can be removed with “−”.)</p>
+      </div>
+      <div class="ax-actions">
+        <button class="primary" id="sr-grant">Grant access…</button>
+        <button class="secondary" id="sr-relaunch">Relaunch Glyphio</button>
+        <button class="ghost" id="sr-open">Open settings</button>
+      </div>
+    </div>
+    <div class="body">
+      <aside class="sidebar" id="sidebar"></aside>
+      <main class="main" id="main"></main>
+    </div>
+    <div class="status-line" id="status"></div>
+  `;
+  document.getElementById('ax-grant').addEventListener('click', () => { invoke('request_accessibility'); startAxPolling(); });
+  document.getElementById('ax-open').addEventListener('click', () => { invoke('open_accessibility_settings'); startAxPolling(); });
+  document.getElementById('ax-restart').addEventListener('click', async () => {
+    await invoke('restart_engine'); setStatus('Engine restarted.', 'ok'); startAxPolling();
+  });
+  document.getElementById('sr-grant').addEventListener('click', async () => {
+    const granted = await invoke('request_screen_recording');
+    applySr(granted);
+    if (!granted) setStatus('After allowing in the dialog, click “Relaunch Glyphio” to apply the permission.', 'ok');
+  });
+  document.getElementById('sr-open').addEventListener('click', () => invoke('open_screen_recording_settings'));
+  document.getElementById('sr-relaunch').addEventListener('click', () => invoke('relaunch_app'));
+}
+
+// --- Accessibility status ---------------------------------------------------
+// The engine re-checks Accessibility every ~2s and auto-restarts its worker on a grant, emitting
+// `accessibility-status`. We also poll/re-query here so the banner clears promptly when the user
+// returns from System Settings (macOS doesn't notify the app of a permission change).
+
+let axPollTimer = null;
+
+function applyAx(granted) {
+  const banner = document.getElementById('ax-banner');
+  if (banner) banner.classList.toggle('show', !granted);
+  if (granted) stopAxPolling();
+}
+async function recheckAx() {
+  try { applyAx(await invoke('accessibility_status')); } catch { /* window closing */ }
+}
+function startAxPolling() {
+  if (axPollTimer) return;
+  axPollTimer = setInterval(recheckAx, 2000);
+}
+function stopAxPolling() {
+  if (axPollTimer) { clearInterval(axPollTimer); axPollTimer = null; }
+}
+
+async function wireAccessibility() {
+  const granted = await invoke('accessibility_status');
+  applyAx(granted);
+  if (!granted) startAxPolling();
+  await listen('accessibility-status', (e) => applyAx(Boolean(e.payload)));
+  // Returning from System Settings re-focuses the window — re-check then.
+  window.addEventListener('focus', recheckAx);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) recheckAx(); });
+}
+
+// --- Screen Recording status --------------------------------------------------
+// Checked via CGPreflightScreenCaptureAccess (no prompt). Unlike Accessibility, macOS only
+// applies a Screen Recording grant on the app's next launch, so the banner mainly guides the
+// user through request → allow → relaunch.
+
+let srPollTimer = null;
+
+function applySr(granted) {
+  const banner = document.getElementById('sr-banner');
+  if (banner) banner.classList.toggle('show', !granted);
+  if (granted && srPollTimer) { clearInterval(srPollTimer); srPollTimer = null; }
+  if (!granted && !srPollTimer) {
+    srPollTimer = setInterval(async () => {
+      try { applySr(await invoke('screen_recording_status')); } catch { /* window closing */ }
+    }, 3000);
+  }
+}
+
+async function wireScreenRecording() {
+  applySr(await invoke('screen_recording_status'));
+  window.addEventListener('focus', async () => applySr(await invoke('screen_recording_status')));
+}
+
+// --- Sidebar ----------------------------------------------------------------
+
+function countIn(pred) { return state.snippets.filter(pred).length; }
+
+function renderSidebar() {
+  const sb = document.getElementById('sidebar');
+  const item = (id, label, count, opts = {}) => `
+    <button class="nav-item ${state.selected === id ? 'active' : ''}" data-nav="${id}">
+      <span class="nav-label">${label}</span>
+      ${count != null ? `<span class="nav-count">${count}</span>` : ''}
+      ${opts.actions || ''}
+    </button>`;
+
+  // Filter groups by the sidebar search (matches name or shared-team name).
+  const gq = state.groupSearch.trim().toLowerCase();
+  const visibleGroups = gq
+    ? state.groups.filter((g) => g.name.toLowerCase().includes(gq) || (g.team || '').toLowerCase().includes(gq))
+    : state.groups;
+
+  const groupItems = visibleGroups.map((g) => item(
+    g.id,
+    escapeHtml(g.name) + (g.team ? ` <span class="team-badge" title="Shared with team ${escapeAttr(g.team)}">${icon('share', 9)} ${escapeHtml(g.team)}</span>` : ''),
+    countIn((s) => s.groupId === g.id),
+    { actions: `<span class="grp-actions">
+        <span class="grp-btn" data-share="${g.id}" title="${g.team ? 'Change team sharing' : 'Share with a team'}">${icon('share', 12)}</span>
+        <span class="grp-btn" data-export="${g.id}" title="Export group">${icon('download', 12)}</span>
+        <span class="grp-btn" data-rename="${g.id}" title="Rename">${icon('pencil', 12)}</span>
+        <span class="grp-btn" data-delgrp="${g.id}" title="Delete group">${icon('trash', 12)}</span>
+      </span>` },
+  )).join('');
+
+  sb.innerHTML = `
+    <div class="nav-group">
+      <div class="nav-heading">Snippets</div>
+      ${item('all', 'All snippets', state.snippets.length)}
+      ${item('ungrouped', 'Ungrouped', countIn((s) => !s.groupId))}
+    </div>
+    <div class="nav-group">
+      <div class="nav-heading">Groups <button class="add-group" id="add-group" title="New group">${icon('plus', 12)}</button></div>
+      <input class="nav-search" id="group-search" type="search" placeholder="Filter groups…" value="${escapeAttr(state.groupSearch)}" />
+      ${groupItems || `<div class="nav-empty">${gq ? 'No matching groups' : 'No groups yet'}</div>`}
+    </div>
+    ${renderTeamNav(item)}
+    <div class="nav-group nav-bottom">
+      <button class="nav-item ${state.selected === 'history' ? 'active' : ''}" data-nav="history"><span class="nav-label">Capture history</span></button>
+      ${item('settings', 'Settings', null)}
+    </div>
+  `;
+  const gs = sb.querySelector('#group-search');
+  gs.addEventListener('input', () => {
+    const pos = gs.selectionStart;
+    state.groupSearch = gs.value;
+    renderSidebar();
+    const again = document.getElementById('group-search');
+    again.focus(); again.setSelectionRange(pos, pos);
+  });
+  sb.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', (e) => {
+    if (e.target.closest('.grp-actions')) return;
+    state.selected = b.dataset.nav; renderSidebar(); renderMain();
+  }));
+  sb.querySelector('#add-group').addEventListener('click', addGroup);
+  sb.querySelectorAll('[data-rename]').forEach((el) => el.addEventListener('click', (e) => {
+    e.stopPropagation(); renameGroup(el.dataset.rename);
+  }));
+  sb.querySelectorAll('[data-delgrp]').forEach((el) => el.addEventListener('click', (e) => {
+    e.stopPropagation(); deleteGroup(el.dataset.delgrp);
+  }));
+  sb.querySelectorAll('[data-share]').forEach((el) => el.addEventListener('click', (e) => {
+    e.stopPropagation(); shareGroup(el.dataset.share);
+  }));
+  sb.querySelectorAll('[data-export]').forEach((el) => el.addEventListener('click', (e) => {
+    e.stopPropagation(); exportSnippets(el.dataset.export);
+  }));
+}
+
+async function addGroup() {
+  const name = await promptDialog('New group', { label: 'Group name', placeholder: 'e.g. Support replies', confirmLabel: 'Create' });
+  if (!name) return;
+  await invoke('create_group', { group: { name } });
+  setStatus('Group created.', 'ok');
+}
+async function renameGroup(id) {
+  const g = state.groups.find((x) => x.id === id);
+  const name = await promptDialog('Rename group', { label: 'Group name', value: g?.name || '', confirmLabel: 'Rename' });
+  if (!name) return;
+  await invoke('update_group', { id, patch: { name } });
+  setStatus('Group renamed.', 'ok');
+}
+/// Share a group (and its snippets) with one of the signed-in identity's teams.
+/// A searchable picker of YOUR teams (server-attested) — no free typing, no typos.
+async function shareGroup(id) {
+  const g = state.groups.find((x) => x.id === id);
+  const teams = state.syncStatus?.identity?.teams || [];
+  const roles = state.syncStatus?.identity?.roles || {};
+  if (!teams.length && !g?.team) {
+    setStatus('Sign in under Settings → Team sync first — teams come from your sync identity.', 'err');
+    return;
+  }
+  const { modal, close } = openModal(`
+    <h3>Share “${escapeHtml(g?.name || '')}”</h3>
+    <p class="adv-hint">The group and its snippets sync with the selected team. Members see them
+    per their role; access can be restricted per member from the admin dashboard.</p>
+    <input type="search" id="ts-search" placeholder="Search your teams…" autocomplete="off" />
+    <ul class="team-pick" id="ts-list"></ul>
+    <div class="modal-actions">
+      ${g?.team ? '<button class="danger" id="ts-unshare">Stop sharing</button>' : ''}
+      <div class="spacer"></div>
+      <button class="secondary" id="ts-cancel">Cancel</button>
+    </div>`, { className: 'small' });
+
+  const apply = async (team) => {
+    close();
+    try {
+      await invoke('set_group_team', { id, team });
+      setStatus(team ? `Group shared with “${team}” — its snippets will sync.` : 'Group is no longer shared.', 'ok');
+    } catch (e) { setStatus(String(e), 'err'); }
+  };
+
+  const list = modal.querySelector('#ts-list');
+  const search = modal.querySelector('#ts-search');
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    const rows = teams
+      .filter((t) => !q || t.toLowerCase().includes(q))
+      .map((t) => `
+        <li class="team-pick-row ${t === g?.team ? 'current' : ''}" data-team="${escapeAttr(t)}">
+          <span class="team-pick-name">${escapeHtml(t)}</span>
+          ${roles[t] ? `<span class="role-tag">${escapeHtml(roles[t])}</span>` : ''}
+          ${t === g?.team ? '<span class="team-pick-cur">current</span>' : ''}
+        </li>`).join('');
+    list.innerHTML = rows || '<li class="team-pick-row muted">No matching teams</li>';
+    list.querySelectorAll('[data-team]').forEach((r) =>
+      r.addEventListener('click', () => apply(r.dataset.team)));
+  };
+  search.addEventListener('input', draw);
+  draw();
+  modal.querySelector('#ts-cancel').addEventListener('click', close);
+  modal.querySelector('#ts-unshare')?.addEventListener('click', () => apply(null));
+  search.focus();
+}
+
+async function deleteGroup(id) {
+  const g = state.groups.find((x) => x.id === id);
+  if (!(await confirmDialog(`Delete group “${g?.name}”? Its snippets move to Ungrouped.`, { confirmLabel: 'Delete group', danger: true }))) return;
+  await invoke('delete_group', { id });
+  if (state.selected === id) state.selected = 'all';
+  setStatus('Group deleted.', 'ok');
+}
+
+// Teams you belong to (server-attested) plus any team tags found locally.
+function knownTeams() {
+  const t = new Set(state.syncStatus?.identity?.teams || []);
+  state.groups.forEach((g) => g.team && t.add(g.team));
+  state.snippets.forEach((sn) => sn.team && t.add(sn.team));
+  return [...t].sort();
+}
+
+function renderTeamNav(item) {
+  const teams = knownTeams();
+  if (!teams.length) return '';
+  const items = teams.map((t) =>
+    item('team:' + t, icon('users', 12) + ' ' + escapeHtml(t), countIn((s) => s.team === t))).join('');
+  return `<div class="nav-group"><div class="nav-heading">Teams</div>${items}</div>`;
+}
+
+// --- Main pane --------------------------------------------------------------
+
+function renderMain() {
+  const main = document.getElementById('main');
+  if (state.selected === 'settings') { renderSettings(main); return; }
+  if (state.selected === 'history') { renderHistory(main); return; }
+
+  const title = state.selected === 'all' ? 'All snippets'
+    : state.selected === 'ungrouped' ? 'Ungrouped'
+    : state.selected.startsWith('team:') ? `Team · ${state.selected.slice(5)}`
+    : (state.groups.find((g) => g.id === state.selected)?.name || 'Snippets');
+
+  const teamName = state.selected.startsWith('team:') ? state.selected.slice(5) : null;
+  const teamGroups = teamName ? state.groups.filter((g) => g.team === teamName) : [];
+  main.innerHTML = `
+    <div class="main-head">
+      <input class="search" type="search" placeholder="Search snippets…" value="${escapeAttr(state.search)}" />
+      <button class="ghost" id="import-snips" title="Import snippets (Glyphio export or YAML match files)">Import</button>
+      <button class="ghost" id="export-snips" title="${isGroupView() ? 'Export this group' : 'Export all snippets'}">Export</button>
+      <button class="primary" id="new-snippet">+ New snippet</button>
+    </div>
+    <h2 class="main-title">${escapeHtml(title)}</h2>
+    ${teamName ? `<div class="team-groups">${
+      teamGroups.length
+        ? teamGroups.map((g) => `<button class="team-group-chip" data-goto="${g.id}">${icon('share', 10)} ${escapeHtml(g.name)} <span class="nav-count">${state.snippets.filter((s) => s.groupId === g.id).length}</span></button>`).join('')
+        : '<span class="adv-hint">No groups shared with this team yet — use ⇅ on a group, or create a snippet here.</span>'
+    }</div>` : ''}
+    <p class="hint">Changes apply instantly — type a trigger anywhere and it expands. Rich &amp; Markdown snippets paste with formatting intact.</p>
+    <div class="snip-list" id="snip-list"></div>
+  `;
+  const search = main.querySelector('.search');
+  search.addEventListener('input', () => { state.search = search.value; drawList(); });
+  main.querySelector('#new-snippet').addEventListener('click', () => openEditor(null));
+  main.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
+    state.selected = b.dataset.goto; renderSidebar(); renderMain();
+  }));
+  main.querySelector('#import-snips').addEventListener('click', importSnippets);
+  main.querySelector('#export-snips').addEventListener('click', () =>
+    exportSnippets(isGroupView() ? state.selected : null));
+  drawList();
+}
+
+function isGroupView() {
+  return !['all', 'ungrouped', 'settings'].includes(state.selected);
+}
+
+// --- Capture history (in-window view, replaces the old separate window) --------
+
+async function renderHistory(main) {
+  main.innerHTML = `
+    <div class="main-head">
+      <h2 class="main-title" style="margin:0">Capture history</h2>
+      <div class="spacer"></div>
+      <span class="hist-stats" id="hist-stats"></span>
+      <button class="danger" id="hist-clear">Clear all</button>
+    </div>
+    <p class="hint">Captures never leave this device. Oldest are removed automatically at the size cap.</p>
+    <ul class="hist-grid" id="hist-grid"></ul>
+    <div class="empty" id="hist-empty" hidden>No captures yet — press ⌥⇧X to snip or ⌥⇧L for a scrolling capture.</div>`;
+  main.querySelector('#hist-clear').addEventListener('click', async () => {
+    if (!(await confirmDialog('Delete every capture in history?', { confirmLabel: 'Clear all', danger: true }))) return;
+    await invoke('clear_captures');
+    renderHistory(main);
+  });
+  const items = await invoke('list_captures');
+  const grid = main.querySelector('#hist-grid');
+  const totalBytes = items.reduce((sum, it) => sum + (it.sizeBytes || 0), 0);
+  const st = state.settings || {};
+  main.querySelector('#hist-stats').textContent =
+    `${items.length}${st.historyMaxCount ? ' / ' + st.historyMaxCount : ''} captures · ${(totalBytes / 1048576).toFixed(1)} MB`;
+  main.querySelector('#hist-empty').hidden = items.length > 0;
+  for (const item of items) grid.appendChild(historyCard(item, () => renderHistory(main)));
+}
+
+function historyCard(item, redraw) {
+  const li = document.createElement('li');
+  li.className = 'hist-card';
+  const img = document.createElement('img');
+  img.className = 'hist-thumb';
+  img.alt = item.title || 'capture';
+  if (item.thumbPath) img.src = convertFileSrc(item.thumbPath);
+  img.addEventListener('click', () => invoke('open_capture', { id: item.id }));
+  const meta = document.createElement('div');
+  meta.className = 'hist-meta';
+  const dt = new Date(item.capturedAt);
+  meta.innerHTML = `<span class="hist-when">${isNaN(dt) ? '' : dt.toLocaleString()}</span>
+    <span class="hist-title">${escapeHtml(item.title || item.url || '')}</span>`;
+  const actions = document.createElement('div');
+  actions.className = 'hist-actions';
+  const mk = (label, fn, cls = 'ghost') => {
+    const b = document.createElement('button');
+    b.className = cls; b.textContent = label; b.addEventListener('click', fn);
+    return b;
+  };
+  actions.append(
+    mk('Open', () => invoke('open_capture', { id: item.id })),
+    mk('Copy', async () => {
+      try {
+        const dataUrl = await invoke('read_capture_data_url', { id: item.id });
+        const blob = await (await fetch(dataUrl)).blob();
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        setStatus('Capture copied to clipboard.', 'ok');
+      } catch (e) { setStatus(String(e), 'err'); }
+    }),
+    mk('Save…', async () => {
+      const iso = (item.capturedAt || '').replace(/[:T]/g, '-').slice(0, 19);
+      const path = await window.__TAURI__.dialog.save({
+        defaultPath: `${(state.settings?.filenamePrefix || 'glyphio')}-${iso}.png`,
+        filters: [{ name: 'PNG image', extensions: ['png'] }],
+      });
+      if (!path) return;
+      try {
+        const dataUrl = await invoke('read_capture_data_url', { id: item.id });
+        await invoke('save_file', { path, pngBase64: dataUrl });
+        setStatus(`Saved → ${path}`, 'ok');
+      } catch (e) { setStatus(String(e), 'err'); }
+    }),
+    mk('Text', async () => {
+      setStatus('Recognizing text…');
+      try {
+        const text = await invoke('ocr_capture', { id: item.id });
+        await navigator.clipboard.writeText(text);
+        setStatus(`Recognized ${text.split('\n').length} line(s) — copied to clipboard.`, 'ok');
+      } catch (e) { setStatus(String(e), 'err'); }
+    }),
+    mk('Delete', async () => { await invoke('delete_capture', { id: item.id }); redraw(); }, 'danger'),
+  );
+  li.append(img, meta, actions);
+  return li;
+}
+
+// --- Invites & first-run welcome ----------------------------------------------
+// glyphio://join links land here (from the OS handler) and from the paste box. NOTHING is
+// applied without explicit confirmation — a URL scheme can be fired by any webpage, and
+// silently switching the sync server would be a data-redirection attack.
+
+async function wireInvites() {
+  await listen('invite-link', (e) => confirmInvite(String(e.payload)));
+  await listen('show-history', () => {
+    state.selected = 'history';
+    renderSidebar(); renderMain();
+  });
+}
+
+async function confirmInvite(url) {
+  let info;
+  try { info = await invoke('parse_invite', { url }); }
+  catch (e) { setStatus(String(e), 'err'); return; }
+  const { modal, close } = openModal(`
+    <h3>Join team sync?</h3>
+    <p class="confirm-body">This invite configures Glyphio to sync team snippets with:</p>
+    <div class="invite-summary">
+      <div><span class="invite-k">Server</span><code>${escapeHtml(info.server)}</code></div>
+      <div><span class="invite-k">Sign-in</span>${info.authMode === 'oidc' ? 'Single sign-on (SSO)' : 'API token' + (info.hasToken ? ' (included in the invite)' : '')}</div>
+    </div>
+    <p class="adv-hint">Only accept invites from your own team. Personal snippets and captures
+    never leave this device either way.</p>
+    <div class="modal-actions"><div class="spacer"></div>
+      <button class="secondary" data-no>Cancel</button>
+      <button class="primary" data-yes>Join</button>
+    </div>`, { className: 'small' });
+  modal.querySelector('[data-no]').addEventListener('click', close);
+  modal.querySelector('[data-yes]').addEventListener('click', async () => {
+    close();
+    try {
+      await invoke('apply_invite', { url });
+      localStorage.setItem('glyphio-welcomed', '1');
+      setStatus(info.authMode === 'oidc'
+        ? 'Connected — now sign in with SSO under Settings → Sync.'
+        : 'Connected — syncing with your team.', 'ok');
+      state.selected = 'settings'; state.settingsTab = 'sync';
+      renderSidebar(); renderMain();
+      await refreshSync();
+    } catch (e) { setStatus(String(e), 'err'); }
+  });
+}
+
+function maybeShowWelcome() {
+  if (localStorage.getItem('glyphio-welcomed')) return;
+  if (state.syncConfig?.enabled || state.snippets.length > 2) {
+    localStorage.setItem('glyphio-welcomed', '1'); // existing user — never nag
+    return;
+  }
+  const { modal, close } = openModal(`
+    <h3>Welcome to Glyphio</h3>
+    <p class="confirm-body">Text expansion and screenshots, local-first. How will you use it?</p>
+    <div class="welcome-cards">
+      <button class="welcome-card" data-w="personal">
+        <strong>Just me</strong>
+        <span>Everything stays on this device. You can join a team any time later.</span>
+      </button>
+      <button class="welcome-card" data-w="invite">
+        <strong>I have an invite</strong>
+        <span>Paste the invite link or code from your team admin.</span>
+      </button>
+      <button class="welcome-card" data-w="setup">
+        <strong>Set up team sync</strong>
+        <span>Connect to your organization's server or single sign-on.</span>
+      </button>
+    </div>
+    <div class="welcome-paste" id="welcome-paste" style="display:none">
+      <input type="text" id="welcome-invite" placeholder="glyphio://join?server=…" spellcheck="false" autocomplete="off" />
+      <button class="primary" id="welcome-join">Continue</button>
+    </div>`, { className: 'welcome' });
+  const done = () => { localStorage.setItem('glyphio-welcomed', '1'); close(); };
+  modal.querySelector('[data-w="personal"]').addEventListener('click', done);
+  modal.querySelector('[data-w="setup"]').addEventListener('click', () => {
+    done();
+    state.selected = 'settings'; state.settingsTab = 'sync';
+    renderSidebar(); renderMain();
+  });
+  modal.querySelector('[data-w="invite"]').addEventListener('click', () => {
+    modal.querySelector('#welcome-paste').style.display = 'flex';
+    modal.querySelector('#welcome-invite').focus();
+  });
+  modal.querySelector('#welcome-join').addEventListener('click', () => {
+    const url = modal.querySelector('#welcome-invite').value.trim();
+    if (!url) return;
+    done();
+    confirmInvite(url);
+  });
+}
+
+// --- Import / export ---------------------------------------------------------
+// Exports are portable Glyphio JSON (content only — no team/owner/sync state).
+// Imports are ADDITIVE: existing triggers are skipped and reported, never overwritten.
+
+async function exportSnippets(groupId) {
+  const g = groupId ? state.groups.find((x) => x.id === groupId) : null;
+  const slug = (g?.name || 'all').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const path = await window.__TAURI__.dialog.save({
+    title: g ? `Export “${g.name}”` : 'Export all snippets',
+    defaultPath: `glyphio-${slug}.json`,
+    filters: [{ name: 'Glyphio export', extensions: ['json'] }],
+  });
+  if (!path) return;
+  try {
+    await invoke('export_snippets', { path, groupId });
+    setStatus(`Exported ${g ? `“${g.name}”` : 'all snippets'} → ${path}`, 'ok');
+  } catch (e) { setStatus(String(e), 'err'); }
+}
+
+async function importSnippets() {
+  const path = await window.__TAURI__.dialog.open({
+    title: 'Import snippets',
+    multiple: false,
+    filters: [{ name: 'Glyphio export / YAML matches', extensions: ['json', 'yml', 'yaml'] }],
+  });
+  if (!path) return;
+  try {
+    const r = await invoke('import_snippets', { path });
+    const skipped = r.skipped.length
+      ? ` · ${r.skipped.length} skipped (already exist: ${r.skipped.slice(0, 3).join(', ')}${r.skipped.length > 3 ? '…' : ''})`
+      : '';
+    setStatus(`Imported ${r.imported} snippet${r.imported === 1 ? '' : 's'}${r.groupsCreated ? `, ${r.groupsCreated} group(s)` : ''}${skipped}`, 'ok');
+    await reloadAll();
+  } catch (e) { setStatus(String(e), 'err'); }
+}
+
+function visibleSnippets() {
+  const f = state.search.trim().toLowerCase();
+  return state.snippets.filter((s) => {
+    const inScope = state.selected === 'all'
+      || (state.selected === 'ungrouped' && !s.groupId)
+      || (state.selected.startsWith('team:') && s.team === state.selected.slice(5))
+      || s.groupId === state.selected;
+    const matches = !f || s.trigger.toLowerCase().includes(f) || s.replacement.toLowerCase().includes(f);
+    return inScope && matches;
+  });
+}
+
+function drawList() {
+  const list = document.getElementById('snip-list');
+  const rows = visibleSnippets();
+  if (rows.length === 0) {
+    list.innerHTML = `<div class="empty">No snippets here yet. <button class="link" id="empty-new">Create one</button>.</div>`;
+    list.querySelector('#empty-new').addEventListener('click', () => openEditor(null));
+    return;
+  }
+  list.innerHTML = '';
+  for (const s of rows) {
+    const fmt = FORMATS.find((f) => f.id === s.format) || FORMATS[0];
+    const card = document.createElement('div');
+    card.className = 'snip-card';
+    card.innerHTML = `
+      <div class="snip-main">
+        <div class="snip-top">
+          <code class="snip-trigger"></code>
+          <span class="fmt-badge" title="${fmt.label}">${fmt.badge}</span>
+        </div>
+        <div class="snip-preview"></div>
+      </div>
+      <div class="snip-actions">
+        <button class="secondary sm" data-edit>Edit</button>
+        <button class="danger sm" data-del>Delete</button>
+      </div>`;
+    card.querySelector('.snip-trigger').textContent = s.trigger;
+    card.querySelector('.snip-preview').textContent = previewText(s);
+    card.querySelector('[data-edit]').addEventListener('click', () => openEditor(s));
+    card.querySelector('[data-del]').addEventListener('click', () => deleteSnippet(s));
+    card.querySelector('.snip-main').addEventListener('click', (e) => {
+      if (!e.target.closest('button')) openEditor(s);
+    });
+    list.appendChild(card);
+  }
+}
+
+function previewText(s) {
+  let t = s.replacement || '';
+  if (s.format === 'html') t = t.replace(/<[^>]+>/g, ' ');
+  t = t.replace(/\s+/g, ' ').trim();
+  return t.length > 140 ? t.slice(0, 140) + '…' : t;
+}
+
+async function deleteSnippet(s) {
+  if (!(await confirmDialog(`Delete snippet “${s.trigger}”?`, { confirmLabel: 'Delete', danger: true }))) return;
+  await invoke('delete_snippet', { id: s.id });
+  setStatus('Snippet deleted.', 'ok');
+}
+
+// --- Editor (two-pane modal: form + live preview) ---------------------------
+
+const FMT_HINTS = {
+  plain: 'Inserted verbatim. No formatting.',
+  html: 'WYSIWYG rich text — pastes with formatting (auto plain-text fallback).',
+  markdown: 'Markdown source (**bold**, lists, tables). Rendered to rich text on paste.',
+};
+
+function openEditor(existing) {
+  const isEdit = Boolean(existing);
+  let format = existing?.format || 'plain';
+  let savedRange = null; // caret saved before a toolbar popover steals focus
+  let selectionHandler = null;
+
+  const groupOptions = `<option value="">Ungrouped</option>` +
+    state.groups.map((g) => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
+
+  const { modal, close, $ } = openModal(`
+    <div class="modal-head">
+      <h3>${isEdit ? 'Edit snippet' : 'New snippet'}</h3>
+      <button class="icon-btn" id="e-close" title="Close (Esc)" aria-label="Close">${icon('x', 15)}</button>
+    </div>
+    <div class="editor-panes">
+      <div class="editor-form">
+        <div class="mfield">
+          <label for="e-trigger">Trigger</label>
+          <input id="e-trigger" type="text" placeholder=":sig" autocomplete="off" spellcheck="false" />
+          <p class="field-error" id="e-trigger-err"></p>
+        </div>
+        <div class="mfield">
+          <label for="e-group">Group</label>
+          <select id="e-group">${groupOptions}</select>
+        </div>
+        <div class="mfield">
+          <label>Format</label>
+          <div class="seg" id="e-fmt"></div>
+          <p class="fmt-hint" id="e-fmt-hint"></p>
+        </div>
+        <div class="mfield content-field">
+          <label>Content</label>
+          <div class="rich-toolbar" id="e-rich-toolbar"></div>
+          <div id="e-body-wrap"></div>
+          <p class="field-error" id="e-body-err"></p>
+        </div>
+        <details class="adv" id="e-adv">
+          <summary>Variables <span class="adv-sub">— dynamic values (advanced)</span></summary>
+          <p class="adv-hint">Dynamic values inserted at expansion time. A JSON array; reference them in your content as <code>{{name}}</code>.</p>
+          <textarea id="e-vars" class="mono" spellcheck="false" placeholder='[{"name":"date","type":"date","params":{"format":"%Y-%m-%d"}}]'></textarea>
+          <p class="field-error" id="e-vars-err"></p>
+        </details>
+        <details class="adv" id="e-scope-adv">
+          <summary>App scope <span class="adv-sub">— limit where this snippet expands</span></summary>
+          <p class="adv-hint">Empty = everywhere. An app name matches the app's executable (e.g. <code>Slack</code>); or use <code>exec:&lt;regex&gt;</code> / <code>title:&lt;regex&gt;</code> for full control.</p>
+          <input id="e-scope" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Slack" />
+        </details>
+      </div>
+      <div class="editor-preview">
+        <div class="preview-head">Live preview <span class="preview-sub" id="e-preview-fmt"></span></div>
+        <div class="preview-body" id="e-preview"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <span class="save-hint">⌘↵ save · Esc cancel</span>
+      <div class="spacer"></div>
+      <button class="secondary" id="e-cancel">Cancel</button>
+      <button class="primary" id="e-save">${isEdit ? 'Save' : 'Create'}</button>
+    </div>`, { className: 'editor2', onClose: cleanup });
+
+  function cleanup() {
+    if (selectionHandler) { document.removeEventListener('selectionchange', selectionHandler); selectionHandler = null; }
+  }
+
+  const gsel = $('#e-group');
+  let defaultGroup = '';
+  if (state.selected.startsWith('team:')) {
+    // Creating from a team view: default into that team's first shared group so the new
+    // snippet inherits the team and syncs immediately.
+    defaultGroup = state.groups.find((g) => g.team === state.selected.slice(5))?.id || '';
+  } else if (!['all', 'ungrouped', 'settings', 'history'].includes(state.selected)) {
+    defaultGroup = state.selected;
+  }
+  gsel.value = existing?.groupId || defaultGroup;
+  $('#e-trigger').value = existing?.trigger || '';
+  $('#e-vars').value = existing?.variables ? JSON.stringify(existing.variables, null, 2) : '';
+  $('#e-scope').value = existing?.appScope || '';
+  if (existing?.appScope) $('#e-scope-adv').open = true;
+
+  const fmtSeg = $('#e-fmt');
+  fmtSeg.innerHTML = FORMATS.map((f) => `<button type="button" class="seg-opt" data-fmt="${f.id}">${f.label}</button>`).join('');
+  const bodyWrap = $('#e-body-wrap');
+  const toolbar = $('#e-rich-toolbar');
+  const hint = $('#e-fmt-hint');
+  const preview = $('#e-preview');
+  const previewFmt = $('#e-preview-fmt');
+
+  const getRich = () => bodyWrap.querySelector('.rich-editor');
+  const readBody = () => (format === 'html' ? getRich().innerHTML.trim() : bodyWrap.querySelector('#e-body').value);
+
+  function updatePreview() {
+    previewFmt.textContent = FORMATS.find((f) => f.id === format)?.label || '';
+    renderPreview(preview, format, readBody());
+  }
+
+  function buildBody(fmt, initial) {
+    fmtSeg.querySelectorAll('.seg-opt').forEach((b) => b.classList.toggle('active', b.dataset.fmt === fmt));
+    hint.textContent = FMT_HINTS[fmt];
+    cleanup();
+    if (fmt === 'html') {
+      toolbar.style.display = 'flex';
+      bodyWrap.innerHTML = `<div class="rich-editor" contenteditable="true"></div>`;
+      const ed = getRich();
+      ed.innerHTML = initial || '';
+      const refresh = renderRichToolbar(toolbar, getRich, {
+        onChange: updatePreview,
+        saveSel: () => { const s = window.getSelection(); savedRange = s.rangeCount ? s.getRangeAt(0).cloneRange() : null; },
+        restoreSel: () => { if (savedRange) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(savedRange); } },
+      });
+      ed.addEventListener('input', updatePreview);
+      selectionHandler = () => { if (document.activeElement === ed) refresh(); };
+      document.addEventListener('selectionchange', selectionHandler);
+    } else {
+      toolbar.style.display = 'none';
+      bodyWrap.innerHTML = `<textarea id="e-body" class="body-area ${fmt === 'markdown' ? 'mono' : ''}" placeholder="${fmt === 'markdown' ? 'Type Markdown…' : 'Type your snippet…'}"></textarea>`;
+      const ta = bodyWrap.querySelector('#e-body');
+      ta.value = initial || '';
+      ta.addEventListener('input', updatePreview);
+    }
+    updatePreview();
+  }
+
+  buildBody(format, existing?.replacement || '');
+
+  fmtSeg.querySelectorAll('.seg-opt').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.fmt === format) return;
+    const converted = convertContent(readBody(), format, b.dataset.fmt);
+    format = b.dataset.fmt;
+    buildBody(format, converted);
+  }));
+
+  // Trigger validation (required + duplicate detection).
+  const triggerInput = $('#e-trigger');
+  const triggerErr = $('#e-trigger-err');
+  function checkTrigger() {
+    const t = triggerInput.value.trim();
+    const conflict = t && state.snippets.find((s) => s.id !== existing?.id && s.trigger === t);
+    triggerErr.textContent = conflict ? 'Another snippet already uses this trigger.' : '';
+    return !conflict;
+  }
+  triggerInput.addEventListener('input', checkTrigger);
+
+  async function save() {
+    const trigger = triggerInput.value.trim();
+    const replacement = readBody();
+    const bodyErr = $('#e-body-err');
+    const varsErr = $('#e-vars-err');
+    triggerErr.textContent = ''; bodyErr.textContent = ''; varsErr.textContent = '';
+    let ok = true;
+    if (!trigger) { triggerErr.textContent = 'Trigger is required.'; ok = false; }
+    else if (!checkTrigger()) { ok = false; }
+    if (!replacement.trim()) { bodyErr.textContent = 'Content is required.'; ok = false; }
+    let variables = null;
+    const vr = $('#e-vars').value.trim();
+    if (vr) {
+      try { variables = JSON.parse(vr); }
+      catch { varsErr.textContent = 'Variables must be valid JSON.'; $('#e-adv').open = true; ok = false; }
+    }
+    if (!ok) return;
+    const payload = {
+      trigger, replacement, format, variables,
+      groupId: gsel.value || null,
+      appScope: $('#e-scope').value.trim() || null,
+      // Preserve sync scope on edit (team assignment is managed by the Sync section).
+      team: existing?.team || null,
+    };
+    try {
+      if (isEdit) await invoke('update_snippet', { id: existing.id, patch: payload });
+      else await invoke('create_snippet', { snippet: payload });
+      close();
+      setStatus(isEdit ? 'Snippet saved — live everywhere.' : 'Snippet created — live everywhere.', 'ok');
+    } catch (e) { setStatus(String(e), 'err'); }
+  }
+
+  $('#e-save').addEventListener('click', save);
+  $('#e-cancel').addEventListener('click', close);
+  $('#e-close').addEventListener('click', close);
+  modal.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); }
+  });
+  triggerInput.focus();
+  checkTrigger();
+}
+
+// Rich-text toolbar. Returns a `refresh()` that syncs button active-states to the current selection.
+function renderRichToolbar(bar, getEditor, { onChange, saveSel, restoreSel }) {
+  bar.innerHTML = '';
+  const stateBtns = [];
+  const exec = (command, value) => { getEditor().focus(); document.execCommand(command, false, value); onChange(); refresh(); };
+  const mk = (label, title, onClick, cmdName) => {
+    const b = el('button', { type: 'button', className: 'tb-btn', title, innerHTML: label });
+    if (cmdName) { b.dataset.cmd = cmdName; stateBtns.push(b); }
+    b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the editor selection
+    b.addEventListener('click', (e) => { e.preventDefault(); onClick(b); });
+    bar.append(b);
+    return b;
+  };
+
+  mk('<b>B</b>', 'Bold (⌘B)', () => exec('bold'), 'bold');
+  mk('<i>I</i>', 'Italic (⌘I)', () => exec('italic'), 'italic');
+  mk('<u>U</u>', 'Underline (⌘U)', () => exec('underline'), 'underline');
+  mk('H', 'Heading', () => exec('formatBlock', 'H3'));
+  mk(icon('list'), 'Bullet list', () => exec('insertUnorderedList'), 'insertUnorderedList');
+  mk(icon('listOrdered'), 'Numbered list', () => exec('insertOrderedList'), 'insertOrderedList');
+  mk(icon('code'), 'Code block', () => exec('formatBlock', 'PRE'));
+  mk(icon('link'), 'Insert link', (b) => openLinkPopover(b));
+  mk(icon('table'), 'Insert table', (b) => openTablePopover(b));
+  mk(icon('eraser'), 'Clear formatting', () => exec('removeFormat'));
+
+  function openLinkPopover(anchor) {
+    saveSel();
+    openPopover(anchor, `
+      <div class="pop-row"><input type="url" data-url placeholder="https://…" /></div>
+      <div class="pop-actions"><button class="secondary sm" data-cancel>Cancel</button><button class="primary sm" data-ok>Insert</button></div>`,
+      ({ root, close }) => {
+        const url = root.querySelector('[data-url]');
+        url.focus();
+        const insert = () => {
+          const v = url.value.trim();
+          if (!v) { url.focus(); return; }
+          restoreSel(); getEditor().focus();
+          const sel = window.getSelection();
+          if (sel && sel.toString()) exec('createLink', v);
+          else exec('insertHTML', `<a href="${escapeAttr(v)}">${escapeHtml(v)}</a>`);
+          close();
+        };
+        root.querySelector('[data-ok]').addEventListener('click', insert);
+        root.querySelector('[data-cancel]').addEventListener('click', close);
+        url.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); insert(); } });
+      });
+  }
+
+  function openTablePopover(anchor) {
+    saveSel();
+    openPopover(anchor, `
+      <div class="pop-row pop-grid">
+        <label>Rows<input type="number" data-rows min="1" max="20" value="2" /></label>
+        <label>Cols<input type="number" data-cols min="1" max="20" value="2" /></label>
+      </div>
+      <div class="pop-actions"><button class="secondary sm" data-cancel>Cancel</button><button class="primary sm" data-ok>Insert</button></div>`,
+      ({ root, close }) => {
+        const clamp = (n) => Math.max(1, Math.min(20, parseInt(n, 10) || 1));
+        const insert = () => {
+          const r = clamp(root.querySelector('[data-rows]').value);
+          const c = clamp(root.querySelector('[data-cols]').value);
+          restoreSel(); getEditor().focus();
+          exec('insertHTML', tableHtml(r, c));
+          close();
+        };
+        root.querySelector('[data-ok]').addEventListener('click', insert);
+        root.querySelector('[data-cancel]').addEventListener('click', close);
+        root.querySelector('[data-rows]').focus();
+      });
+  }
+
+  function refresh() {
+    for (const b of stateBtns) {
+      let on = false;
+      try { on = document.queryCommandState(b.dataset.cmd); } catch { /* unsupported */ }
+      b.classList.toggle('active', on);
+    }
+  }
+  return refresh;
+}
+
+function tableHtml(rows, cols) {
+  const cell = 'style="border:1px solid #888;padding:4px 8px"';
+  let out = '<table style="border-collapse:collapse"><tbody>';
+  for (let r = 0; r < rows; r++) {
+    out += '<tr>';
+    for (let c = 0; c < cols; c++) out += `<td ${cell}>&nbsp;</td>`;
+    out += '</tr>';
+  }
+  return out + '</tbody></table><p></p>';
+}
+
+// --- Live preview + format conversion --------------------------------------
+
+function renderPreview(container, fmt, content) {
+  if (!content || !content.trim()) {
+    container.className = 'preview-body';
+    container.innerHTML = '<span class="pv-empty">Nothing to preview yet.</span>';
+    return;
+  }
+  if (fmt === 'plain') {
+    container.className = 'preview-body pv-plain';
+    container.textContent = content;
+  } else {
+    container.className = 'preview-body pv-rich';
+    container.innerHTML = fmt === 'markdown' ? mdToHtml(content) : content;
+  }
+}
+
+// Convert content when the user switches format, so switching never leaves raw markup behind.
+function convertContent(content, from, to) {
+  if (from === to || !content) return content;
+  if (from === 'plain' && to === 'html') return textToHtml(content);
+  if (from === 'plain' && to === 'markdown') return content;
+  if (from === 'markdown' && to === 'plain') return mdToText(content);
+  if (from === 'markdown' && to === 'html') return mdToHtml(content);
+  if (from === 'html' && to === 'plain') return htmlToText(content);
+  if (from === 'html' && to === 'markdown') return htmlToMarkdown(content);
+  return content;
+}
+
+function textToHtml(t) { return escapeHtml(t).replace(/\n/g, '<br>'); }
+
+function htmlToText(html) {
+  const tmp = el('div');
+  tmp.innerHTML = html
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n');
+  return (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Minimal, approximate Markdown → HTML — for the live preview and format conversion only. The engine
+// itself does the real (pulldown-cmark) conversion at expansion time.
+function mdToHtml(md) {
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  const inline = (s) => escapeHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  let html = '', inUl = false, inOl = false, inCode = false;
+  const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
+  for (const line of lines) {
+    if (/^```/.test(line)) { closeLists(); inCode = !inCode; html += inCode ? '<pre><code>' : '</code></pre>'; continue; }
+    if (inCode) { html += escapeHtml(line) + '\n'; continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeLists(); html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    if (ul) { if (!inUl) { closeLists(); html += '<ul>'; inUl = true; } html += `<li>${inline(ul[1])}</li>`; continue; }
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ol) { if (!inOl) { closeLists(); html += '<ol>'; inOl = true; } html += `<li>${inline(ol[1])}</li>`; continue; }
+    if (line.trim() === '') { closeLists(); continue; }
+    closeLists(); html += `<p>${inline(line)}</p>`;
+  }
+  closeLists(); if (inCode) html += '</code></pre>';
+  return html;
+}
+
+function mdToText(md) {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s*[-*]\s+/gm, '• ')
+    .trim();
+}
+
+function htmlToMarkdown(html) {
+  const s = html
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<(strong|b)>([\s\S]*?)<\/\1>/gi, '**$2**')
+    .replace(/<(em|i)>([\s\S]*?)<\/\1>/gi, '*$2*')
+    .replace(/<code>([\s\S]*?)<\/code>/gi, '`$1`')
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)')
+    .replace(/<h([1-6])>([\s\S]*?)<\/h\1>/gi, (m, l, t) => `\n${'#'.repeat(+l)} ${t}\n`)
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1\n')
+    .replace(/<\/(p|div|ul|ol)>/gi, '\n');
+  const tmp = el('div');
+  tmp.innerHTML = s;
+  return (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// --- Reusable modal + popover primitives ------------------------------------
+
+function openModal(innerHtml, { className = '', onClose } = {}) {
+  const backdrop = el('div', { className: 'modal-backdrop' });
+  backdrop.innerHTML = `<div class="modal ${className}">${innerHtml}</div>`;
+  document.body.appendChild(backdrop);
+  const modal = backdrop.querySelector('.modal');
+  let closed = false;
+  const close = () => {
+    if (closed) return; closed = true;
+    backdrop.remove();
+    onClose?.();
+  };
+  modal.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'Tab') trapFocus(modal, e);
+  });
+  backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(); });
+  return { backdrop, modal, close, $: (s) => modal.querySelector(s) };
+}
+
+function trapFocus(container, e) {
+  const f = [...container.querySelectorAll('button, [href], input, select, textarea, [contenteditable="true"], [tabindex]:not([tabindex="-1"])')]
+    .filter((n) => !n.disabled && n.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+function confirmDialog(message, { confirmLabel = 'Confirm', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const { modal, close } = openModal(`
+      <div class="confirm-body"></div>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button class="secondary" data-no>Cancel</button>
+        <button class="${danger ? 'danger' : 'primary'}" data-yes>${escapeHtml(confirmLabel)}</button>
+      </div>`, { className: 'small', onClose: () => resolve(false) });
+    modal.querySelector('.confirm-body').textContent = message;
+    modal.querySelector('[data-no]').addEventListener('click', close);
+    modal.querySelector('[data-yes]').addEventListener('click', () => { resolve(true); close(); });
+    modal.querySelector('[data-yes]').focus();
+  });
+}
+
+function promptDialog(title, { label = '', value = '', placeholder = '', confirmLabel = 'Save', allowEmpty = false } = {}) {
+  return new Promise((resolve) => {
+    const { modal, close } = openModal(`
+      <h3>${escapeHtml(title)}</h3>
+      <div class="mfield">
+        ${label ? `<label>${escapeHtml(label)}</label>` : ''}
+        <input type="text" data-input placeholder="${escapeAttr(placeholder)}" />
+        <p class="field-error" data-err></p>
+      </div>
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button class="secondary" data-no>Cancel</button>
+        <button class="primary" data-yes>${escapeHtml(confirmLabel)}</button>
+      </div>`, { className: 'small', onClose: () => resolve(null) });
+    const input = modal.querySelector('[data-input]');
+    const errEl = modal.querySelector('[data-err]');
+    input.value = value;
+    const submit = () => {
+      const v = input.value.trim();
+      if (!v && !allowEmpty) { errEl.textContent = 'Required.'; input.focus(); return; }
+      resolve(v); close();
+    };
+    modal.querySelector('[data-no]').addEventListener('click', close);
+    modal.querySelector('[data-yes]').addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+    input.focus(); input.select();
+  });
+}
+
+// A small floating panel anchored under a toolbar button (link URL / table size).
+function openPopover(anchor, innerHtml, onMount) {
+  document.querySelectorAll('.gp-popover').forEach((p) => p.remove());
+  const pop = el('div', { className: 'gp-popover' });
+  pop.innerHTML = innerHtml;
+  document.body.appendChild(pop);
+  const rect = anchor.getBoundingClientRect();
+  pop.style.top = `${rect.bottom + 6}px`;
+  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - pop.offsetWidth - 12))}px`;
+  let closed = false;
+  const close = () => {
+    if (closed) return; closed = true;
+    pop.remove();
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const outside = (e) => { if (!pop.contains(e.target) && e.target !== anchor) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
+  setTimeout(() => {
+    document.addEventListener('mousedown', outside, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+  onMount({ root: pop, close });
+}
+
+// --- Settings view ----------------------------------------------------------
+
+// --- Sync (Settings → Sync) ---------------------------------------------------
+// Status + config for team snippet sync. Personal snippets and capture history never sync.
+// Config holds no secrets: OIDC sessions and static tokens live in the OS keychain.
+
+const SYNC_STATE_LABELS = {
+  disabled: 'Off — not configured',
+  signedOut: 'Signed out',
+  idle: 'Up to date',
+  syncing: 'Syncing…',
+  error: 'Error',
+};
+
+function renderSyncSection(form) {
+  const div = document.createElement('div');
+  div.className = 'form-section';
+  const st = state.syncStatus || { state: 'disabled' };
+  const cfg = state.syncConfig || {};
+  const who = st.identity
+    ? `${escapeHtml(st.identity.email || st.identity.sub)} · teams: ${st.identity.teams.map(escapeHtml).join(', ') || '—'}`
+    : '';
+  div.innerHTML = `
+    <h3>Team sync</h3>
+    <p class="adv-hint">Syncs <strong>team-shared</strong> snippet groups through your configured backend.
+    Personal snippets and capture history never leave this device.</p>
+    <div class="sync-card">
+      <div class="sync-state" data-state="${escapeHtml(st.state)}">${SYNC_STATE_LABELS[st.state] || escapeHtml(st.state)}</div>
+      ${who ? `<div class="sync-who">${who}</div>` : ''}
+      ${st.lastSync ? `<div class="sync-last">Last sync: ${escapeHtml(st.lastSync)}</div>` : ''}
+      ${st.error ? `<div class="sync-error">${escapeHtml(st.error)}</div>` : ''}
+      <div class="sync-actions">
+        ${cfg.enabled && cfg.authMode === 'oidc' && st.state === 'signedOut' ? '<button class="primary" id="sync-signin">Sign in with SSO</button>' : ''}
+        ${cfg.enabled && cfg.authMode === 'token' && st.state === 'signedOut' ? '<button class="primary" id="sync-settoken">Set API token…</button>' : ''}
+        ${['idle', 'error', 'syncing'].includes(st.state) ? '<button class="secondary" id="sync-now">Sync now</button> <button class="ghost" id="sync-signout">Sign out</button>' : ''}
+      </div>
+      ${renderTeamPanel(st)}
+    </div>
+    ${cfg.managed ? `
+    <div class="managed-note">
+      <strong>Managed by your organization.</strong> The sync connection is configured centrally
+      and cannot be changed here. Sign-in and team sharing work as normal.
+    </div>` : `
+    <div class="mfield"><label>Enable sync</label><input type="checkbox" id="sc-enabled" ${cfg.enabled ? 'checked' : ''}></div>
+    <div class="mfield"><label>Backend URL</label><input type="text" id="sc-backend" placeholder="https://sync.example.com" value="${escapeHtml(cfg.backendUrl || '')}"></div>
+    <div class="mfield"><label>Auth mode</label>
+      <select id="sc-mode">
+        <option value="oidc" ${cfg.authMode !== 'token' ? 'selected' : ''}>OIDC single sign-on</option>
+        <option value="token" ${cfg.authMode === 'token' ? 'selected' : ''}>Static API token</option>
+      </select></div>
+    <div class="mfield sc-oidc"><label>OIDC issuer</label><input type="text" id="sc-issuer" placeholder="https://your-tenant.okta.com" value="${escapeHtml(cfg.issuer || '')}"></div>
+    <div class="mfield sc-oidc"><label>Client ID</label><input type="text" id="sc-client" value="${escapeHtml(cfg.clientId || '')}"></div>
+    <div class="mfield sc-oidc"><label>Scopes (beyond openid)</label><input type="text" id="sc-scopes" placeholder="profile email offline_access groups" value="${escapeHtml((cfg.scopes || []).join(' '))}"></div>
+    <button class="primary" id="sc-save">Save sync settings</button>`}
+  `;
+  const toggleOidc = () => div.querySelectorAll('.sc-oidc').forEach((el) => {
+    el.style.display = div.querySelector('#sc-mode').value === 'oidc' ? '' : 'none';
+  });
+  if (!cfg.managed) {
+    toggleOidc();
+    div.querySelector('#sc-mode').addEventListener('change', toggleOidc);
+  }
+  div.querySelector('#sc-save')?.addEventListener('click', async () => {
+    const config = {
+      ...cfg,
+      enabled: div.querySelector('#sc-enabled').checked,
+      backendUrl: div.querySelector('#sc-backend').value.trim(),
+      authMode: div.querySelector('#sc-mode').value,
+      issuer: div.querySelector('#sc-issuer').value.trim(),
+      clientId: div.querySelector('#sc-client').value.trim(),
+      scopes: div.querySelector('#sc-scopes').value.trim().split(/\s+/).filter(Boolean),
+    };
+    try {
+      await invoke('save_sync_config', { config });
+      state.syncConfig = config;
+      setStatus('Sync settings saved.', 'ok');
+      await refreshSync();
+    } catch (e) { setStatus(String(e), 'err'); }
+  });
+  div.querySelector('#sync-signin')?.addEventListener('click', async () => {
+    setStatus('Complete the sign-in in your browser…');
+    try { await invoke('sync_sign_in'); setStatus('Signed in.', 'ok'); }
+    catch (e) { setStatus(String(e), 'err'); }
+    await refreshSync();
+  });
+  div.querySelector('#sync-settoken')?.addEventListener('click', async () => {
+    const token = await promptDialog('Set API token', {
+      label: 'Paste the token from your sync server admin', confirmLabel: 'Save token',
+    });
+    if (!token) return;
+    try { await invoke('sync_set_token', { token }); setStatus('Token saved to the system keychain.', 'ok'); }
+    catch (e) { setStatus(String(e), 'err'); }
+    await refreshSync();
+  });
+  div.querySelector('#sync-now')?.addEventListener('click', () => invoke('sync_now').catch((e) => setStatus(String(e), 'err')));
+  div.querySelector('#sync-signout')?.addEventListener('click', async () => {
+    await invoke('sync_sign_out');
+    state.teamMembers = {};
+    await refreshSync();
+  });
+  wireTeamPanel(div);
+  form.append(div);
+}
+
+// Teams + roster inside the sync card. Membership is owned by the IdP (OIDC groups claim) or
+// the server's token config — the panel is a viewer with mode-aware "how to add someone" help.
+function renderTeamPanel(st) {
+  const teams = st.identity?.teams || [];
+  if (!teams.length) return '';
+  if (!state.selectedTeam || !teams.includes(state.selectedTeam)) state.selectedTeam = teams[0];
+  const roles = st.identity?.roles || {};
+  const chips = teams.map((t) =>
+    `<button class="team-chip ${t === state.selectedTeam ? 'active' : ''}" data-team="${escapeAttr(t)}">${escapeHtml(t)}${roles[t] ? ` <span class="role-tag">${escapeHtml(roles[t])}</span>` : ''}</button>`).join('');
+  const members = state.teamMembers[state.selectedTeam];
+  const mq = state.memberSearch.trim().toLowerCase();
+  const filtered = (members || []).filter((m) =>
+    !mq || m.sub.toLowerCase().includes(mq) || (m.email || '').toLowerCase().includes(mq));
+  const rows = members === undefined
+    ? '<li class="member-row muted">Loading members…</li>'
+    : filtered.length
+      ? filtered.map((m) => `
+          <li class="member-row">
+            <span class="member-id">${escapeHtml(m.email || m.sub)}</span>
+            ${m.email ? `<span class="member-sub">${escapeHtml(m.sub)}</span>` : ''}
+            <span class="member-seen">${m.lastSeen ? 'seen ' + escapeHtml(m.lastSeen.slice(0, 10)) : 'never signed in'}</span>
+          </li>`).join('')
+      : `<li class="member-row muted">${mq ? 'No members match' : 'No members known yet'}</li>`;
+  return `
+    <div class="team-panel">
+      <div class="team-panel-head">
+        <span class="team-panel-title">Teams</span>
+        <div class="team-chips">${chips}</div>
+      </div>
+      <div class="member-tools">
+        <input type="search" id="member-search" placeholder="Search members…" value="${escapeAttr(state.memberSearch)}" />
+        <button class="secondary" id="add-member">Add member…</button>
+      </div>
+      <ul class="member-list">${rows}</ul>
+    </div>`;
+}
+
+function wireTeamPanel(div) {
+  div.querySelectorAll('.team-chip').forEach((c) => c.addEventListener('click', () => {
+    state.selectedTeam = c.dataset.team;
+    state.memberSearch = '';
+    renderMain();
+    loadMembers(state.selectedTeam);
+  }));
+  const ms = div.querySelector('#member-search');
+  ms?.addEventListener('input', () => {
+    const pos = ms.selectionStart;
+    state.memberSearch = ms.value;
+    renderMain();
+    const again = document.getElementById('member-search');
+    if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+  });
+  div.querySelector('#add-member')?.addEventListener('click', showAddMemberHelp);
+  if (state.selectedTeam && state.teamMembers[state.selectedTeam] === undefined) {
+    loadMembers(state.selectedTeam);
+  }
+}
+
+async function loadMembers(team) {
+  try {
+    const members = await invoke('sync_team_members', { team });
+    state.teamMembers = { ...state.teamMembers, [team]: members };
+  } catch (e) {
+    state.teamMembers = { ...state.teamMembers, [team]: [] };
+    setStatus(String(e), 'err');
+  }
+  if (state.selected === 'settings') renderMain();
+}
+
+// Membership is managed where identity lives, so "add member" is guidance, not an API call.
+function showAddMemberHelp() {
+  const mode = state.syncConfig?.authMode === 'token' ? 'token' : 'oidc';
+  const team = state.selectedTeam || 'your team';
+  const body = mode === 'oidc'
+    ? `<p>Team membership comes from your identity provider. To add someone to
+       <strong>${escapeHtml(team)}</strong>:</p>
+       <ol>
+         <li>In your IdP admin (Okta, Entra, Keycloak…), add the person to the group named
+             <code>${escapeHtml(team)}</code>.</li>
+         <li>Make sure they're assigned to the Glyphio app in the IdP.</li>
+         <li>They install Glyphio, enter the same backend + issuer settings, and sign in —
+             membership applies on their next sign-in.</li>
+       </ol>`
+    : `<p>In static-token mode the sync server's config defines members. To add someone to
+       <strong>${escapeHtml(team)}</strong>:</p>
+       <ol>
+         <li>Generate a token: <code>openssl rand -hex 32</code>, hash it:
+             <code>echo -n &lt;token&gt; | shasum -a 256</code>.</li>
+         <li>Add <code>{"tokenSha256":"&lt;hash&gt;","sub":"&lt;name&gt;","teams":["${escapeAttr(team)}"]}</code>
+             to the server's <code>STATIC_TOKENS</code> and restart it.</li>
+         <li>Send them the token privately; they paste it via “Set API token…”.</li>
+       </ol>
+       <p class="adv-hint">Details: <code>SETUP.md</code> §1b in the repo.</p>`;
+  const { modal, close } = openModal(`
+    <h3>Add a member to ${escapeHtml(team)}</h3>
+    <div class="add-member-help">${body}</div>
+    <div class="modal-actions"><div class="spacer"></div>
+      <button class="primary" data-ok>Got it</button></div>`, { className: 'small' });
+  modal.querySelector('[data-ok]').addEventListener('click', close);
+}
+
+async function refreshSync() {
+  try {
+    [state.syncStatus, state.syncConfig] = await Promise.all([
+      invoke('sync_status'), invoke('get_sync_config'),
+    ]);
+  } catch { /* window closing */ }
+  if (state.selected === 'settings') renderMain();
+}
+
+async function wireSync() {
+  await refreshSync();
+  await listen('sync-status', (e) => {
+    state.syncStatus = e.payload;
+    if (state.selected === 'settings') renderMain();
+  });
+}
+
+const SETTINGS_TABS = [
+  ['general', 'General'],
+  ['snippets', 'Snippets'],
+  ['sync', 'Sync'],
+  ['permissions', 'Permissions'],
+  ['about', 'About'],
+];
+
+function renderSettings(main) {
+  const tabs = SETTINGS_TABS.map(([id, label]) =>
+    `<button type="button" class="seg-opt ${state.settingsTab === id ? 'active' : ''}" data-tab="${id}">${label}</button>`).join('');
+  main.innerHTML = `
+    <h2 class="main-title">Settings</h2>
+    <div class="seg settings-tabs" id="settings-tabs">${tabs}</div>
+    <div id="settings-form"></div>`;
+  main.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => {
+    state.settingsTab = b.dataset.tab;
+    renderMain();
+  }));
+  const form = main.querySelector('#settings-form');
+  switch (state.settingsTab) {
+    case 'snippets': renderSnippetsTab(form); break;
+    case 'sync': renderSyncSection(form); break;
+    case 'permissions': renderPermissionsTab(form); break;
+    case 'about': renderAboutTab(form); break;
+    default: renderGeneralTab(form);
+  }
+}
+
+function renderGeneralTab(form) {
+  for (const sec of SETTINGS_SECTIONS) {
+    const div = document.createElement('div');
+    div.className = 'form-section';
+    div.innerHTML = `<h3>${sec.title}</h3>`;
+    for (const [key, type, label, opts] of sec.fields) div.append(renderField(key, type, label, opts));
+    form.append(div);
+  }
+  const save = document.createElement('button');
+  save.className = 'primary'; save.textContent = 'Save settings';
+  save.addEventListener('click', saveSettings);
+  form.append(save);
+}
+
+function renderSnippetsTab(form) {
+  const div = document.createElement('div');
+  div.className = 'form-section';
+  div.innerHTML = `
+    <h3>Portability</h3>
+    <p class="adv-hint">Exports are portable Glyphio JSON — content only, no team or sync state.
+    Imports also accept <code>matches:</code>-style YAML from other expanders, and are additive: existing triggers
+    are skipped, never overwritten.${state.syncStatus?.identity?.policy?.exportTeamGroups && state.syncStatus.identity.policy.exportTeamGroups !== 'open'
+      ? ' <strong>Note:</strong> your organization restricts exporting team-shared groups.' : ''}</p>
+    <div class="sync-actions">
+      <button class="secondary" id="tab-export">Export all snippets…</button>
+      <button class="secondary" id="tab-import">Import…</button>
+    </div>`;
+  div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
+  div.querySelector('#tab-import').addEventListener('click', importSnippets);
+  form.append(div);
+}
+
+function renderPermissionsTab(form) {
+  const div = document.createElement('div');
+  div.className = 'form-section';
+  div.innerHTML = `
+    <h3>macOS permissions</h3>
+    <div class="perm-row" id="perm-ax">
+      <div class="perm-info"><strong>Accessibility</strong>
+        <span class="perm-sub">One grant to “Glyphio” covers text expansion (the engine runs inside the app) and scrolling capture.</span></div>
+      <span class="perm-state" data-ok="">checking…</span>
+      <button class="ghost" data-act="ax-grant">Grant access…</button>
+      <button class="ghost" data-act="ax-settings">System Settings</button>
+    </div>
+    <div class="perm-row" id="perm-sr">
+      <div class="perm-info"><strong>Screen Recording</strong>
+        <span class="perm-sub">Required for captures. Granted on first capture; applies after relaunch.</span></div>
+      <span class="perm-state" data-ok="">checking…</span>
+      <button class="ghost" data-act="sr-settings">System Settings</button>
+      <button class="ghost" data-act="relaunch">Relaunch</button>
+    </div>`;
+  const setState = (rowId, ok) => {
+    const el = div.querySelector(`#${rowId} .perm-state`);
+    el.textContent = ok ? 'granted' : 'not granted';
+    el.dataset.ok = ok ? 'yes' : 'no';
+  };
+  invoke('app_accessibility_status').then((ok) => setState('perm-ax', ok));
+  invoke('screen_recording_status').then((ok) => setState('perm-sr', ok));
+  div.querySelector('[data-act="ax-settings"]').addEventListener('click', () => invoke('open_accessibility_settings'));
+  div.querySelector('[data-act="ax-grant"]').addEventListener('click', () => invoke('request_accessibility'));
+  div.querySelector('[data-act="sr-settings"]').addEventListener('click', () => invoke('open_screen_recording_settings'));
+  div.querySelector('[data-act="relaunch"]').addEventListener('click', () => invoke('relaunch_app'));
+  form.append(div);
+}
+
+async function renderAboutTab(form) {
+  const div = document.createElement('div');
+  div.className = 'form-section';
+  let version = '';
+  try { version = await window.__TAURI__.app.getVersion(); } catch { /* capability absent */ }
+  div.innerHTML = `
+    <h3>About Glyphio</h3>
+    <p class="adv-hint">Local-first text expansion and screenshot capture with self-hostable,
+    role-based team sync. ${version ? `Version <code>${escapeHtml(version)}</code>.` : ''}</p>
+    <p class="adv-hint">App licensed
+    GPL-3.0-or-later; sync protocol and reference server Apache-2.0. Your snippets and
+    captures stay on this device unless you share a group with a team.</p>`;
+  form.append(div);
+}
+
+function renderField(key, type, label, opts) {
+  const field = document.createElement('div');
+  field.className = 'field';
+  const name = document.createElement('label');
+  name.className = 'name'; name.textContent = label;
+  field.append(name);
+  let input;
+  if (type === 'toggle') { input = el('input', { type: 'checkbox' }); input.checked = Boolean(state.settings[key]); }
+  else if (type === 'select') { input = el('select'); for (const o of opts) input.append(el('option', { value: o, textContent: o })); input.value = state.settings[key]; }
+  else if (type === 'color') { input = el('input', { type: 'color', className: 'color' }); input.value = state.settings[key] || '#000000'; }
+  else if (type === 'number') { input = el('input', { type: 'number', min: '1' }); input.value = state.settings[key]; }
+  else { input = el('input', { type: 'text' }); input.value = state.settings[key] ?? ''; }
+  input.dataset.key = key; input.dataset.type = type;
+  field.append(input);
+  return field;
+}
+
+async function saveSettings() {
+  const next = { ...state.settings };
+  document.querySelectorAll('#settings-form [data-key]').forEach((el) => {
+    const { key, type } = el.dataset;
+    if (type === 'toggle') next[key] = el.checked;
+    else if (type === 'number') next[key] = parseInt(el.value, 10) || state.settings[key];
+    else next[key] = el.value;
+  });
+  try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }
+  catch (e) { setStatus(String(e), 'err'); }
+}
+
+// --- utils ------------------------------------------------------------------
+
+function el(tag, props = {}) { return Object.assign(document.createElement(tag), props); }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
+
+function setStatus(text, kind = '') {
+  const el = document.getElementById('status');
+  if (!el) return;
+  el.textContent = text; el.className = `status-line ${kind}`;
+  if (kind === 'ok') setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 3000);
+}

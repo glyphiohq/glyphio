@@ -1,0 +1,36 @@
+# Glyphio sync configuration — EXAMPLE.
+#
+# Copy the values you need into:  ~/Library/Application Support/Glyphio/sync.toml
+# (or edit everything in-app under Settings → Team sync — the app writes the same file).
+#
+# This file contains NO secrets and none belong in it:
+#   * OIDC sessions (refresh tokens) live in the OS keychain after "Sign in with SSO".
+#   * Static API tokens live in the OS keychain after "Set API token…".
+# Fill placeholders (<LIKE_THIS>) per SETUP.md — values are supplied AFTER build, never
+# committed to source control.
+
+# Master switch. false (the default) = Glyphio makes no sync network calls at all.
+enabled = false
+
+# Your sync backend (any server implementing docs/SYNC-PROTOCOL.md).
+# The reference implementation lives in server/ — see SETUP.md for deploy options.
+backendUrl = "<https://sync.example.com>"
+
+# "oidc"  — single sign-on against any OIDC-compliant IdP (Okta, Entra, Auth0, Keycloak, …)
+# "token" — a static API token issued by your server admin (no IdP required)
+authMode = "oidc"
+
+# --- OIDC mode only -------------------------------------------------------------
+issuer = "<https://your-tenant.okta.com or https://login.example.com/realms/main>"
+clientId = "<OIDC_CLIENT_ID>"
+# Scopes beyond "openid". offline_access enables silent refresh; groups carries team
+# membership on most IdPs (claim name is a server-side setting).
+scopes = ["profile", "email", "offline_access", "groups"]
+# Optional: audience parameter, for IdPs that require one (e.g. Auth0 APIs).
+audience = ""
+# 0 = ephemeral loopback port (RFC 8252). Set a fixed port if your IdP requires the exact
+# redirect URI http://127.0.0.1:<port>/callback to be pre-registered.
+redirectPort = 0
+
+# Background sync interval, seconds (min 60).
+intervalSecs = 300

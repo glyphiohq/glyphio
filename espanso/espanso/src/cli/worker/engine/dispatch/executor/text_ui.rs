@@ -1,0 +1,47 @@
+/*
+ * This file is part of espanso.
+ *
+ * Copyright (C) 2019-2021 Federico Terzi
+ *
+ * espanso is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * espanso is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with espanso.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+use crate::path::Paths;
+use espanso_engine::dispatch::TextUIHandler;
+
+use crate::gui::TextUI;
+
+pub struct TextUIHandlerAdapter<'a> {
+    text_ui: &'a dyn TextUI,
+    paths: &'a Paths,
+}
+
+impl<'a> TextUIHandlerAdapter<'a> {
+    pub fn new(text_ui: &'a dyn TextUI, paths: &'a Paths) -> Self {
+        Self { text_ui, paths }
+    }
+}
+
+impl TextUIHandler for TextUIHandlerAdapter<'_> {
+    fn show_text(&self, title: &str, text: &str) -> anyhow::Result<()> {
+        self.text_ui.show_text(title, text)?;
+        Ok(())
+    }
+
+    fn show_logs(&self) -> anyhow::Result<()> {
+        self.text_ui
+            .show_file("Espanso Logs", &self.paths.runtime.join("espanso.log"))?;
+        Ok(())
+    }
+}

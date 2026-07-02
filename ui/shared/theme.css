@@ -1,0 +1,267 @@
+/*
+ * Glyphio — "Ink & Brass" design system.
+ *
+ * A quiet instrument, not a website: near-black ink surfaces, hairline strokes,
+ * one warm brass accent used sparingly, and a monospace voice reserved for the
+ * things this app is actually about — glyphs, triggers, keys. Native system
+ * type (SF Pro / SF Mono on macOS; bundled Inter / Roboto Mono as fallbacks for
+ * other platforms — no network fonts, ever).
+ *
+ * Shared by the settings, editor and history windows. Everything downstream
+ * consumes these tokens; restyle here, restyle everywhere.
+ */
+
+@font-face {
+  font-family: "Inter";
+  src: url("fonts/Inter.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Roboto Mono";
+  src: url("fonts/RobotoMono.ttf") format("truetype");
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* Ink — canvas and panels */
+  --bg: #0b0c0f;
+  --surface: #14161a;
+  --surface-2: #1b1e24;
+  --inset: #0f1114; /* input wells, code */
+
+  /* Hairlines */
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-focus: var(--accent);
+
+  /* Type colour */
+  --text: #ecedef;
+  --text-secondary: #a6aab2;
+  --text-muted: #64686f;
+
+  /* Brass — the single accent */
+  --accent: #d9a54a;
+  --accent-hover: #e6b65f;
+  --accent-ghost: rgba(217, 165, 74, 0.1);
+  --accent-ring: rgba(217, 165, 74, 0.28);
+  --accent-on: #171208; /* text on brass */
+
+  /* Back-compat aliases (older sheets reference --primary*) */
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-ghost: var(--accent-ghost);
+  --primary-on: var(--accent-on);
+
+  /* Semantics — muted, never loud */
+  --success: #86c07a;
+  --success-bg: rgba(134, 192, 122, 0.1);
+  --danger: #e0604f;
+  --danger-bg: rgba(224, 96, 79, 0.1);
+  --info: #8fb4dd;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius: 9px;
+  --radius-lg: 13px;
+
+  /* Depth */
+  --shadow-pop: 0 4px 18px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 24px 70px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --backdrop: rgba(8, 9, 11, 0.78);
+
+  /* Voice */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, monospace;
+  --font-display: var(--font-sans); /* headings are clean sans; mono is for glyphs */
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* A breath of warmth in the top-left corner — atmosphere, not decoration. */
+body {
+  background:
+    radial-gradient(1100px 700px at 12% -8%, rgba(217, 165, 74, 0.045), transparent 60%),
+    var(--bg);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+/* The app's typographic signature: small mono labels, spaced and quiet. */
+.micro-label,
+.nav-heading,
+.team-panel-title,
+.preview-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+kbd, code {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+::selection { background: var(--accent-ring); }
+
+/* Slim, quiet scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgba(255, 255, 255, 0.18); }
+
+/* --- Buttons ---------------------------------------------------------------
+ * .primary   — brass. One per surface; it should feel like the brass key on
+ *              an instrument, not a banner ad.
+ * .secondary — hairline outline.
+ * .ghost     — text-only until hovered.
+ * .danger    — restrained red outline; fills softly on hover.
+ */
+
+button {
+  font: 500 13px/1.4 var(--font-sans);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  transition: background-color 140ms ease, border-color 140ms ease,
+    color 140ms ease, box-shadow 140ms ease;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: transparent;
+  font-weight: 600;
+}
+button.primary:hover { background: var(--accent-hover); }
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+button.secondary:hover { background: var(--surface-2); border-color: rgba(255, 255, 255, 0.2); }
+
+button.ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+
+button.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: rgba(224, 96, 79, 0.4);
+}
+button.danger:hover { background: var(--danger-bg); border-color: var(--danger); }
+
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* --- Back button ------------------------------------------------------------ */
+
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.back-btn svg { width: 14px; height: 14px; flex: 0 0 auto; }
+
+/* --- Form primitives --------------------------------------------------------- */
+
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="search"],
+select,
+textarea {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--inset);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: 400 13px/1.5 var(--font-sans);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="number"]:focus,
+select:focus,
+textarea:focus {
+  border-color: rgba(217, 165, 74, 0.55);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+input[type="color"] {
+  width: 44px;
+  height: 30px;
+  padding: 2px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}

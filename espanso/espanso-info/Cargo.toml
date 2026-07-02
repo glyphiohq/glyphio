@@ -1,0 +1,24 @@
+[package]
+name = "espanso-info"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[features]
+# If the wayland feature is enabled, all X11 dependencies will be dropped
+wayland = []
+
+[dependencies]
+log.workspace = true
+anyhow.workspace = true
+espanso-package = { path = "../espanso-package" }
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+
+[build-dependencies]
+cc.workspace = true

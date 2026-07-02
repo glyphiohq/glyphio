@@ -1,0 +1,35 @@
+[package]
+name = "espanso-inject"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[features]
+# If the wayland feature is enabled, all X11 dependencies will be dropped
+# and only EVDEV-based methods will be supported.
+wayland = []
+
+[dependencies]
+espanso-info = { path = "../espanso-info" }
+log.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+enum-as-inner.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+
+[target.'cfg(target_os="linux")'.dependencies]
+libc = "0.2.85"
+scopeguard = "1.1.0"
+itertools = "0.10.0"
+
+[build-dependencies]
+cc.workspace = true

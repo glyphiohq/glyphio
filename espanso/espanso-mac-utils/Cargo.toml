@@ -1,0 +1,15 @@
+[package]
+name = "espanso-mac-utils"
+version = "0.1.0"
+authors = ["Federico Terzi <federico-terzi@users.noreply.github.com>"]
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+regex.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

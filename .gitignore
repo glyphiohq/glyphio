@@ -1,0 +1,21 @@
+# dependencies / build artifacts
+node_modules/
+target/
+dist/
+src-tauri/gen/schemas/
+src-tauri/binaries/
+.DS_Store
+
+# real runtime configuration & secrets — only *.example files are committed
+sync.toml
+server/.env
+server/*.db
+infra/terraform.tfvars
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/.terraform.lock.hcl
+
+# dev signing keychain material
+*.keychain-db
+*.p12

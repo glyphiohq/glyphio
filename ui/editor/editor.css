@@ -56,6 +56,23 @@
   cursor: not-allowed;
 }
 
+.banner-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.banner-toggle input { accent-color: var(--primary); }
+.banner-toggle span {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.banner-toggle:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+
 .actions {
   display: flex;
   gap: 8px;

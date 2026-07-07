@@ -101,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org", get(admin::get_org).put(admin::put_org))
         .route("/audit", get(admin::get_audit))
+        .route("/stats", get(admin::stats))
         .route("/teams/{team}/invites", axum::routing::post(admin::create_invite))
         .route("/teams/{team}/access/{sub}", axum::routing::delete(admin::revoke_access))
         .route("/teams/{team}/groups", get(admin::list_groups))
@@ -113,7 +114,10 @@ pub fn router(state: AppState) -> Router {
             "/teams/{team}/groups/{group_id}/acl/{sub}",
             axum::routing::put(admin::set_grant).delete(admin::remove_grant),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware))
+        // Added AFTER route_layer → unauthenticated. The console needs the issuer/client id
+        // before sign-in, and both are public knowledge (no secrets in the response).
+        .route("/config", get(admin::console_config));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/admin", get(admin::console))
@@ -869,5 +873,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Console v2 endpoints: /admin/v1/config is public (no auth), /admin/v1/stats needs
+    /// manager+ and carries team counters + activity buckets, and audit action/actor
+    /// filters narrow the result set.
+    #[tokio::test]
+    async fn console_config_stats_and_audit_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let (alice, alice_sha) = tok("alice");
+        let (carol, carol_sha) = tok("carol");
+        let tokens = format!(
+            r#"[{{"tokenSha256":"{alice_sha}","sub":"alice","teams":["sec"]}},
+                {{"tokenSha256":"{carol_sha}","sub":"carol","teams":["sec"],"role":"reader"}}]"#
+        );
+        let app = router(test_state(&dir, &tokens));
+
+        // config: unauthenticated 200 with the default scopes (no OIDC env in tests).
+        let res = app
+            .clone()
+            .oneshot(Request::get("/admin/v1/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(cfg["scopes"], "openid profile email");
+
+        // Bootstrap alice as owner, then generate audit entries (push + role change).
+        let (st, _) = req(&app, "GET", "/v1/teams/sec/changes?since=0", &alice, None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, _) = req(&app, "POST", "/v1/teams/sec/changes", &alice,
+            Some(serde_json::json!({"snippets": [snip_json("s1", "x", 1, "2026-07-07T10:00:00.000Z")], "groups": []}))).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, _) = req(&app, "PUT", "/admin/v1/teams/sec/roles/dora", &alice,
+            Some(serde_json::json!({"role": "writer"}))).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // stats as owner: sec counted with members, and today's activity bucketed.
+        let (st, stats) = req(&app, "GET", "/admin/v1/stats", &alice, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(stats["teams"][0]["team"], "sec");
+        assert!(stats["teams"][0]["members"].as_u64().unwrap() >= 1);
+        let day = &stats["activity"].as_array().unwrap()[0];
+        assert!(day["pushes"].as_u64().unwrap() >= 1);
+        assert!(day["roles"].as_u64().unwrap() >= 1);
+
+        // stats as a pinned reader → 403.
+        let (st, _) = req(&app, "GET", "/admin/v1/stats", &carol, None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+
+        // audit filters: action narrows, and a non-matching filter yields nothing.
+        let (st, entries) = req(&app, "GET", "/admin/v1/audit?action=role.set", &alice, None).await;
+        assert_eq!(st, StatusCode::OK);
+        let entries = entries.as_array().unwrap().clone();
+        assert!(!entries.is_empty());
+        assert!(entries.iter().all(|e| e["action"] == "role.set"));
+        let (_, none) = req(&app, "GET", "/admin/v1/audit?actor=nobody-matches", &alice, None).await;
+        assert!(none.as_array().unwrap().is_empty());
     }
 }

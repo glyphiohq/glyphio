@@ -245,7 +245,18 @@ fn validate(team: &str, batch: &Push) -> Result<(), ApiError> {
         check_short(&s.id, "id")?;
         check_short(&s.trigger, "trigger")?;
         check_short(&s.format, "format")?;
+        check_short(&s.kind, "kind")?;
         check_short(&s.updated_at, "updatedAt")?;
+        // Executable content never syncs: a shell command distributed to a team would be
+        // remote code execution on every member's machine. Reject, don't sanitize — the
+        // pusher must know their record was refused.
+        if s.kind == "command" || sync_proto::has_exec_vars(&s.variables) {
+            return Err(ApiError::Validation(format!(
+                "snippet {} carries executable content (command kind or shell/script \
+                 variables) — these are local-only and never sync",
+                s.id
+            )));
+        }
         if s.replacement.len() > limits::MAX_REPLACEMENT {
             return Err(ApiError::Validation(format!("snippet {} replacement too large", s.id)));
         }
@@ -278,4 +289,47 @@ fn check_short(value: &str, field: &str) -> Result<(), ApiError> {
         return Err(ApiError::Validation(format!("{field} exceeds {} bytes", limits::MAX_SHORT_STRING)));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(kind: &str, variables: Option<serde_json::Value>) -> SnippetRec {
+        SnippetRec {
+            id: "s1".into(),
+            trigger: ":t".into(),
+            replacement: "body".into(),
+            format: "plain".into(),
+            kind: kind.into(),
+            variables,
+            group_id: None,
+            app_scope: None,
+            owner: "u1".into(),
+            team: "sec".into(),
+            updated_at: "2026-07-07T00:00:00.000Z".into(),
+            version: 1,
+            deleted_at: None,
+        }
+    }
+
+    fn push_of(s: SnippetRec) -> Push {
+        Push { snippets: vec![s], groups: vec![] }
+    }
+
+    #[test]
+    fn validate_rejects_executable_content() {
+        // Command kind: refused outright.
+        assert!(validate("sec", &push_of(rec("command", None))).is_err());
+        // shell / script variables on any kind: refused.
+        for var_type in ["shell", "script"] {
+            let vars = serde_json::json!([{ "name": "x", "type": var_type, "params": {} }]);
+            assert!(validate("sec", &push_of(rec("text", Some(vars)))).is_err());
+        }
+        // Benign variables and kinds pass.
+        let date = serde_json::json!([{ "name": "d", "type": "date", "params": {} }]);
+        assert!(validate("sec", &push_of(rec("text", Some(date)))).is_ok());
+        assert!(validate("sec", &push_of(rec("form", None))).is_ok());
+        assert!(validate("sec", &push_of(rec("popup", None))).is_ok());
+    }
 }

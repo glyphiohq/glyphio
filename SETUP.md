@@ -57,6 +57,28 @@ whole contract.
 4. In Glyphio: Settings → Team sync → fill **Backend URL**, **issuer**, **client ID**,
    scopes → save → **Sign in with SSO**.
 
+### 1b-bis. Admin dashboard sign-in (`/admin`)
+
+The server bundles the admin dashboard at `GET /admin`. It signs in two ways:
+
+**OIDC in the browser (recommended):** the console runs Authorization Code + PKCE
+client-side and uses the resulting ID token as its bearer.
+
+1. Register a **second public client** in your IdP for the console (a "SPA" /
+   browser client, no secret), with:
+   - Grant type: **Authorization Code with PKCE (S256)**
+   - Redirect URI: `https://<your-server>/admin` (exact match)
+   - CORS / trusted origin: `https://<your-server>` (the browser calls the IdP's token
+     endpoint directly)
+2. Point the server at it: `ADMIN_OIDC_CLIENT_ID=<console client id>` (falls back to
+   `OIDC_AUDIENCE` if you reuse one client) and optionally
+   `ADMIN_OIDC_SCOPES="openid profile email groups"` (default `openid profile email`).
+3. Open `/admin` → **Sign in with SSO**. The token lives in the tab's session storage
+   only; the server still re-validates it on every request.
+
+**Token paste (fallback / static-token deployments):** paste an admin/owner static token
+or a raw OIDC ID token into the gate — kept in tab memory only, exactly as before.
+
 ### 1c. Where every value lives
 
 | value | where |

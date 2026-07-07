@@ -17,6 +17,8 @@ use crate::paths::AppPaths;
 #[serde(rename_all = "camelCase")]
 pub struct CaptureMeta {
     pub id: String,
+    /// Original capture time — immutable. Banner add/remove later never changes it; the
+    /// banner timestamp is always rendered from this value.
     pub captured_at: String,
     pub url: String,   // window/app title natively
     pub title: String,
@@ -28,9 +30,17 @@ pub struct CaptureMeta {
     /// Absolute on-disk paths (frontend loads them via convertFileSrc).
     pub full_path: String,
     pub thumb_path: String,
+    /// Banner note (editable after the fact — the stored PNG is content-only).
+    pub note: String,
+    /// Whether the banner is composited on view/copy/export of this capture.
+    pub banner_enabled: bool,
+    /// Legacy rows (pre-separation): the stored PNG has the banner baked in, so banner/note
+    /// edits are locked. New saves always store content-only and set this false.
+    pub banner_baked: bool,
 }
 
-/// What the frontend passes when persisting a capture (post-edit).
+/// What the frontend passes when persisting a capture (post-edit). The PNG is content-only
+/// (crop/redact/draw baked; no banner) — the banner is composited at view/export time.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCapture {
@@ -40,6 +50,25 @@ pub struct NewCapture {
     pub image_width_px: i64,
     pub image_height_px: i64,
     pub dpr: f64,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default = "default_true")]
+    pub banner_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Post-save edits to a stored capture. `None` = leave unchanged. A new content PNG
+/// (re-crop, redact…) comes with its dimensions; `captured_at` is never updatable.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureUpdate {
+    pub note: Option<String>,
+    pub banner_enabled: Option<bool>,
+    pub image_width_px: Option<i64>,
+    pub image_height_px: Option<i64>,
 }
 
 pub struct HistoryStore {
@@ -59,15 +88,38 @@ CREATE TABLE IF NOT EXISTS captures (
     dpr             REAL,
     full_path       TEXT NOT NULL,
     thumb_path      TEXT NOT NULL,
-    size_bytes      INTEGER NOT NULL
+    size_bytes      INTEGER NOT NULL,
+    note            TEXT NOT NULL DEFAULT '',
+    banner_enabled  INTEGER NOT NULL DEFAULT 1,
+    banner_baked    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_captures_captured_at ON captures(captured_at DESC);
 "#;
+
+/// Columns added after the initial release. Rows that predate the split stored the banner
+/// baked into the PNG, so `banner_baked` defaults to 1 here (vs 0 in SCHEMA for new tables).
+const MIGRATIONS: &[&str] = &[
+    "ALTER TABLE captures ADD COLUMN note TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE captures ADD COLUMN banner_enabled INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE captures ADD COLUMN banner_baked INTEGER NOT NULL DEFAULT 1",
+];
+
+const COLUMNS: &str = "id, captured_at, url, title, mode, image_width_px, image_height_px, \
+                       dpr, size_bytes, full_path, thumb_path, note, banner_enabled, banner_baked";
 
 impl HistoryStore {
     pub fn open(paths: &AppPaths) -> anyhow::Result<Self> {
         let conn = Connection::open(&paths.history_db)?;
         conn.execute_batch(SCHEMA)?;
+        for m in MIGRATIONS {
+            // Fresh tables already have the column (SCHEMA); ignore "duplicate column".
+            if let Err(e) = conn.execute(m, []) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column") {
+                    return Err(e.into());
+                }
+            }
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             images_dir: paths.history_images.clone(),
@@ -110,17 +162,22 @@ impl HistoryStore {
             size_bytes,
             full_path: full_path.to_string_lossy().to_string(),
             thumb_path: thumb_path.to_string_lossy().to_string(),
+            note: meta.note,
+            banner_enabled: meta.banner_enabled,
+            banner_baked: false,
         };
         {
             let conn = self.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO captures (id, captured_at, url, title, mode, image_width_px,
-                    image_height_px, dpr, full_path, thumb_path, size_bytes)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    image_height_px, dpr, full_path, thumb_path, size_bytes,
+                    note, banner_enabled, banner_baked)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0)",
                 rusqlite::params![
                     row.id, row.captured_at, row.url, row.title, row.mode,
                     row.image_width_px, row.image_height_px, row.dpr,
                     row.full_path, row.thumb_path, row.size_bytes,
+                    row.note, row.banner_enabled,
                 ],
             )?;
         }
@@ -128,13 +185,53 @@ impl HistoryStore {
         Ok(row)
     }
 
+    /// Edit a stored capture: note / banner toggle, and optionally replace the content PNG
+    /// (+ thumb) after a re-crop or redact. Legacy banner-baked rows are immutable.
+    pub fn update(
+        &self,
+        id: &str,
+        patch: CaptureUpdate,
+        full_png: Option<&[u8]>,
+        thumb_png: Option<&[u8]>,
+    ) -> anyhow::Result<CaptureMeta> {
+        let mut row = self
+            .get(id)?
+            .ok_or_else(|| anyhow::anyhow!("capture not found"))?;
+        if row.banner_baked {
+            anyhow::bail!("this capture predates editable history and is read-only");
+        }
+        if let Some(n) = patch.note {
+            row.note = n;
+        }
+        if let Some(b) = patch.banner_enabled {
+            row.banner_enabled = b;
+        }
+        if let Some(full) = full_png {
+            std::fs::write(self.full_path(id), full)?;
+            if let Some(thumb) = thumb_png {
+                std::fs::write(self.thumb_path(id), thumb)?;
+            }
+            let thumb_len = std::fs::metadata(self.thumb_path(id)).map(|m| m.len()).unwrap_or(0);
+            row.size_bytes = full.len() as i64 + thumb_len as i64;
+            row.image_width_px = patch.image_width_px.unwrap_or(row.image_width_px);
+            row.image_height_px = patch.image_height_px.unwrap_or(row.image_height_px);
+        }
+        self.conn.lock().unwrap().execute(
+            "UPDATE captures SET note=?2, banner_enabled=?3, size_bytes=?4,
+                image_width_px=?5, image_height_px=?6 WHERE id=?1",
+            rusqlite::params![
+                id, row.note, row.banner_enabled, row.size_bytes,
+                row.image_width_px, row.image_height_px,
+            ],
+        )?;
+        Ok(row)
+    }
+
     pub fn list(&self) -> anyhow::Result<Vec<CaptureMeta>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, captured_at, url, title, mode, image_width_px, image_height_px, dpr,
-                    size_bytes, full_path, thumb_path
-             FROM captures ORDER BY captured_at DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM captures ORDER BY captured_at DESC"
+        ))?;
         let rows = stmt.query_map([], row_to_meta)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -143,9 +240,7 @@ impl HistoryStore {
         let conn = self.conn.lock().unwrap();
         Ok(conn
             .query_row(
-                "SELECT id, captured_at, url, title, mode, image_width_px, image_height_px, dpr,
-                        size_bytes, full_path, thumb_path
-                 FROM captures WHERE id = ?1",
+                &format!("SELECT {COLUMNS} FROM captures WHERE id = ?1"),
                 [id],
                 row_to_meta,
             )
@@ -214,5 +309,8 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<CaptureMeta> {
         size_bytes: row.get(8)?,
         full_path: row.get(9)?,
         thumb_path: row.get(10)?,
+        note: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        banner_enabled: row.get::<_, Option<bool>>(12)?.unwrap_or(true),
+        banner_baked: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
     })
 }

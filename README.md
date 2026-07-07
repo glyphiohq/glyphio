@@ -8,11 +8,16 @@ wrapped in a native [Tauri](https://tauri.app) shell. Everything is local by def
 optional, **bring-your-own-backend** sync shares chosen snippet groups with your team.
 
 - **Snippets** — trigger → replacement, with plain / Markdown / rich-HTML bodies (rich text
-  pastes with formatting intact), espanso variables, folders, and per-app scoping
-  (`Slack`, `exec:<regex>`, `title:<regex>`).
-- **Capture** — global hotkeys for screen / window / region capture, a crop + redact
-  (black-out & blur) + draw + text editor, an optional timestamp/context banner, and a
-  device-local history with size-capped eviction.
+  pastes with formatting intact, inline images included), espanso variables, folders, and
+  per-app scoping (`Slack`, `exec:<regex>`, `title:<regex>`). Beyond text: **form**
+  snippets (the trigger opens a small input form; the filled template is pasted),
+  **popup** snippets (the trigger opens a cheatsheet window — images welcome), and
+  **command** snippets (run a shell command, paste its output — strictly local-only,
+  never synced).
+- **Capture** — global hotkeys for screen / frontmost-window / picker / region / scrolling
+  capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
+  timestamp/context banner you can add or remove later (the original capture time is
+  always kept), and a device-local, re-editable history with size-capped eviction.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
   or a static API token, against **any backend implementing the
   [documented protocol](docs/SYNC-PROTOCOL.md)**. Offline-first, last-write-wins.

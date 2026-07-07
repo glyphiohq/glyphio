@@ -27,6 +27,13 @@ device except content a user *deliberately* shares with a team, over a channel t
   from it exclusively, enforces per-team authorization on read and write, applies input
   validation and size limits, rate-limits, and never logs tokens or record bodies.
   Least-privilege IAM in the reference AWS deployment.
+- **Executable content never syncs.** Command snippets (`kind: command`) and espanso
+  `shell`/`script` variables are local-only by design: the server rejects them on push,
+  the client excludes them from push and **quarantines** them on pull (executable
+  variables stripped, record applied disabled) — so even a malicious or outdated server
+  cannot deliver runnable code to a teammate's machine. Imports (JSON/YAML) with
+  executable content arrive disabled until the user reviews and explicitly enables each
+  one.
 - **Trust boundary:** the backend sees team snippet plaintext (v1 has no E2E encryption —
   documented future work). Deploy it on infrastructure you trust with that content.
 
@@ -36,6 +43,12 @@ device except content a user *deliberately* shares with a team, over a channel t
 - No telemetry, no auto-update pings, no third-party services.
 - Config files carry no secrets; the app refuses `authMode`/URL combinations that would
   downgrade transport security.
+- Snippet HTML is **sanitized before rendering** in any app webview (preview, popup and
+  form windows): scripts, frames, event handlers, and `javascript:` URLs are stripped.
+  Team-synced bodies are treated as untrusted markup — the webviews hold Tauri IPC access.
+- The engine↔app bridge (popup/form snippet kinds) is a user-only (`0600`) unix socket in
+  the app data dir; it resolves only snippets that exist, are live, and are enabled, so it
+  cannot be used to surface content the store doesn't currently expose.
 - The espanso fork stays near-upstream so upstream security fixes rebase quickly.
 
 ## Reporting a vulnerability

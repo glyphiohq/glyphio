@@ -49,6 +49,10 @@ impl AppPaths {
     pub fn engine_runtime(&self) -> PathBuf {
         self.engine_config.join("runtime")
     }
+    /// Unix socket the engine's `glyphio` render extension calls back on (popup/form kinds).
+    pub fn bridge_socket(&self) -> PathBuf {
+        self.engine_runtime().join("bridge.sock")
+    }
     pub fn engine_packages(&self) -> PathBuf {
         self.engine_config.join("packages")
     }

@@ -185,6 +185,31 @@ pub fn save_capture(
         .map_err(err)
 }
 
+/// Edit a stored capture after the fact: note, banner on/off, and optionally a replacement
+/// content PNG (re-crop / redact). The original `captured_at` timestamp is never touched.
+#[tauri::command]
+pub fn update_capture(
+    state: State<AppState>,
+    id: String,
+    patch: crate::history::CaptureUpdate,
+    full_png_base64: Option<String>,
+    thumb_png_base64: Option<String>,
+) -> CmdResult<CaptureMeta> {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let full = full_png_base64
+        .map(|b| engine.decode(strip_data_url(&b)))
+        .transpose()
+        .map_err(err)?;
+    let thumb = thumb_png_base64
+        .map(|b| engine.decode(strip_data_url(&b)))
+        .transpose()
+        .map_err(err)?;
+    state
+        .history
+        .update(&id, patch, full.as_deref(), thumb.as_deref())
+        .map_err(err)
+}
+
 #[tauri::command]
 pub fn list_captures(state: State<AppState>) -> CmdResult<Vec<CaptureMeta>> {
     state.history.list().map_err(err)
@@ -397,6 +422,31 @@ pub fn relaunch_app(app: AppHandle) {
 }
 
 /// The editor requests its pending capture payload (set by the capture flow).
+/// One-shot payload pull for bridge-driven windows (`popup` / `form`) — same pattern as
+/// `take_pending_capture`, keyed by window label.
+#[tauri::command]
+pub fn take_pending_payload(state: State<AppState>, label: String) -> Option<serde_json::Value> {
+    state.pending_payloads.lock().unwrap().remove(&label)
+}
+
+/// The form window submits its filled body — completes the engine's blocked expansion.
+#[tauri::command]
+pub fn form_submit(app: AppHandle, state: State<AppState>, request_id: String, text: String) {
+    state.bridge.resolve(&request_id, crate::bridge::FormReply::Submitted(text));
+    if let Some(win) = app.get_webview_window("form") {
+        let _ = win.close();
+    }
+}
+
+/// The form window was cancelled (Esc / closed) — the expansion aborts cleanly.
+#[tauri::command]
+pub fn form_cancel(app: AppHandle, state: State<AppState>, request_id: String) {
+    state.bridge.resolve(&request_id, crate::bridge::FormReply::Cancelled);
+    if let Some(win) = app.get_webview_window("form") {
+        let _ = win.close();
+    }
+}
+
 #[tauri::command]
 pub fn take_pending_capture(app: AppHandle) -> Option<crate::capture::PendingCapture> {
     app.state::<AppState>().pending_capture.lock().unwrap().take()

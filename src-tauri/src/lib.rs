@@ -1,6 +1,7 @@
 //! Glyphio Tauri application: wires the snippet store + engine sidecar, capture/edit/history,
 //! settings, the tray, and global hotkeys into one shell.
 
+mod bridge;
 mod capture;
 mod commands;
 mod engine;
@@ -31,6 +32,11 @@ pub struct AppState {
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
     pub pending_capture: Mutex<Option<PendingCapture>>,
+    /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
+    /// the window pulls its payload once via `take_pending_payload` on load.
+    pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
+    /// Form requests from the engine bridge awaiting user input.
+    pub bridge: bridge::BridgeState,
     pub sync: sync::SyncState,
 }
 
@@ -56,6 +62,8 @@ pub fn run() {
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         pending_capture: Mutex::new(None),
+        pending_payloads: Mutex::new(std::collections::HashMap::new()),
+        bridge: bridge::BridgeState::default(),
         sync,
     };
 
@@ -98,6 +106,10 @@ pub fn run() {
                     let _ = handle.emit(event, ev.clone());
                 });
             }
+
+            // The engine's callback socket must be listening before the daemon starts —
+            // a popup/form trigger fired right after launch has to find it.
+            bridge::start(app.handle());
 
             // Launch the supervised expansion-engine daemon.
             let handle = app.handle().clone();
@@ -143,6 +155,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::save_capture,
+            commands::update_capture,
             commands::list_captures,
             commands::read_capture_data_url,
             commands::save_file,
@@ -158,6 +171,9 @@ pub fn run() {
             commands::open_history_view,
             commands::open_capture,
             commands::take_pending_capture,
+            commands::take_pending_payload,
+            commands::form_submit,
+            commands::form_cancel,
             commands::accessibility_status,
             commands::open_accessibility_settings,
             commands::restart_engine,

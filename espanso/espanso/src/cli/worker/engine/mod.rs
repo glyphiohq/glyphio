@@ -213,6 +213,14 @@ pub fn initialize_and_spawn(
             let choice_adapter = ChoiceSelectorAdapter::new(&modulo_search_ui);
             let choice_extension =
                 espanso_render::extension::choice::ChoiceExtension::new(&choice_adapter);
+            // GLYPHIO DEVIATION: bridge extensions for popup/form snippet kinds (native
+            // Tauri windows in the Glyphio app; this fork does not build modulo).
+            #[cfg(unix)]
+            let glyphio_form_extension =
+                espanso_render::extension::glyphio::GlyphioExtension::new_form();
+            #[cfg(unix)]
+            let glyphio_popup_extension =
+                espanso_render::extension::glyphio::GlyphioExtension::new_popup();
             let renderer = espanso_render::create(vec![
                 &clipboard_extension,
                 &date_extension,
@@ -222,6 +230,10 @@ pub fn initialize_and_spawn(
                 &shell_extension,
                 &form_extension,
                 &choice_extension,
+                #[cfg(unix)]
+                &glyphio_form_extension,
+                #[cfg(unix)]
+                &glyphio_popup_extension,
             ]);
             let renderer_adapter = RendererAdapter::new(&match_cache, &config_manager, &renderer);
             let path_provider = PathProviderAdapter::new(&paths);

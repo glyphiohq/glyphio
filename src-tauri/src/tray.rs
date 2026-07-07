@@ -9,9 +9,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let cap_visible = MenuItem::with_id(app, "cap_visible", "Capture Visible Area", true, None::<&str>)?;
     let cap_snip = MenuItem::with_id(app, "cap_snip", "Capture Region (Snip)", true, None::<&str>)?;
     let cap_full = MenuItem::with_id(app, "cap_full", "Capture Full Window", true, None::<&str>)?;
+    let cap_front = MenuItem::with_id(app, "cap_front", "Capture Frontmost Window", true, None::<&str>)?;
     let cap_scroll = MenuItem::with_id(app, "cap_scroll", "Capture Scrolling Area", true, None::<&str>)?;
     let cap_scroll_page = MenuItem::with_id(app, "cap_scroll_page", "Capture Scrolling Page", true, None::<&str>)?;
-    let capture_menu = Submenu::with_items(app, "Capture", true, &[&cap_visible, &cap_snip, &cap_full, &cap_scroll, &cap_scroll_page])?;
+    let capture_menu = Submenu::with_items(app, "Capture", true, &[&cap_visible, &cap_snip, &cap_full, &cap_front, &cap_scroll, &cap_scroll_page])?;
 
     let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Snippets & Settings…", true, None::<&str>)?;
@@ -41,6 +42,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 "cap_scroll" => { let _ = crate::capture::trigger(&inner, "scrolling"); }
                 "cap_scroll_page" => { let _ = crate::capture::trigger(&inner, "scrollingPage"); }
                 "cap_full" => { let _ = crate::capture::trigger(&inner, "fullWindow"); }
+                "cap_front" => { let _ = crate::capture::trigger(&inner, "frontWindow"); }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
                 _ => {}

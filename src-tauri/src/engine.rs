@@ -61,7 +61,9 @@ impl Supervisor {
             .args(["daemon"])
             .env("ESPANSO_CONFIG_DIR", s(&paths.engine_config))
             .env("ESPANSO_RUNTIME_DIR", s(&paths.engine_runtime()))
-            .env("ESPANSO_PACKAGE_DIR", s(&paths.engine_packages()));
+            .env("ESPANSO_PACKAGE_DIR", s(&paths.engine_packages()))
+            // The fork's `glyphio` render extension calls back here for popup/form kinds.
+            .env("GLYPHIO_IPC_SOCKET", s(&paths.bridge_socket()));
 
         self.stopping.store(false, Ordering::SeqCst);
         let (mut rx, child) = cmd.spawn()?;

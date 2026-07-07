@@ -6,6 +6,7 @@
 
 import { config, resolveSettings, DEFAULT_SHORTCUTS } from '../config.js';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
+import { compositeBanner } from '../shared/banner.js';
 
 // Glyphio: Tauri bridge (chrome.* APIs replaced by native commands/plugins).
 const { invoke } = window.__TAURI__.core;
@@ -19,6 +20,7 @@ let historySaved = false; // save the final artifact to history at most once per
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const noteInput = document.getElementById('note');
+const bannerToggle = document.getElementById('banner-toggle');
 const copyBtn = document.getElementById('copy');
 const downloadBtn = document.getElementById('download');
 const retryBtn = document.getElementById('retry');
@@ -63,16 +65,21 @@ const isHistoryMode = Boolean(historyId);
 
 // --- State ---------------------------------------------------------------
 
-let meta = null;           // json meta (from cache or history row)
-let contentBitmap = null;  // ImageBitmap of the stitched content
-let settings = null;       // merged user settings + defaults
-let currentBlob = null;    // current banner+content as PNG Blob
+let meta = null;            // json meta (from cache or history row)
+// Content-only pixels (crop/redact/draw baked in, NO banner). The visible #canvas is always
+// a composite of banner + contentCanvas, so the banner/note stay editable after any edit,
+// and history persists the content separately from the banner.
+let contentCanvas = null;
+let contentCtx = null;
+let settings = null;        // merged user settings + defaults
+let currentBlob = null;     // current composited (banner+content) PNG Blob
+let bannerEnabled = true;   // per-capture banner on/off (persisted on history rows)
+let lastBannerPxH = 0;      // banner height of the last composite, for overlay→content coords
+let savedId = '';           // history row id once saved — later edits update it in place
 let autoCopyDone = false;
 let noteTimer = null;
-// Once a crop has been applied, the canvas IS the image — banner + note edits
-// are disabled so a subsequent render() can't undo the crop. The flag stays
-// true for the life of the preview tab; users can reopen from history to get
-// the uncropped original back.
+// Legacy history rows only (saved before the content/banner split): the stored PNG has the
+// banner baked in, so banner + note edits are locked and edits are view-only (not persisted).
 let bannerBaked = false;
 let cropModeActive = false;
 let redactModeActive = false;
@@ -87,20 +94,24 @@ async function init() {
   await loadPayload();
   document.title = `${config.name} — ${meta.title || meta.url}`;
 
-  // Pre-fill the note field with the last one the user typed this session.
-  // Skip in history mode — looking at a stored capture shouldn't mutate it.
-  if (!isHistoryMode) {
+  if (isHistoryMode) {
+    savedId = historyId;
+    bannerEnabled = meta.bannerEnabled !== false;
+    if (!meta.bannerBaked) noteInput.value = meta.note || '';
+  } else {
+    // Pre-fill the note field with the last one the user typed this session.
     const lastNote = localStorage.getItem(LAST_NOTE_KEY);
     if (lastNote) noteInput.value = lastNote;
   }
+  bannerToggle.checked = bannerEnabled;
 
   wireEvents();
 
-  if (isHistoryMode) {
-    // Stored image already has the banner baked in — display it directly.
+  if (isHistoryMode && meta.bannerBaked) {
+    // Legacy row: stored image already has the banner baked in — display it directly.
     await displayStored();
   } else {
-    await render({ autoCopy: settings.autoCopyOnOpen });
+    await render({ autoCopy: !isHistoryMode && settings.autoCopyOnOpen });
   }
 }
 
@@ -127,9 +138,11 @@ async function loadPayload() {
       imageWidthPx: row.imageWidthPx,
       imageHeightPx: row.imageHeightPx,
       dpr: row.dpr || 1,
+      note: row.note || '',
+      bannerEnabled: row.bannerEnabled !== false,
+      bannerBaked: Boolean(row.bannerBaked),
     };
-    if (contentBitmap) contentBitmap.close();
-    contentBitmap = await createImageBitmap(await dataUrlToBlob(dataUrl));
+    await setContentFromBlob(await dataUrlToBlob(dataUrl));
   } else {
     const p = await invoke('take_pending_capture');
     if (!p) {
@@ -144,42 +157,70 @@ async function loadPayload() {
       imageWidthPx: p.width,
       imageHeightPx: p.height,
       dpr: p.dpr || 1,
+      bannerBaked: false,
     };
-    if (contentBitmap) contentBitmap.close();
-    contentBitmap = await createImageBitmap(await dataUrlToBlob(p.pngDataUrl));
+    await setContentFromBlob(await dataUrlToBlob(p.pngDataUrl));
   }
   const modeLabel = isHistoryMode ? `history · ${meta.mode}` : meta.mode;
   metaLineEl.textContent = `${modeLabel} · ${meta.imageWidthPx}×${meta.imageHeightPx}px · ${meta.url}`;
 }
 
-// History mode: the stored PNG already contains the banner, so draw it straight
+// Decode a PNG blob into the content canvas (detached; the visible canvas composites it).
+async function setContentFromBlob(blob) {
+  const bmp = await createImageBitmap(blob);
+  contentCanvas = document.createElement('canvas');
+  contentCanvas.width = bmp.width;
+  contentCanvas.height = bmp.height;
+  contentCtx = contentCanvas.getContext('2d');
+  contentCtx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+}
+
+// Legacy history row: the stored PNG already contains the banner, so draw it straight
 // onto the canvas (bypassing render()'s banner composition) and lock editing.
 async function displayStored() {
-  canvas.width = contentBitmap.width;
-  canvas.height = contentBitmap.height;
-  ctx.drawImage(contentBitmap, 0, 0);
+  canvas.width = contentCanvas.width;
+  canvas.height = contentCanvas.height;
+  ctx.drawImage(contentCanvas, 0, 0);
   currentBlob = await canvasToPngBlob(canvas);
   bannerBaked = true;
 }
 
 function wireEvents() {
-  if (isHistoryMode) {
-    // History mode: note is locked (saved captures shouldn't be mutated);
+  if (isHistoryMode && meta.bannerBaked) {
+    // Legacy history row (banner baked into the PNG): note + banner are locked;
     // retry doesn't make sense because the original tab may be gone.
     noteInput.disabled = true;
-    noteInput.placeholder = 'Saved capture — note is read-only';
+    noteInput.placeholder = 'Saved before editable history — note is read-only';
+    bannerToggle.disabled = true;
+    retryBtn.disabled = true;
+    retryBtn.title = 'Retry is not available on history entries';
+  } else if (isHistoryMode) {
+    // Editable history row: note + banner edits persist to the stored entry.
+    // The banner timestamp always renders from the original captured_at.
+    noteInput.addEventListener('input', () => {
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => {
+        render({ autoCopy: false }).then(() => persistMeta());
+      }, 300);
+    });
     retryBtn.disabled = true;
     retryBtn.title = 'Retry is not available on history entries';
   } else {
     noteInput.addEventListener('input', () => {
       clearTimeout(noteTimer);
       noteTimer = setTimeout(() => {
-        render({ autoCopy: false });
+        render({ autoCopy: false }).then(() => persistMeta());
         localStorage.setItem(LAST_NOTE_KEY, noteInput.value);
       }, 200);
     });
     retryBtn.addEventListener('click', () => retry().catch((e) => setStatus(e.message, 'err')));
   }
+
+  bannerToggle.addEventListener('change', () => {
+    bannerEnabled = bannerToggle.checked;
+    render({ autoCopy: false }).then(() => persistMeta()).catch((e) => setStatus(e.message, 'err'));
+  });
 
   copyBtn.addEventListener('click', () => copyToClipboard().catch((e) => setStatus(e.message, 'err')));
   downloadBtn.addEventListener('click', () => downloadPng().catch((e) => setStatus(e.message, 'err')));
@@ -375,29 +416,14 @@ function renderShortcutHint() {
 // --- Rendering ------------------------------------------------------------
 
 async function render({ autoCopy }) {
-  if (!contentBitmap || !meta) return;
-  // After a crop is applied, #canvas already holds the final pixels and
-  // currentBlob is the exported PNG. Re-running render() would overwrite
-  // both from the source contentBitmap + banner, undoing the crop. Skip.
+  if (!contentCanvas || !meta) return;
+  // Legacy history rows never re-render — the stored PNG (banner baked in) is the image.
   if (bannerBaked) return;
 
-  const scale = meta.dpr;
-  const imgW = contentBitmap.width;
   const note = noteInput.value.trim();
-
-  const bannerCssH = computeBannerCssHeight(note);
-  const bannerPxH = Math.round(bannerCssH * scale);
-
-  canvas.width = imgW;
-  canvas.height = bannerPxH + contentBitmap.height;
-
-  if (bannerPxH > 0) {
-    ctx.fillStyle = settings.bannerBg;
-    ctx.fillRect(0, 0, canvas.width, bannerPxH);
-    drawBanner(scale, note);
-  }
-
-  ctx.drawImage(contentBitmap, 0, bannerPxH);
+  lastBannerPxH = compositeBanner(canvas, contentCanvas, {
+    meta, settings, note, enabled: bannerEnabled,
+  });
 
   currentBlob = await canvasToPngBlob(canvas);
 
@@ -412,131 +438,7 @@ async function render({ autoCopy }) {
   }
 }
 
-function showFrameUrlLine() {
-  return settings.showTargetFrameUrl
-    && meta.targetFrameUrl
-    && meta.targetFrameUrl !== meta.url;
-}
-
-function hasAnyBannerContent(note) {
-  return Boolean(settings.showTimestamp || settings.showUrl || showFrameUrlLine() || note);
-}
-
-function computeBannerCssHeight(note) {
-  if (!hasAnyBannerContent(note)) return 0;
-  const b = config.banner;
-  let h = b.paddingPx;
-  if (settings.showTimestamp) h += b.timestampFontPx;
-  if (settings.showUrl) {
-    if (settings.showTimestamp) h += b.lineGapPx;
-    h += b.urlFontPx;
-  }
-  if (showFrameUrlLine()) {
-    if (settings.showTimestamp || settings.showUrl) h += b.lineGapPx;
-    h += b.urlFontPx;
-  }
-  if (note) {
-    if (settings.showTimestamp || settings.showUrl || showFrameUrlLine()) h += b.lineGapPx;
-    h += b.noteFontPx;
-  }
-  h += b.paddingPx;
-  return h;
-}
-
-function drawBanner(scale, note) {
-  const b = config.banner;
-  ctx.textBaseline = 'top';
-  let y = b.paddingPx * scale;
-  let prevLineExists = false;
-
-  if (settings.showTimestamp) {
-    ctx.font = `bold ${b.timestampFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerFg;
-    ctx.fillText(formatTimestamp(meta.capturedAt), b.paddingPx * scale, y);
-    y += b.timestampFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (settings.showUrl) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.urlFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerMuted;
-    ctx.fillText(
-      truncateToWidth(meta.url, canvas.width - 2 * b.paddingPx * scale),
-      b.paddingPx * scale,
-      y
-    );
-    y += b.urlFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (showFrameUrlLine()) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.urlFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerMuted;
-    ctx.fillText(
-      `↳ ${truncateToWidth(meta.targetFrameUrl, canvas.width - 2 * b.paddingPx * scale - 20)}`,
-      b.paddingPx * scale,
-      y
-    );
-    y += b.urlFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (note) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.noteFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerFg;
-    ctx.fillText(
-      truncateToWidth(note, canvas.width - 2 * b.paddingPx * scale),
-      b.paddingPx * scale,
-      y
-    );
-  }
-}
-
-function formatTimestamp(iso) {
-  const d = new Date(iso);
-  const locale = settings.locale === 'device' ? undefined : settings.locale;
-  const tz = settings.timezone === 'device' ? undefined : settings.timezone;
-
-  switch (settings.timestampFormat) {
-    case 'iso-8601':
-      if (settings.timezone === 'device') {
-        return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
-      }
-      return formatIsoInTz(d, tz);
-    case 'utc-human':
-      return new Intl.DateTimeFormat('en-GB', {
-        dateStyle: 'medium', timeStyle: 'long', timeZone: 'UTC'
-      }).format(d);
-    case 'device-locale':
-    default:
-      return new Intl.DateTimeFormat(locale, {
-        dateStyle: 'medium', timeStyle: 'long', timeZone: tz
-      }).format(d);
-  }
-}
-
-function formatIsoInTz(d, tz) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-  }).formatToParts(d).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${tz}`;
-}
-
-function truncateToWidth(text, maxW) {
-  if (ctx.measureText(text).width <= maxW) return text;
-  const ellipsis = '…';
-  let lo = 0, hi = text.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (ctx.measureText(text.slice(0, mid) + ellipsis).width <= maxW) lo = mid;
-    else hi = mid - 1;
-  }
-  return text.slice(0, lo) + ellipsis;
-}
+// Banner layout/drawing lives in ../shared/banner.js (shared with the history list).
 
 // --- Edit-mode helpers ----------------------------------------------------
 // Shared by Crop / Redact / Draw.
@@ -594,24 +496,40 @@ function ensureExitOtherModes(target) {
 }
 
 // --- Crop -----------------------------------------------------------------
-// Post-capture cropping tool. Operates on #canvas pixels directly; the source
-// contentBitmap / stored blob are not mutated, so reopening the entry from
-// history brings the original back.
+// Cropping tool. The selection is drawn over the composited canvas; Apply maps it into
+// content coordinates and rewrites contentCanvas (the banner is regenerated on render,
+// never cropped). On history rows the stored content PNG is updated in place.
 
 const cropState = {
   dragging: false,
-  startX: 0,
+  mode: 'new',  // 'new' (drag a fresh rect) | 'move' | 'resize' (from a corner handle)
+  startX: 0,    // anchor point: drag origin, or the fixed opposite corner while resizing
   startY: 0,
-  rect: null, // { x, y, w, h } in canvas pixels
+  grabDX: 0,    // pointer offset inside the rect while moving
+  grabDY: 0,
+  rect: null,   // { x, y, w, h } in canvas pixels
   listeners: null
 };
 
+// Which part of the current selection a point grabs: a corner handle name, 'move' for the
+// interior, or null (outside — starts a new selection).
+function cropHandleAt(p) {
+  const r = cropState.rect;
+  if (!r) return null;
+  const tol = Math.max(10, Math.round(10 * (meta?.dpr || 1)));
+  const corners = {
+    nw: [r.x, r.y], ne: [r.x + r.w, r.y],
+    sw: [r.x, r.y + r.h], se: [r.x + r.w, r.y + r.h],
+  };
+  for (const [name, [cx, cy]] of Object.entries(corners)) {
+    if (Math.abs(p.x - cx) <= tol && Math.abs(p.y - cy) <= tol) return name;
+  }
+  if (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) return 'move';
+  return null;
+}
+
 function enterCropMode() {
   if (cropModeActive || !currentBlob) return;
-  if (bannerBaked) {
-    setStatus('Already cropped. Reopen from History to start over.', 'info');
-    return;
-  }
   if (!ensureExitOtherModes('crop')) return;
   cropModeActive = true;
   document.body.classList.add('cropping');
@@ -625,17 +543,38 @@ function enterCropMode() {
   const onDown = (e) => {
     if (e.button !== 0) return;
     const p = eventToCanvasXY(e);
+    const grab = cropHandleAt(p);
     cropState.dragging = true;
-    cropState.startX = p.x;
-    cropState.startY = p.y;
-    cropState.rect = { x: p.x, y: p.y, w: 0, h: 0 };
+    if (grab === 'move') {
+      cropState.mode = 'move';
+      cropState.grabDX = p.x - cropState.rect.x;
+      cropState.grabDY = p.y - cropState.rect.y;
+    } else if (grab) {
+      // Resize from a corner: anchor the OPPOSITE corner and drag as usual.
+      const r = cropState.rect;
+      cropState.mode = 'resize';
+      cropState.startX = grab.includes('w') ? r.x + r.w : r.x;
+      cropState.startY = grab.includes('n') ? r.y + r.h : r.y;
+      cropState.rect = rectFromPoints(cropState.startX, cropState.startY, p.x, p.y);
+    } else {
+      cropState.mode = 'new';
+      cropState.startX = p.x;
+      cropState.startY = p.y;
+      cropState.rect = { x: p.x, y: p.y, w: 0, h: 0 };
+    }
     drawCropOverlay();
     e.preventDefault();
   };
   const onMove = (e) => {
     if (!cropState.dragging) return;
     const p = eventToCanvasXY(e);
-    cropState.rect = rectFromPoints(cropState.startX, cropState.startY, p.x, p.y);
+    if (cropState.mode === 'move') {
+      const r = cropState.rect;
+      r.x = Math.max(0, Math.min(p.x - cropState.grabDX, cropOverlay.width - r.w));
+      r.y = Math.max(0, Math.min(p.y - cropState.grabDY, cropOverlay.height - r.h));
+    } else {
+      cropState.rect = rectFromPoints(cropState.startX, cropState.startY, p.x, p.y);
+    }
     drawCropOverlay();
   };
   const onUp = () => { cropState.dragging = false; };
@@ -643,7 +582,7 @@ function enterCropMode() {
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   cropState.listeners = { onDown, onMove, onUp };
-  setStatus('Crop mode. Drag on the image, then Apply or Esc.', 'info');
+  setStatus('Crop mode. Drag on the image — corners resize, inside moves. Enter applies, Esc cancels.', 'info');
 }
 
 function exitCropMode() {
@@ -696,33 +635,66 @@ function drawCropOverlay() {
   octx.strokeStyle = '#60a5fa';
   octx.lineWidth = Math.max(1, Math.round(meta?.dpr || 1));
   octx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+  // Corner drag handles.
+  const hs = Math.max(6, Math.round(6 * (meta?.dpr || 1)));
+  octx.fillStyle = '#60a5fa';
+  for (const [cx, cy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+    octx.fillRect(cx - hs / 2, cy - hs / 2, hs, hs);
+  }
+}
+
+/// Map a rect from composited-canvas coords to content coords, clipped to the content
+/// bounds (the banner region above y=lastBannerPxH is regenerated, never cropped/edited).
+function toContentRect(r) {
+  const x = Math.max(0, r.x);
+  const y = Math.max(0, r.y - lastBannerPxH);
+  const right = Math.min(r.x + r.w, contentCanvas.width);
+  const bottom = Math.min(r.y + r.h - lastBannerPxH, contentCanvas.height);
+  if (right - x < 1 || bottom - y < 1) return null;
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+// Recomposite + persist after an edit landed on contentCanvas. Legacy rows (banner baked)
+// instead refresh the flat canvas — their edits stay view-only, exactly as before.
+async function refreshAfterEdit() {
+  if (bannerBaked) {
+    canvas.width = contentCanvas.width;
+    canvas.height = contentCanvas.height;
+    ctx.drawImage(contentCanvas, 0, 0);
+    currentBlob = await canvasToPngBlob(canvas);
+    return;
+  }
+  await render({ autoCopy: false });
+  await persistContent();
 }
 
 async function applyCrop() {
-  const r = cropState.rect;
-  if (!r || r.w < 4 || r.h < 4) {
+  const raw = cropState.rect;
+  if (!raw || raw.w < 4 || raw.h < 4) {
     setStatus('Drag a region first.', 'err');
     return;
   }
-  // Snapshot the pixels, resize #canvas, redraw at origin.
+  const r = toContentRect(raw);
+  if (!r || r.w < 4 || r.h < 4) {
+    setStatus('The selection must include image content (the banner is regenerated, not cropped).', 'err');
+    return;
+  }
+  // Snapshot the content pixels, resize the content canvas, redraw at origin.
   const tmp = new OffscreenCanvas(r.w, r.h);
-  tmp.getContext('2d').drawImage(canvas, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-  canvas.width = r.w;
-  canvas.height = r.h;
-  ctx.drawImage(tmp, 0, 0);
-  currentBlob = await canvasToPngBlob(canvas);
-  bannerBaked = true;
-  noteInput.disabled = true;
-  noteInput.placeholder = 'Cropped — note locked';
+  tmp.getContext('2d').drawImage(contentCanvas, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  contentCanvas.width = r.w;
+  contentCanvas.height = r.h;
+  contentCtx.drawImage(tmp, 0, 0);
   exitCropMode();
-  setStatus(`Cropped to ${r.w}×${r.h}px. Copy/Download now export the crop.`, 'ok');
+  await refreshAfterEdit();
+  setStatus(`Cropped to ${r.w}×${r.h}px.`, 'ok');
 }
 
 // --- Redact mode ----------------------------------------------------------
 // Paint black boxes or Gaussian-blurred regions over the current canvas.
-// Mirrors cropMode but supports multiple rectangles. Like crop, mutates the
-// preview canvas only — the stored blob / history row stays unchanged so
-// reopening from History gives the unredacted original back.
+// Mirrors cropMode but supports multiple rectangles. Like crop, Apply lands on
+// contentCanvas and (on saved/history rows) persists — redaction is an intentional,
+// permanent removal of sensitive pixels. Legacy banner-baked rows stay view-only.
 
 const redactState = {
   dragging: false,
@@ -836,30 +808,34 @@ async function applyRedact() {
   }
   const mode = document.querySelector('input[name="redact-mode"]:checked')?.value || 'black';
 
+  // Regions land on the content canvas — clip away any part covering the banner.
+  const contentRects = rects.map(toContentRect).filter(Boolean);
+  if (contentRects.length === 0) {
+    setStatus('The regions must cover image content (the banner is regenerated, not stored).', 'err');
+    return;
+  }
+
   if (mode === 'black') {
-    ctx.save();
-    ctx.fillStyle = '#000';
-    for (const r of rects) ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.restore();
+    contentCtx.save();
+    contentCtx.fillStyle = '#000';
+    for (const r of contentRects) contentCtx.fillRect(r.x, r.y, r.w, r.h);
+    contentCtx.restore();
   } else {
     // Blur: copy each rect through a Canvas2D blur filter back onto itself.
     // Snapshot first so we read from a stable source even when rects overlap.
-    const snap = new OffscreenCanvas(canvas.width, canvas.height);
-    snap.getContext('2d').drawImage(canvas, 0, 0);
-    ctx.save();
-    ctx.filter = 'blur(12px)';
-    for (const r of rects) {
-      ctx.drawImage(snap, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+    const snap = new OffscreenCanvas(contentCanvas.width, contentCanvas.height);
+    snap.getContext('2d').drawImage(contentCanvas, 0, 0);
+    contentCtx.save();
+    contentCtx.filter = 'blur(12px)';
+    for (const r of contentRects) {
+      contentCtx.drawImage(snap, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
     }
-    ctx.restore();
+    contentCtx.restore();
   }
 
-  currentBlob = await canvasToPngBlob(canvas);
-  bannerBaked = true;
-  noteInput.disabled = true;
-  noteInput.placeholder = 'Redacted — note locked';
   exitRedactMode();
-  setStatus(`Redacted ${rects.length} region${rects.length > 1 ? 's' : ''} (${mode}). Copy/Download now export the redacted image.`, 'ok');
+  await refreshAfterEdit();
+  setStatus(`Redacted ${contentRects.length} region${contentRects.length > 1 ? 's' : ''} (${mode}).`, 'ok');
 }
 
 // --- Edit dropdown helpers -------------------------------------------------
@@ -887,8 +863,8 @@ function closeEditMenu() {
 //     O(N) per redraw, trivial for typical human-scale drawings (<500 pts).
 //   - Apply makes a single pass through the shape list to rasterise onto
 //     the main canvas; the overlay canvas is cleared and discarded.
-// Like crop / redact, never mutates the stored blob — original lives on in
-// History.
+// Like crop / redact, Apply lands on contentCanvas and persists to the saved
+// history row (legacy banner-baked rows stay view-only).
 
 const DRAW_TOOLS = new Set(['rect', 'rect-fill', 'arrow', 'marker']);
 const drawState = {
@@ -1090,15 +1066,17 @@ async function applyDraw() {
     setStatus('Draw something first, or Cancel.', 'err');
     return;
   }
-  // Single pass to rasterise all shapes onto the main canvas.
-  for (const s of drawState.shapes) drawShape(ctx, s);
-  currentBlob = await canvasToPngBlob(canvas);
-  bannerBaked = true;
-  noteInput.disabled = true;
-  noteInput.placeholder = 'Annotated — note locked';
+  // Single pass to rasterise all shapes onto the content canvas (shifted out of the
+  // banner region — anything drawn over the banner clips away, since the banner is
+  // regenerated on every render).
+  contentCtx.save();
+  contentCtx.translate(0, -lastBannerPxH);
+  for (const s of drawState.shapes) drawShape(contentCtx, s);
+  contentCtx.restore();
   const count = drawState.shapes.length;
   exitDrawMode();
-  setStatus(`Annotated ${count} shape${count > 1 ? 's' : ''}. Copy/Download now export the annotated image.`, 'ok');
+  await refreshAfterEdit();
+  setStatus(`Annotated ${count} shape${count > 1 ? 's' : ''}.`, 'ok');
 }
 
 // --- Text mode ------------------------------------------------------------
@@ -1107,7 +1085,7 @@ async function applyDraw() {
 // an inline <input> at that point; Enter commits, Esc cancels just that
 // edit. User text is rendered via ctx.fillText() — glyphs only, never
 // HTML — and read via inputEl.value, capped at TEXT_MAX_LEN. Like the
-// other edit modes, never mutates the stored blob.
+// other edit modes, Apply lands on contentCanvas and persists to saved rows.
 
 const TEXT_SIZE_MIN = 12;
 const TEXT_SIZE_MAX = 56;
@@ -1317,14 +1295,14 @@ async function applyText() {
     setStatus('Type something first, or Cancel.', 'err');
     return;
   }
-  for (const s of textState.shapes) drawTextShape(ctx, s);
-  currentBlob = await canvasToPngBlob(canvas);
-  bannerBaked = true;
-  noteInput.disabled = true;
-  noteInput.placeholder = 'Annotated — note locked';
+  contentCtx.save();
+  contentCtx.translate(0, -lastBannerPxH);
+  for (const s of textState.shapes) drawTextShape(contentCtx, s);
+  contentCtx.restore();
   const count = textState.shapes.length;
   exitTextMode();
-  setStatus(`Annotated ${count} text label${count > 1 ? 's' : ''}. Copy/Download now export the annotated image.`, 'ok');
+  await refreshAfterEdit();
+  setStatus(`Annotated ${count} text label${count > 1 ? 's' : ''}.`, 'ok');
 }
 
 // --- Actions --------------------------------------------------------------
@@ -1354,29 +1332,70 @@ async function downloadPng() {
   setStatus(`Saved ${path}`, 'ok');
 }
 
-// Persist the current (banner + edits) artifact to local history — at most once
-// per editor session, and never for a capture opened FROM history.
+// Persist the capture to local history — at most once per editor session, and never for a
+// capture opened FROM history. Stores the CONTENT-ONLY PNG plus banner meta (note, on/off):
+// the banner is composited at view/export time, so it stays editable and the original
+// captured_at timestamp is preserved verbatim.
 async function saveToHistoryOnce() {
-  if (historySaved || isHistoryMode || !settings.historyEnabled || !currentBlob) return;
+  if (historySaved || isHistoryMode || !settings.historyEnabled || !contentCanvas) return;
   historySaved = true;
   try {
-    const fullDataUrl = await blobToDataUrl(currentBlob);
-    const thumbDataUrl = await makeThumbnailDataUrl(currentBlob, 320);
-    await invoke('save_capture', {
+    const contentBlob = await canvasToPngBlob(contentCanvas);
+    const fullDataUrl = await blobToDataUrl(contentBlob);
+    const thumbDataUrl = await makeThumbnailDataUrl(contentBlob, 320);
+    const row = await invoke('save_capture', {
       meta: {
         url: meta.url || '',
         title: meta.title || '',
         mode: meta.mode || '',
-        imageWidthPx: canvas.width,
-        imageHeightPx: canvas.height,
+        imageWidthPx: contentCanvas.width,
+        imageHeightPx: contentCanvas.height,
         dpr: meta.dpr || 1,
+        note: noteInput.value.trim(),
+        bannerEnabled,
       },
       fullPngBase64: fullDataUrl,
       thumbPngBase64: thumbDataUrl,
     });
+    savedId = row?.id || '';
   } catch (err) {
     historySaved = false; // allow a retry on the next action
     console.warn('save to history failed:', err);
+  }
+}
+
+// Push note / banner-toggle changes to the stored history row (history mode, or a live
+// session that has already saved once). No-op otherwise — the eventual save picks them up.
+async function persistMeta() {
+  if (!savedId || bannerBaked) return;
+  try {
+    await invoke('update_capture', {
+      id: savedId,
+      patch: { note: noteInput.value.trim(), bannerEnabled },
+    });
+  } catch (err) {
+    console.warn('history meta update failed:', err);
+  }
+}
+
+// Push an edited content PNG (crop/redact/draw/text) to the stored history row.
+async function persistContent() {
+  if (!savedId || bannerBaked || !contentCanvas) return;
+  try {
+    const contentBlob = await canvasToPngBlob(contentCanvas);
+    await invoke('update_capture', {
+      id: savedId,
+      patch: {
+        note: noteInput.value.trim(),
+        bannerEnabled,
+        imageWidthPx: contentCanvas.width,
+        imageHeightPx: contentCanvas.height,
+      },
+      fullPngBase64: await blobToDataUrl(contentBlob),
+      thumbPngBase64: await makeThumbnailDataUrl(contentBlob, 320),
+    });
+  } catch (err) {
+    console.warn('history content update failed:', err);
   }
 }
 

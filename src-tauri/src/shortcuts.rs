@@ -19,6 +19,7 @@ pub fn register(app: &AppHandle) -> anyhow::Result<()> {
         &s.shortcut_capture_visible,
         &s.shortcut_capture_snip,
         &s.shortcut_capture_full,
+        &s.shortcut_capture_front_window,
         &s.shortcut_capture_scroll,
         &s.shortcut_capture_scroll_page,
         &s.shortcut_open_history,
@@ -55,6 +56,8 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
         dispatch_capture(app, "snip");
     } else if matches(shortcut, &s.shortcut_capture_full) {
         dispatch_capture(app, "fullWindow");
+    } else if matches(shortcut, &s.shortcut_capture_front_window) {
+        dispatch_capture(app, "frontWindow");
     } else if matches(shortcut, &s.shortcut_capture_scroll) {
         dispatch_capture(app, "scrolling");
     } else if matches(shortcut, &s.shortcut_capture_scroll_page) {

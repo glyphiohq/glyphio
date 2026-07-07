@@ -4,6 +4,9 @@
 // engine's config, which hot-reloads. Rich snippets use the engine's native rich injection.
 
 import { icon } from '../shared/icons.js';
+import { resolveSettings } from '../config.js';
+import { compositeBanner } from '../shared/banner.js';
+import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -31,11 +34,26 @@ const FORMATS = [
   { id: 'markdown', label: 'Markdown', badge: 'M↓' },
 ];
 
+const KINDS = [
+  { id: 'text', label: 'Text' },
+  { id: 'form', label: 'Form' },
+  { id: 'popup', label: 'Popup' },
+  { id: 'command', label: 'Command' },
+];
+
+const KIND_HINTS = {
+  text: 'Classic expansion — the content replaces the trigger.',
+  form: 'Typing the trigger opens a small form; the filled-in content is pasted.',
+  popup: 'Typing the trigger opens a popup window showing the content (great for cheatsheets — images welcome). Nothing is pasted.',
+  command: 'Runs a shell command and pastes its output. Runs on THIS device only — command snippets never sync.',
+};
+
 const SETTINGS_SECTIONS = [
   { title: 'Capture modes', fields: [
     ['enableVisibleCapture', 'toggle', 'Visible-area (current screen)'],
     ['enableSnipCapture', 'toggle', 'Region / snip (picker)'],
     ['enableFullWindowCapture', 'toggle', 'Full window (picker)'],
+    ['enableFrontWindowCapture', 'toggle', 'Frontmost window (no picker — e.g. just the browser)'],
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
   { title: 'Edit tools', fields: [
@@ -60,6 +78,7 @@ const SETTINGS_SECTIONS = [
     ['shortcutCaptureFull', 'text', 'Capture full window'],
     ['shortcutCaptureVisible', 'text', 'Capture visible area'],
     ['shortcutCaptureSnip', 'text', 'Capture region (snip)'],
+    ['shortcutCaptureFrontWindow', 'text', 'Capture frontmost window'],
     ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
     ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
     ['shortcutOpenHistory', 'text', 'Open history'],
@@ -435,6 +454,25 @@ async function renderHistory(main) {
   for (const item of items) grid.appendChild(historyCard(item, () => renderHistory(main)));
 }
 
+// Exportable PNG for a history row. New-format rows store content-only pixels, so the
+// banner (timestamp from the original capturedAt + title + note) is composited here when
+// enabled; legacy rows already contain it.
+async function exportDataUrl(item) {
+  const dataUrl = await invoke('read_capture_data_url', { id: item.id });
+  if (item.bannerBaked || item.bannerEnabled === false) return dataUrl;
+  const settings = resolveSettings(state.settings || {});
+  const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  const cvs = document.createElement('canvas');
+  compositeBanner(cvs, bmp, {
+    meta: { capturedAt: item.capturedAt, url: item.url || '', targetFrameUrl: '', dpr: item.dpr || 1 },
+    settings,
+    note: item.note || '',
+    enabled: true,
+  });
+  bmp.close?.();
+  return cvs.toDataURL('image/png');
+}
+
 function historyCard(item, redraw) {
   const li = document.createElement('li');
   li.className = 'hist-card';
@@ -459,8 +497,7 @@ function historyCard(item, redraw) {
     mk('Open', () => invoke('open_capture', { id: item.id })),
     mk('Copy', async () => {
       try {
-        const dataUrl = await invoke('read_capture_data_url', { id: item.id });
-        const blob = await (await fetch(dataUrl)).blob();
+        const blob = await (await fetch(await exportDataUrl(item))).blob();
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
         setStatus('Capture copied to clipboard.', 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
@@ -473,8 +510,7 @@ function historyCard(item, redraw) {
       });
       if (!path) return;
       try {
-        const dataUrl = await invoke('read_capture_data_url', { id: item.id });
-        await invoke('save_file', { path, pngBase64: dataUrl });
+        await invoke('save_file', { path, pngBase64: await exportDataUrl(item) });
         setStatus(`Saved → ${path}`, 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),
@@ -615,7 +651,10 @@ async function importSnippets() {
     const skipped = r.skipped.length
       ? ` · ${r.skipped.length} skipped (already exist: ${r.skipped.slice(0, 3).join(', ')}${r.skipped.length > 3 ? '…' : ''})`
       : '';
-    setStatus(`Imported ${r.imported} snippet${r.imported === 1 ? '' : 's'}${r.groupsCreated ? `, ${r.groupsCreated} group(s)` : ''}${skipped}`, 'ok');
+    const quarantined = r.quarantined?.length
+      ? ` · ${r.quarantined.length} disabled for review (can run code: ${r.quarantined.slice(0, 3).join(', ')}${r.quarantined.length > 3 ? '…' : ''})`
+      : '';
+    setStatus(`Imported ${r.imported} snippet${r.imported === 1 ? '' : 's'}${r.groupsCreated ? `, ${r.groupsCreated} group(s)` : ''}${skipped}${quarantined}`, quarantined ? 'info' : 'ok');
     await reloadAll();
   } catch (e) { setStatus(String(e), 'err'); }
 }
@@ -643,17 +682,22 @@ function drawList() {
   list.innerHTML = '';
   for (const s of rows) {
     const fmt = FORMATS.find((f) => f.id === s.format) || FORMATS[0];
+    const kind = s.kind && s.kind !== 'text' ? KINDS.find((k) => k.id === s.kind) : null;
+    const disabled = s.enabled === false;
     const card = document.createElement('div');
-    card.className = 'snip-card';
+    card.className = 'snip-card' + (disabled ? ' snip-disabled' : '');
     card.innerHTML = `
       <div class="snip-main">
         <div class="snip-top">
           <code class="snip-trigger"></code>
           <span class="fmt-badge" title="${fmt.label}">${fmt.badge}</span>
+          ${kind ? `<span class="kind-badge">${kind.label}</span>` : ''}
+          ${disabled ? `<span class="kind-badge off-badge" title="Imported or synced content that can run code arrives disabled until you review it.">off — review</span>` : ''}
         </div>
         <div class="snip-preview"></div>
       </div>
       <div class="snip-actions">
+        ${disabled ? '<button class="primary sm" data-enable>Enable</button>' : ''}
         <button class="secondary sm" data-edit>Edit</button>
         <button class="danger sm" data-del>Delete</button>
       </div>`;
@@ -661,11 +705,38 @@ function drawList() {
     card.querySelector('.snip-preview').textContent = previewText(s);
     card.querySelector('[data-edit]').addEventListener('click', () => openEditor(s));
     card.querySelector('[data-del]').addEventListener('click', () => deleteSnippet(s));
+    card.querySelector('[data-enable]')?.addEventListener('click', () => enableSnippet(s));
     card.querySelector('.snip-main').addEventListener('click', (e) => {
       if (!e.target.closest('button')) openEditor(s);
     });
     list.appendChild(card);
   }
+}
+
+// Turn a quarantined/disabled snippet live — after an explicit confirmation when it can
+// execute code (that's exactly what the quarantine exists for).
+async function enableSnippet(s) {
+  const canRun = s.kind === 'command'
+    || (Array.isArray(s.variables) && s.variables.some((v) => ['shell', 'script'].includes(v?.type)));
+  if (canRun) {
+    const what = s.kind === 'command' ? s.replacement : JSON.stringify(s.variables);
+    const ok = await confirmDialog(
+      `“${s.trigger}” can run code on this machine:\n\n${what}\n\nOnly enable it if you understand and trust this command.`,
+      { confirmLabel: 'Enable — I trust it', danger: true },
+    );
+    if (!ok) return;
+  }
+  try {
+    await invoke('update_snippet', {
+      id: s.id,
+      patch: {
+        trigger: s.trigger, replacement: s.replacement, format: s.format, kind: s.kind,
+        enabled: true, variables: s.variables, groupId: s.groupId, appScope: s.appScope,
+        team: s.team || null,
+      },
+    });
+    setStatus(`“${s.trigger}” enabled.`, 'ok');
+  } catch (e) { setStatus(String(e), 'err'); }
 }
 
 function previewText(s) {
@@ -692,8 +763,14 @@ const FMT_HINTS = {
 function openEditor(existing) {
   const isEdit = Boolean(existing);
   let format = existing?.format || 'plain';
+  let kind = existing?.kind || 'text';
+  let htmlView = 'rich'; // for format=html: 'rich' (WYSIWYG) | 'source' (raw HTML)
   let savedRange = null; // caret saved before a toolbar popover steals focus
   let selectionHandler = null;
+  // Form-kind field builder state ({name,label,type,options}); stored as variables.fields.
+  let formFields = (kind === 'form' && Array.isArray(existing?.variables?.fields))
+    ? existing.variables.fields.map((f) => ({ ...f }))
+    : [];
 
   const groupOptions = `<option value="">Ungrouped</option>` +
     state.groups.map((g) => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
@@ -711,16 +788,42 @@ function openEditor(existing) {
           <p class="field-error" id="e-trigger-err"></p>
         </div>
         <div class="mfield">
-          <label for="e-group">Group</label>
-          <select id="e-group">${groupOptions}</select>
+          <label>Type</label>
+          <div class="seg" id="e-kind"></div>
+          <p class="fmt-hint" id="e-kind-hint"></p>
         </div>
         <div class="mfield">
+          <label for="e-group">Group</label>
+          <select id="e-group">${groupOptions}</select>
+          <p class="fmt-hint" id="e-group-hint" style="display:none">Command snippets stay personal — they never sync, even inside a shared group.</p>
+        </div>
+        <div class="mfield" id="e-fmt-row">
           <label>Format</label>
           <div class="seg" id="e-fmt"></div>
           <p class="fmt-hint" id="e-fmt-hint"></p>
         </div>
+        <div class="mfield" id="e-shell-row" style="display:none">
+          <label for="e-shell">Shell</label>
+          <select id="e-shell">
+            <option value="sh">sh (default)</option>
+            <option value="bash">bash</option>
+            <option value="zsh">zsh</option>
+          </select>
+        </div>
+        <div class="mfield" id="e-fields-row" style="display:none">
+          <label>Form fields</label>
+          <p class="adv-hint">Reference a field in the content as <code>{{name}}</code>. No fields? Each <code>{{placeholder}}</code> in the content becomes a text input automatically.</p>
+          <div id="e-fields"></div>
+          <button type="button" class="secondary sm" id="e-field-add">Add field</button>
+        </div>
         <div class="mfield content-field">
-          <label>Content</label>
+          <div class="content-head">
+            <label>Content</label>
+            <div class="seg seg-mini" id="e-htmlview" style="display:none">
+              <button type="button" class="seg-opt" data-view="rich">Rich</button>
+              <button type="button" class="seg-opt" data-view="source">HTML</button>
+            </div>
+          </div>
           <div class="rich-toolbar" id="e-rich-toolbar"></div>
           <div id="e-body-wrap"></div>
           <p class="field-error" id="e-body-err"></p>
@@ -770,16 +873,31 @@ function openEditor(existing) {
 
   const fmtSeg = $('#e-fmt');
   fmtSeg.innerHTML = FORMATS.map((f) => `<button type="button" class="seg-opt" data-fmt="${f.id}">${f.label}</button>`).join('');
+  const kindSeg = $('#e-kind');
+  kindSeg.innerHTML = KINDS.map((k) => `<button type="button" class="seg-opt" data-kind="${k.id}">${k.label}</button>`).join('');
   const bodyWrap = $('#e-body-wrap');
   const toolbar = $('#e-rich-toolbar');
   const hint = $('#e-fmt-hint');
+  const kindHint = $('#e-kind-hint');
   const preview = $('#e-preview');
   const previewFmt = $('#e-preview-fmt');
+  const htmlViewSeg = $('#e-htmlview');
 
   const getRich = () => bodyWrap.querySelector('.rich-editor');
-  const readBody = () => (format === 'html' ? getRich().innerHTML.trim() : bodyWrap.querySelector('#e-body').value);
+  const readBody = () => {
+    if (kind !== 'command' && format === 'html' && htmlView === 'rich') return getRich().innerHTML.trim();
+    return bodyWrap.querySelector('#e-body').value;
+  };
 
   function updatePreview() {
+    if (kind === 'command') {
+      previewFmt.textContent = 'Command';
+      preview.className = 'preview-body pv-plain';
+      const cmd = readBody().trim();
+      preview.textContent = cmd ? `$ ${cmd}\n→ output is pasted` : '';
+      if (!cmd) preview.innerHTML = '<span class="pv-empty">Nothing to preview yet.</span>';
+      return;
+    }
     previewFmt.textContent = FORMATS.find((f) => f.id === format)?.label || '';
     renderPreview(preview, format, readBody());
   }
@@ -788,22 +906,47 @@ function openEditor(existing) {
     fmtSeg.querySelectorAll('.seg-opt').forEach((b) => b.classList.toggle('active', b.dataset.fmt === fmt));
     hint.textContent = FMT_HINTS[fmt];
     cleanup();
-    if (fmt === 'html') {
+    htmlViewSeg.style.display = kind !== 'command' && fmt === 'html' ? 'inline-flex' : 'none';
+    htmlViewSeg.querySelectorAll('.seg-opt').forEach((b) => b.classList.toggle('active', b.dataset.view === htmlView));
+    if (kind === 'command') {
+      toolbar.style.display = 'none';
+      bodyWrap.innerHTML = `<textarea id="e-body" class="body-area mono" placeholder="e.g. date +%Y-%m-%d" spellcheck="false"></textarea>`;
+      const ta = bodyWrap.querySelector('#e-body');
+      ta.value = initial || '';
+      ta.addEventListener('input', updatePreview);
+    } else if (fmt === 'html' && htmlView === 'source') {
+      toolbar.style.display = 'none';
+      bodyWrap.innerHTML = `<textarea id="e-body" class="body-area mono" placeholder="<p>Type HTML…</p>" spellcheck="false"></textarea>`;
+      const ta = bodyWrap.querySelector('#e-body');
+      ta.value = initial || '';
+      ta.addEventListener('input', updatePreview);
+    } else if (fmt === 'html') {
       toolbar.style.display = 'flex';
       bodyWrap.innerHTML = `<div class="rich-editor" contenteditable="true"></div>`;
       const ed = getRich();
-      ed.innerHTML = initial || '';
+      ed.innerHTML = sanitizeSnippetHtml(initial || '');
       const refresh = renderRichToolbar(toolbar, getRich, {
         onChange: updatePreview,
         saveSel: () => { const s = window.getSelection(); savedRange = s.rangeCount ? s.getRangeAt(0).cloneRange() : null; },
         restoreSel: () => { if (savedRange) { const s = window.getSelection(); s.removeAllRanges(); s.addRange(savedRange); } },
       });
       ed.addEventListener('input', updatePreview);
+      // Pasting an image file inserts it inline (downscaled data URI) — same as the
+      // toolbar's Insert image.
+      ed.addEventListener('paste', (e) => {
+        const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+        if (!file) return;
+        e.preventDefault();
+        insertImageFile(file, getRich, updatePreview);
+      });
       selectionHandler = () => { if (document.activeElement === ed) refresh(); };
       document.addEventListener('selectionchange', selectionHandler);
     } else {
       toolbar.style.display = 'none';
-      bodyWrap.innerHTML = `<textarea id="e-body" class="body-area ${fmt === 'markdown' ? 'mono' : ''}" placeholder="${fmt === 'markdown' ? 'Type Markdown…' : 'Type your snippet…'}"></textarea>`;
+      const ph = kind === 'form'
+        ? 'Hi {{name}},\nthanks for reaching out…'
+        : (fmt === 'markdown' ? 'Type Markdown…' : 'Type your snippet…');
+      bodyWrap.innerHTML = `<textarea id="e-body" class="body-area ${fmt === 'markdown' ? 'mono' : ''}" placeholder="${escapeAttr(ph)}"></textarea>`;
       const ta = bodyWrap.querySelector('#e-body');
       ta.value = initial || '';
       ta.addEventListener('input', updatePreview);
@@ -811,13 +954,87 @@ function openEditor(existing) {
     updatePreview();
   }
 
-  buildBody(format, existing?.replacement || '');
+  // Show/hide the kind-specific rows and relabel the content field.
+  function applyKind(initialBody) {
+    kindSeg.querySelectorAll('.seg-opt').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
+    kindHint.textContent = KIND_HINTS[kind];
+    $('#e-fmt-row').style.display = kind === 'command' ? 'none' : '';
+    $('#e-shell-row').style.display = kind === 'command' ? '' : 'none';
+    $('#e-fields-row').style.display = kind === 'form' ? '' : 'none';
+    $('#e-adv').style.display = kind === 'text' ? '' : 'none';
+    $('#e-group-hint').style.display = kind === 'command' ? '' : 'none';
+    modal.querySelector('.content-field label').textContent = kind === 'command' ? 'Command' : 'Content';
+    if (kind === 'form') renderFieldBuilder();
+    buildBody(format, initialBody);
+  }
+
+  // --- form-kind field builder ----------------------------------------------
+  function renderFieldBuilder() {
+    const box = $('#e-fields');
+    box.innerHTML = '';
+    formFields.forEach((f, i) => {
+      const row = el('div', { className: 'field-row' });
+      row.innerHTML = `
+        <input type="text" data-k="name" placeholder="name" spellcheck="false" />
+        <input type="text" data-k="label" placeholder="Label (optional)" />
+        <select data-k="type">
+          <option value="text">Text</option>
+          <option value="multiline">Multiline</option>
+          <option value="select">Choices</option>
+        </select>
+        <input type="text" data-k="options" placeholder="a, b, c" style="display:none" />
+        <button type="button" class="ghost sm" data-rm title="Remove field">✕</button>`;
+      row.querySelector('[data-k="name"]').value = f.name || '';
+      row.querySelector('[data-k="label"]').value = f.label || '';
+      row.querySelector('[data-k="type"]').value = f.type || 'text';
+      const optInput = row.querySelector('[data-k="options"]');
+      optInput.value = Array.isArray(f.options) ? f.options.join(', ') : '';
+      optInput.style.display = (f.type === 'select') ? '' : 'none';
+      row.querySelectorAll('[data-k]').forEach((input) => input.addEventListener('input', () => {
+        f.name = row.querySelector('[data-k="name"]').value.trim();
+        f.label = row.querySelector('[data-k="label"]').value.trim();
+        f.type = row.querySelector('[data-k="type"]').value;
+        f.options = optInput.value.split(',').map((s) => s.trim()).filter(Boolean);
+        optInput.style.display = (f.type === 'select') ? '' : 'none';
+      }));
+      row.querySelector('[data-rm]').addEventListener('click', () => {
+        formFields.splice(i, 1);
+        renderFieldBuilder();
+      });
+      box.appendChild(row);
+    });
+  }
+  $('#e-field-add').addEventListener('click', () => {
+    formFields.push({ name: '', label: '', type: 'text', options: [] });
+    renderFieldBuilder();
+    $('#e-fields .field-row:last-child [data-k="name"]')?.focus();
+  });
+
+  if (kind === 'command' && existing?.variables?.shell) {
+    $('#e-shell').value = existing.variables.shell;
+  }
+
+  applyKind(existing?.replacement || '');
 
   fmtSeg.querySelectorAll('.seg-opt').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.fmt === format) return;
     const converted = convertContent(readBody(), format, b.dataset.fmt);
     format = b.dataset.fmt;
     buildBody(format, converted);
+  }));
+
+  kindSeg.querySelectorAll('.seg-opt').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.kind === kind) return;
+    const body = readBody();
+    kind = b.dataset.kind;
+    applyKind(body);
+  }));
+
+  htmlViewSeg.querySelectorAll('.seg-opt').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.view === htmlView) return;
+    const content = readBody();
+    htmlView = b.dataset.view;
+    buildBody(format, content);
   }));
 
   // Trigger validation (required + duplicate detection).
@@ -840,19 +1057,40 @@ function openEditor(existing) {
     let ok = true;
     if (!trigger) { triggerErr.textContent = 'Trigger is required.'; ok = false; }
     else if (!checkTrigger()) { ok = false; }
-    if (!replacement.trim()) { bodyErr.textContent = 'Content is required.'; ok = false; }
+    if (!replacement.trim()) {
+      bodyErr.textContent = kind === 'command' ? 'Command is required.' : 'Content is required.';
+      ok = false;
+    }
     let variables = null;
-    const vr = $('#e-vars').value.trim();
-    if (vr) {
-      try { variables = JSON.parse(vr); }
-      catch { varsErr.textContent = 'Variables must be valid JSON.'; $('#e-adv').open = true; ok = false; }
+    if (kind === 'text') {
+      const vr = $('#e-vars').value.trim();
+      if (vr) {
+        try { variables = JSON.parse(vr); }
+        catch { varsErr.textContent = 'Variables must be valid JSON.'; $('#e-adv').open = true; ok = false; }
+      }
+    } else if (kind === 'form') {
+      const cleaned = formFields
+        .filter((f) => f.name)
+        .map((f) => ({
+          name: f.name,
+          ...(f.label ? { label: f.label } : {}),
+          type: f.type || 'text',
+          ...(f.type === 'select' && f.options?.length ? { options: f.options } : {}),
+        }));
+      if (cleaned.length) variables = { fields: cleaned };
+    } else if (kind === 'command') {
+      const sh = $('#e-shell').value;
+      if (sh && sh !== 'sh') variables = { shell: sh };
     }
     if (!ok) return;
     const payload = {
-      trigger, replacement, format, variables,
+      trigger, replacement, variables, kind,
+      format: kind === 'command' ? 'plain' : format,
+      enabled: existing ? existing.enabled !== false : true,
       groupId: gsel.value || null,
       appScope: $('#e-scope').value.trim() || null,
       // Preserve sync scope on edit (team assignment is managed by the Sync section).
+      // The store forces command snippets personal regardless.
       team: existing?.team || null,
     };
     try {
@@ -896,7 +1134,17 @@ function renderRichToolbar(bar, getEditor, { onChange, saveSel, restoreSel }) {
   mk(icon('code'), 'Code block', () => exec('formatBlock', 'PRE'));
   mk(icon('link'), 'Insert link', (b) => openLinkPopover(b));
   mk(icon('table'), 'Insert table', (b) => openTablePopover(b));
+  mk(icon('image'), 'Insert image', () => pickImage());
   mk(icon('eraser'), 'Clear formatting', () => exec('removeFormat'));
+
+  function pickImage() {
+    const input = el('input', { type: 'file', accept: 'image/*' });
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (file) insertImageFile(file, getEditor, onChange);
+    });
+    input.click();
+  }
 
   function openLinkPopover(anchor) {
     saveSel();
@@ -954,6 +1202,47 @@ function renderRichToolbar(bar, getEditor, { onChange, saveSel, restoreSel }) {
   return refresh;
 }
 
+// --- Inline images (data URIs) ----------------------------------------------
+// Images live inside the HTML body as data URIs — they sync/export with the snippet and
+// render in the popup/form windows and on rich paste. Downscaled on insert so a snippet
+// stays well under the 1 MB sync cap.
+
+const IMG_MAX_EDGE = 1600;
+const IMG_TARGET_BYTES = 300 * 1024;
+
+async function insertImageFile(file, getEditor, onChange) {
+  try {
+    const dataUrl = await downscaleImageToDataUrl(file);
+    const ed = getEditor();
+    ed.focus();
+    document.execCommand('insertHTML', false, `<img src="${dataUrl}" alt="">`);
+    onChange?.();
+  } catch (e) {
+    setStatus(`Could not insert image: ${e.message || e}`, 'err');
+  }
+}
+
+async function downscaleImageToDataUrl(blob) {
+  const bmp = await createImageBitmap(blob);
+  const scale = Math.min(1, IMG_MAX_EDGE / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * scale));
+  const h = Math.max(1, Math.round(bmp.height * scale));
+  const canvas = el('canvas', { width: w, height: h });
+  canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  // PNG keeps screenshots/text crisp (and transparency); step down through JPEG
+  // qualities only when the PNG would blow past the target size.
+  let out = canvas.toDataURL('image/png');
+  const budget = IMG_TARGET_BYTES * (4 / 3); // data-URI base64 overhead
+  if (out.length > budget) {
+    for (const q of [0.85, 0.7, 0.55]) {
+      out = canvas.toDataURL('image/jpeg', q);
+      if (out.length <= budget) break;
+    }
+  }
+  return out;
+}
+
 function tableHtml(rows, cols) {
   const cell = 'style="border:1px solid #888;padding:4px 8px"';
   let out = '<table style="border-collapse:collapse"><tbody>';
@@ -978,7 +1267,8 @@ function renderPreview(container, fmt, content) {
     container.textContent = content;
   } else {
     container.className = 'preview-body pv-rich';
-    container.innerHTML = fmt === 'markdown' ? mdToHtml(content) : content;
+    // Sanitized: html bodies can arrive from teammates via sync, and this webview holds IPC.
+    container.innerHTML = fmt === 'markdown' ? mdToHtml(content) : sanitizeSnippetHtml(content);
   }
 }
 
@@ -1005,32 +1295,8 @@ function htmlToText(html) {
   return (tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// Minimal, approximate Markdown → HTML — for the live preview and format conversion only. The engine
-// itself does the real (pulldown-cmark) conversion at expansion time.
-function mdToHtml(md) {
-  const lines = md.replace(/\r\n?/g, '\n').split('\n');
-  const inline = (s) => escapeHtml(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-  let html = '', inUl = false, inOl = false, inCode = false;
-  const closeLists = () => { if (inUl) { html += '</ul>'; inUl = false; } if (inOl) { html += '</ol>'; inOl = false; } };
-  for (const line of lines) {
-    if (/^```/.test(line)) { closeLists(); inCode = !inCode; html += inCode ? '<pre><code>' : '</code></pre>'; continue; }
-    if (inCode) { html += escapeHtml(line) + '\n'; continue; }
-    const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeLists(); html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
-    const ul = line.match(/^\s*[-*]\s+(.*)$/);
-    if (ul) { if (!inUl) { closeLists(); html += '<ul>'; inUl = true; } html += `<li>${inline(ul[1])}</li>`; continue; }
-    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (ol) { if (!inOl) { closeLists(); html += '<ol>'; inOl = true; } html += `<li>${inline(ol[1])}</li>`; continue; }
-    if (line.trim() === '') { closeLists(); continue; }
-    closeLists(); html += `<p>${inline(line)}</p>`;
-  }
-  closeLists(); if (inCode) html += '</code></pre>';
-  return html;
-}
+// Markdown rendering, HTML escaping, and snippet-HTML sanitization live in
+// ../shared/markdown.js (shared with the popup/form surfaces).
 
 function mdToText(md) {
   return md
@@ -1521,8 +1787,6 @@ async function saveSettings() {
 // --- utils ------------------------------------------------------------------
 
 function el(tag, props = {}) { return Object.assign(document.createElement(tag), props); }
-function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
 
 function setStatus(text, kind = '') {
   const el = document.getElementById('status');

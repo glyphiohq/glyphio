@@ -55,6 +55,19 @@ pub struct Snippet {
     pub replacement: String,
     /// `plain` | `markdown` | `html`. Drives which match-file body key is generated.
     pub format: String,
+    /// What the trigger does:
+    /// * `text` — classic expansion (the body is pasted).
+    /// * `form` — a Tauri form window collects input, the filled body template is pasted.
+    /// * `popup` — a Tauri popup window shows the body (cheatsheet); nothing is pasted.
+    /// * `command` — runs a shell command, pastes its output. **Never syncs** (local-only,
+    ///   `team` is forced NULL) — a synced command would be remote code execution.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// Disabled snippets stay in the store/UI but are not rendered into the engine config.
+    /// Used for quarantine: imported or pulled records with executable variables arrive
+    /// disabled until the user reviews and enables them.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// engine `vars` array, stored as JSON. `None` = no variables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variables: Option<serde_json::Value>,
@@ -80,6 +93,10 @@ pub struct NewSnippet {
     pub replacement: String,
     #[serde(default)]
     pub format: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
     pub variables: Option<serde_json::Value>,
     pub group_id: Option<String>,
     pub app_scope: Option<String>,
@@ -95,6 +112,10 @@ pub struct SnippetUpdate {
     pub replacement: String,
     #[serde(default)]
     pub format: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
     pub variables: Option<serde_json::Value>,
     pub group_id: Option<String>,
     pub app_scope: Option<String>,
@@ -221,6 +242,11 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_snippets_team ON snippets(team) WHERE team IS NOT NULL;
     "#,
+    // v4 — interactive snippet kinds (text | form | popup | command) + enable/quarantine flag.
+    r#"
+    ALTER TABLE snippets ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE snippets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+    "#,
 ];
 
 impl SnippetStore {
@@ -308,18 +334,26 @@ impl SnippetStore {
     }
 
     pub fn create(&self, new: NewSnippet) -> Result<Snippet> {
+        let kind = normalize_kind(new.kind);
         // A snippet created inside a team-shared group inherits that team — otherwise it
-        // silently neither syncs nor appears under the team view.
-        let team = match (&new.team, &new.group_id) {
-            (Some(t), _) => Some(t.clone()),
-            (None, Some(g)) => self.get_group(g)?.and_then(|grp| grp.team),
-            (None, None) => None,
+        // silently neither syncs nor appears under the team view. Command snippets NEVER
+        // carry a team (they must not sync), even inside a team-shared group.
+        let team = if kind == "command" {
+            None
+        } else {
+            match (&new.team, &new.group_id) {
+                (Some(t), _) => Some(t.clone()),
+                (None, Some(g)) => self.get_group(g)?.and_then(|grp| grp.team),
+                (None, None) => None,
+            }
         };
         let snippet = Snippet {
             id: Uuid::new_v4().to_string(),
             trigger: new.trigger,
             replacement: new.replacement,
             format: normalize_format(new.format),
+            kind,
+            enabled: new.enabled.unwrap_or(true),
             variables: new.variables,
             group_id: new.group_id,
             app_scope: new.app_scope,
@@ -333,13 +367,13 @@ impl SnippetStore {
             let conn = self.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO snippets (id, trigger, replacement, variables, app_scope, owner, team,
-                    updated_at, version, deleted_at, format, group_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    updated_at, version, deleted_at, format, group_id, kind, enabled)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 rusqlite::params![
                     snippet.id, snippet.trigger, snippet.replacement,
                     vars_to_text(&snippet.variables)?, snippet.app_scope, snippet.owner,
                     snippet.team, snippet.updated_at, snippet.version, snippet.deleted_at,
-                    snippet.format, snippet.group_id,
+                    snippet.format, snippet.group_id, snippet.kind, snippet.enabled,
                 ],
             )?;
         }
@@ -352,13 +386,20 @@ impl SnippetStore {
         snippet.trigger = patch.trigger;
         snippet.replacement = patch.replacement;
         snippet.format = normalize_format(patch.format);
+        snippet.kind = patch.kind.map(|k| normalize_kind(Some(k))).unwrap_or(snippet.kind);
+        snippet.enabled = patch.enabled.unwrap_or(snippet.enabled);
         snippet.variables = patch.variables;
         snippet.group_id = patch.group_id;
         snippet.app_scope = patch.app_scope;
-        snippet.team = match (&patch.team, &snippet.group_id) {
-            (Some(t), _) => Some(t.clone()),
-            (None, Some(g)) => self.get_group(g)?.and_then(|grp| grp.team),
-            (None, None) => None,
+        // Command snippets never carry a team — they must not sync.
+        snippet.team = if snippet.kind == "command" {
+            None
+        } else {
+            match (&patch.team, &snippet.group_id) {
+                (Some(t), _) => Some(t.clone()),
+                (None, Some(g)) => self.get_group(g)?.and_then(|grp| grp.team),
+                (None, None) => None,
+            }
         };
         snippet.updated_at = now();
         snippet.version += 1;
@@ -366,11 +407,13 @@ impl SnippetStore {
             let conn = self.conn.lock().unwrap();
             conn.execute(
                 "UPDATE snippets SET trigger=?2, replacement=?3, variables=?4, app_scope=?5,
-                   team=?6, updated_at=?7, version=?8, format=?9, group_id=?10 WHERE id=?1",
+                   team=?6, updated_at=?7, version=?8, format=?9, group_id=?10, kind=?11,
+                   enabled=?12 WHERE id=?1",
                 rusqlite::params![
                     snippet.id, snippet.trigger, snippet.replacement,
                     vars_to_text(&snippet.variables)?, snippet.app_scope, snippet.team,
                     snippet.updated_at, snippet.version, snippet.format, snippet.group_id,
+                    snippet.kind, snippet.enabled,
                 ],
             )?;
         }
@@ -470,13 +513,16 @@ impl SnippetStore {
                  WHERE id=?1 AND deleted_at IS NULL",
                 rusqlite::params![id, team, now()],
             )?;
+            // Command snippets never follow a group into a team — they must not sync.
             conn.execute(
                 "UPDATE snippets SET team=?2, updated_at=?3, version=version+1
-                 WHERE group_id=?1 AND deleted_at IS NULL",
+                 WHERE group_id=?1 AND deleted_at IS NULL AND kind != 'command'",
                 rusqlite::params![id, team, now()],
             )?;
-            let mut stmt =
-                conn.prepare("SELECT id FROM snippets WHERE group_id=?1 AND deleted_at IS NULL")?;
+            let mut stmt = conn.prepare(
+                "SELECT id FROM snippets
+                 WHERE group_id=?1 AND deleted_at IS NULL AND kind != 'command'",
+            )?;
             let ids = stmt
                 .query_map([id], |r| r.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -601,14 +647,15 @@ impl SnippetStore {
             }
             conn.execute(
                 "INSERT INTO snippets (id, trigger, replacement, variables, app_scope, owner,
-                    team, updated_at, version, deleted_at, format, group_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                    team, updated_at, version, deleted_at, format, group_id, kind, enabled)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
                  ON CONFLICT(id) DO UPDATE SET trigger=?2, replacement=?3, variables=?4,
                     app_scope=?5, owner=?6, team=?7, updated_at=?8, version=?9, deleted_at=?10,
-                    format=?11, group_id=?12",
+                    format=?11, group_id=?12, kind=?13, enabled=?14",
                 rusqlite::params![
                     s.id, s.trigger, s.replacement, vars_to_text(&s.variables)?, s.app_scope,
                     s.owner, s.team, s.updated_at, s.version, s.deleted_at, s.format, s.group_id,
+                    s.kind, s.enabled,
                 ],
             )?;
             conn.execute(
@@ -752,7 +799,7 @@ impl SnippetStore {
 }
 
 const COLUMNS: &str = "id, trigger, replacement, variables, app_scope, owner, team, \
-                       updated_at, version, deleted_at, format, group_id";
+                       updated_at, version, deleted_at, format, group_id, kind, enabled";
 
 const GROUP_COLUMNS: &str = "id, name, sort_order, team, updated_at, version, deleted_at";
 
@@ -778,6 +825,38 @@ fn normalize_format(f: Option<String>) -> String {
     }
 }
 
+/// Whether an engine `vars` JSON array contains an executable variable (`shell` / `script`).
+/// Used everywhere content crosses a trust boundary: YAML import, sync push exclusion, sync
+/// pull quarantine, and the server's push validation mirrors it.
+pub fn has_exec_vars(vars: &Option<serde_json::Value>) -> bool {
+    let Some(serde_json::Value::Array(items)) = vars else {
+        return false;
+    };
+    items.iter().any(|v| {
+        matches!(
+            v.get("type").and_then(|t| t.as_str()),
+            Some("shell") | Some("script")
+        )
+    })
+}
+
+fn normalize_kind(k: Option<String>) -> String {
+    match k.as_deref() {
+        Some("form") => "form".to_string(),
+        Some("popup") => "popup".to_string(),
+        Some("command") => "command".to_string(),
+        _ => "text".to_string(),
+    }
+}
+
+fn default_kind() -> String {
+    "text".to_string()
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 fn row_to_snippet(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
     let variables_text: Option<String> = row.get(3)?;
     let variables = variables_text.and_then(|t| serde_json::from_str(&t).ok());
@@ -794,6 +873,8 @@ fn row_to_snippet(row: &rusqlite::Row) -> rusqlite::Result<Snippet> {
         deleted_at: row.get(9)?,
         format: row.get(10)?,
         group_id: row.get(11)?,
+        kind: row.get(12)?,
+        enabled: row.get(13)?,
     })
 }
 

@@ -44,6 +44,9 @@ pub struct ExportSnippet {
     pub trigger: String,
     pub replacement: String,
     pub format: String,
+    /// `text` | `form` | `popup` | `command` (additive; absent in older exports = `text`).
+    #[serde(default = "default_export_kind")]
+    pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variables: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +56,10 @@ pub struct ExportSnippet {
     pub group_id: Option<String>,
 }
 
+fn default_export_kind() -> String {
+    "text".to_string()
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportReport {
@@ -60,6 +67,10 @@ pub struct ImportReport {
     pub groups_created: u32,
     /// Triggers skipped because an identical trigger already exists (import is additive).
     pub skipped: Vec<String>,
+    /// Triggers imported **disabled** because they can execute code (command kind, or
+    /// shell/script variables). The user must review and enable each one explicitly —
+    /// an import must never turn into silent code execution.
+    pub quarantined: Vec<String>,
 }
 
 impl SnippetStore {
@@ -105,6 +116,7 @@ impl SnippetStore {
                     trigger: s.trigger.clone(),
                     replacement: s.replacement.clone(),
                     format: s.format.clone(),
+                    kind: s.kind.clone(),
                     variables: s.variables.clone(),
                     app_scope: s.app_scope.clone(),
                     group_id: s.group_id.clone(),
@@ -155,10 +167,17 @@ impl SnippetStore {
                 report.skipped.push(s.trigger);
                 continue;
             }
+            // Anything that can execute code arrives DISABLED — review before it can run.
+            let executable = s.kind == "command" || crate::has_exec_vars(&s.variables);
+            if executable {
+                report.quarantined.push(s.trigger.clone());
+            }
             self.create(NewSnippet {
                 trigger: s.trigger,
                 replacement: s.replacement,
                 format: Some(s.format),
+                kind: Some(s.kind),
+                enabled: Some(!executable),
                 variables: s.variables,
                 group_id: s.group_id.and_then(|g| group_map.get(&g).cloned()),
                 app_scope: s.app_scope,
@@ -205,10 +224,16 @@ impl SnippetStore {
                 .get("vars")
                 .map(|v| serde_json::to_value(v))
                 .transpose()?;
+            // Shell/script vars import DISABLED — review before anything can execute.
+            let executable = crate::has_exec_vars(&variables);
+            if executable {
+                report.quarantined.push(trigger.to_string());
+            }
             self.create(NewSnippet {
                 trigger: trigger.to_string(),
                 replacement: body.to_string(),
                 format: Some(format.to_string()),
+                enabled: Some(!executable),
                 variables,
                 ..Default::default()
             })?;
@@ -289,7 +314,40 @@ matches:
         assert_eq!(r.skipped, vec![":form (unsupported body)".to_string()]);
         let date = store.list().unwrap().into_iter().find(|s| s.trigger == ":date").unwrap();
         assert!(date.variables.is_some());
+        assert!(date.enabled);
 
         assert!(store.import_json("{}").is_err());
+    }
+
+    #[test]
+    fn executable_imports_arrive_quarantined() {
+        // espanso YAML with a shell var: imported, but disabled until reviewed.
+        let store = SnippetStore::open_in_memory().unwrap();
+        let yaml = r#"
+matches:
+  - trigger: ":ip"
+    replace: "{{out}}"
+    vars:
+      - name: out
+        type: shell
+        params: { cmd: "curl -s ifconfig.me" }
+"#;
+        let r = store.import_matches_yaml(yaml).unwrap();
+        assert_eq!(r.imported, 1);
+        assert_eq!(r.quarantined, vec![":ip".to_string()]);
+        let s = store.list().unwrap().into_iter().find(|s| s.trigger == ":ip").unwrap();
+        assert!(!s.enabled);
+
+        // Glyphio JSON with a command-kind snippet: same quarantine.
+        let json = serde_json::json!({
+            "format": EXPORT_FORMAT, "version": 1,
+            "snippets": [{ "trigger": ":cmd", "replacement": "date", "format": "plain", "kind": "command" }]
+        });
+        let r = store.import_json(&json.to_string()).unwrap();
+        assert_eq!(r.quarantined, vec![":cmd".to_string()]);
+        let s = store.list().unwrap().into_iter().find(|s| s.trigger == ":cmd").unwrap();
+        assert_eq!(s.kind, "command");
+        assert!(!s.enabled);
+        assert!(s.team.is_none());
     }
 }

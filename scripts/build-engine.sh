@@ -32,9 +32,11 @@ DEST_EXE="$REPO_ROOT/src-tauri/target/$PROFILE_DIR/glyphio-engine"
 
 mkdir -p "$(dirname "$DEST_BIN")"
 cp "$SRC" "$DEST_BIN"
+chmod +x "$DEST_BIN" # cp preserves a pre-existing destination's mode — force executable
 log "Copied → $DEST_BIN"
 if [[ -d "$(dirname "$DEST_EXE")" ]]; then
   cp "$SRC" "$DEST_EXE"
+  chmod +x "$DEST_EXE"
   log "Copied → $DEST_EXE"
 fi
 

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyphio</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <style>
+    body { display: flex; flex-direction: column; height: 100vh; margin: 0; }
+    .popup-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      -webkit-user-select: none; user-select: none;
+    }
+    .popup-trigger {
+      font-family: var(--font-mono);
+      font-size: 12px; color: var(--accent);
+    }
+    .popup-hint { font-size: 11px; color: var(--text-muted); }
+    .spacer { flex: 1; }
+    .popup-body {
+      flex: 1; overflow: auto; padding: 16px;
+      font-size: 13px; line-height: 1.55; color: var(--text);
+    }
+    .popup-body img { max-width: 100%; height: auto; border-radius: 4px; }
+    .popup-body table { border-collapse: collapse; }
+    .popup-body td, .popup-body th { border: 1px solid var(--border-strong); padding: 3px 8px; }
+    .popup-body pre { background: var(--inset); padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
+    .popup-empty { color: var(--text-muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <header class="popup-head">
+    <span class="popup-trigger" id="trigger"></span>
+    <span class="spacer"></span>
+    <span class="popup-hint">Esc closes</span>
+    <button class="ghost" id="close" type="button" title="Close (Esc)">✕</button>
+  </header>
+  <main class="popup-body" id="body"><span class="popup-empty">Loading…</span></main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

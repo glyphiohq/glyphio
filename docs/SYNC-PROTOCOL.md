@@ -32,9 +32,10 @@ the record/request/response types lives in `src-tauri/crates/sync-proto` (Apache
 |---|---|---|
 | `id` | string (uuid) | stable across devices |
 | `trigger` | string | ≤ 512 bytes |
-| `replacement` | string | ≤ 100 KiB |
+| `replacement` | string | ≤ 1 MiB (sized for inline data-URI images in rich bodies) |
 | `format` | string | `plain` \| `markdown` \| `html` |
-| `variables` | array? | espanso `vars`, ≤ 16 KiB serialized |
+| `kind` | string? | *(additive)* `text` (default when absent) \| `form` \| `popup`. `command` is **not a legal wire value** — see the executable-content rule below |
+| `variables` | array? | espanso `vars`, ≤ 16 KiB serialized. `shell`/`script` variable types are **rejected on push** — see below |
 | `groupId` | string? | folder reference |
 | `appScope` | string? | per-app activation filter |
 | `owner` | string | **server-set** from the authenticated `sub` on push |
@@ -143,6 +144,10 @@ Non-2xx responses carry an RFC 7807 problem document:
    acknowledged) is the offline queue. Never drop local edits on failure.
 4. Serialize **only** records whose `team` is in the `/v1/me` team list.
 5. Enforce TLS (loopback exempt), never log credentials.
+6. **Executable content never syncs.** Exclude from push any snippet with `kind: command`
+   or `shell`/`script` variables; **quarantine on pull** any record carrying them (strip
+   the executable variables and apply it disabled) — this must hold even against a
+   non-compliant server.
 
 ## Server obligations
 
@@ -152,6 +157,10 @@ Non-2xx responses carry an RFC 7807 problem document:
 4. Merge with the same LWW rule; return `superseded` records rather than silently dropping.
 5. Enforce the validation limits (`sync_proto::limits`); rate-limit; never log tokens or
    record bodies.
+6. **Reject executable content** (422 problem+json): any pushed snippet with
+   `kind: command` or a `variables` entry of type `shell`/`script`
+   (`sync_proto::has_exec_vars`). A synced shell command would be remote code execution
+   on every member's machine; rejection tells the pusher rather than silently sanitizing.
 
 ## Trust model (v1)
 

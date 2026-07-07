@@ -28,6 +28,7 @@ pub fn capture(_app: &AppHandle, mode: &str) -> anyhow::Result<Shot> {
     match mode {
         "fullWindow" => screencapture_interactive(&["-i", "-W"]),
         "snip" => screencapture_interactive(&["-i"]),
+        "frontWindow" => capture_front_window(),
         _ => capture_display_under_cursor(), // "visible"
     }
 }
@@ -107,10 +108,41 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
     Ok(Shot { rgba, width, height, dpr, title: String::new() })
 }
 
+/// Non-interactive capture of the frontmost window (whole window, chrome included) — one
+/// keystroke, no picker. The motivating case: grab just the browser window instead of the
+/// entire screen.
+fn capture_front_window() -> anyhow::Result<Shot> {
+    use screencapturekit::cg::{CGPoint as ScPoint, CGRect as ScRect, CGSize as ScSize};
+
+    let (x, y, w, h, title) = frontmost_window_bounds_with_inset(0.0)?;
+    let rect = ScRect {
+        origin: ScPoint { x, y },
+        size: ScSize { width: w, height: h },
+    };
+    let image = SCScreenshotManager::capture_image_in_rect(rect)
+        .map_err(|e| anyhow!("capture failed: {e:?} — is Screen Recording granted?"))?;
+    let width = image.width() as u32;
+    let height = image.height() as u32;
+    let rgba = image
+        .rgba_data()
+        .map_err(|e| anyhow!("reading captured pixels failed: {e:?}"))?;
+    // Pixels per point straight from the capture itself (rect is in points).
+    let dpr = if w > 0.0 { width as f64 / w } else { 1.0 };
+    Ok(Shot { rgba, width, height, dpr, title })
+}
+
 /// Bounds (points, global top-left) and title of the frontmost normal window not owned by
-/// Glyphio — the target of "scrolling page" capture. The title bar is inset away so window
-/// chrome doesn't repeat in every stitched frame.
+/// Glyphio — the target of "scrolling page" and "front window" capture. Scrolling capture
+/// insets the title bar away (`TITLE_BAR_PT`) so window chrome doesn't repeat in every
+/// stitched frame; front-window capture wants the whole window and passes 0.
 pub(super) fn frontmost_window_bounds() -> anyhow::Result<(f64, f64, f64, f64, String)> {
+    const TITLE_BAR_PT: f64 = 28.0;
+    frontmost_window_bounds_with_inset(TITLE_BAR_PT)
+}
+
+fn frontmost_window_bounds_with_inset(
+    title_bar_inset: f64,
+) -> anyhow::Result<(f64, f64, f64, f64, String)> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::dictionary::CFDictionary;
     use core_foundation::number::CFNumber;
@@ -119,7 +151,6 @@ pub(super) fn frontmost_window_bounds() -> anyhow::Result<(f64, f64, f64, f64, S
         copy_window_info, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
     };
 
-    const TITLE_BAR_PT: f64 = 28.0;
     let list = copy_window_info(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         0, // kCGNullWindowID
@@ -172,7 +203,7 @@ pub(super) fn frontmost_window_bounds() -> anyhow::Result<(f64, f64, f64, f64, S
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or(owner);
-        return Ok((x, y + TITLE_BAR_PT, w, h - TITLE_BAR_PT, title));
+        return Ok((x, y + title_bar_inset, w, h - title_bar_inset, title));
     }
     anyhow::bail!("no capturable window found")
 }

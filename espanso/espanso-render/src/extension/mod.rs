@@ -23,6 +23,9 @@ pub mod date;
 pub mod echo;
 mod exec_util;
 pub mod form;
+// GLYPHIO DEVIATION: unix-socket bridge to the Glyphio app for popup/form snippet kinds.
+#[cfg(unix)]
+pub mod glyphio;
 pub mod random;
 pub mod script;
 pub mod shell;

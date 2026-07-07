@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- SPDX-License-Identifier: Apache-2.0 — Glyphio admin dashboard (single file, no build, no external resources) -->
+<!-- SPDX-License-Identifier: Apache-2.0 — Glyphio admin dashboard v2 (single file, no build, no external resources) -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -11,14 +11,17 @@
     --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.12);
     --text:#ecedef; --text-2:#a6aab2; --muted:#64686f;
     --accent:#d9a54a; --accent-hover:#e6b65f; --accent-on:#171208;
+    --bar:#ba852c; /* chart mark: brass step validated for the dark surface */
     --danger:#e07070; --ok:#86c07a;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     -webkit-font-smoothing:antialiased}
   .shell{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
-  nav{border-right:1px solid var(--border);padding:24px 14px;background:var(--surface)}
+  nav{border-right:1px solid var(--border);padding:24px 14px;background:var(--surface);
+    display:flex;flex-direction:column}
   .brand{font-size:15px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;
     padding:0 10px 18px;border-bottom:1px solid var(--border);margin-bottom:14px}
   .brand b{color:var(--accent)}
@@ -26,11 +29,15 @@
     font:inherit;padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:2px}
   .navbtn:hover{color:var(--text);background:var(--surface-2)}
   .navbtn.active{color:var(--accent);background:var(--surface-2);font-weight:600}
-  .whoami{margin-top:20px;padding:10px;border-top:1px solid var(--border);
+  .whoami{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--border);
     color:var(--muted);font-size:12px;word-break:break-all}
-  main{padding:32px 36px;max-width:1040px}
+  .whoami button{margin-top:8px;width:100%}
+  main{padding:32px 36px;max-width:1120px}
   h2{font-size:15px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-2);
-    font-weight:600;margin:0 0 18px}
+    font-weight:600;margin:0 0 18px;display:flex;align-items:center;gap:12px}
+  h2 .crumb{color:var(--muted);font-weight:500;text-transform:none;letter-spacing:0}
+  .back{background:none;border:0;color:var(--accent);cursor:pointer;font:inherit;padding:0}
+  .back:hover{color:var(--accent-hover)}
   .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
     padding:20px;margin-bottom:16px}
   label{display:block;color:var(--text-2);font-size:12px;letter-spacing:.04em;
@@ -39,6 +46,7 @@
   input,select{background:var(--inset);color:var(--text);border:1px solid var(--border-strong);
     border-radius:6px;padding:8px 12px;font:inherit}
   input:focus,select:focus{outline:none;border-color:var(--accent)}
+  input.search{min-width:260px}
   button{background:var(--accent);color:var(--accent-on);border:0;border-radius:6px;
     padding:8px 16px;font:inherit;font-weight:600;cursor:pointer}
   button:hover{background:var(--accent-hover)}
@@ -53,34 +61,55 @@
     text-align:left;font-weight:500;padding:8px 10px;border-bottom:1px solid var(--border-strong)}
   td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
   td.strong{font-weight:600}
+  tr.click{cursor:pointer}
+  tr.click:hover td{background:var(--surface-2)}
   .dim{color:var(--text-2)} .dimmer{color:var(--muted);font-size:12px}
+  .mono{font-family:var(--mono);font-size:12px}
   .pill{display:inline-block;border:1px solid var(--border-strong);border-radius:999px;
     padding:1px 10px;font-size:12px;color:var(--text-2)}
   .pill.owner,.pill.admin{color:var(--accent);border-color:var(--accent)}
+  .pill.archived{color:var(--danger)}
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
   .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
   .stat .n{font-size:26px;font-weight:700;color:var(--accent);line-height:1.2}
   .stat .l{color:var(--muted);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
-  .teamchip{background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text-2);
-    border-radius:999px;padding:5px 14px;cursor:pointer;font:inherit}
-  .teamchip:hover{color:var(--text);border-color:var(--accent)}
-  .teamchip.active{background:var(--accent);color:var(--accent-on);border-color:var(--accent);font-weight:600}
   .empty{color:var(--muted);padding:12px 2px}
   .spin{color:var(--muted);padding:12px 2px}
   #status{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
     background:var(--surface-2);border:1px solid var(--border-strong);border-radius:8px;
     padding:10px 18px;font-size:13px;display:none;max-width:80vw;z-index:9}
   #status.err{color:var(--danger)} #status.ok{color:var(--ok)}
-  #gate{max-width:520px;margin:16vh auto 0;padding:0 24px}
+  #gate{max-width:520px;margin:14vh auto 0;padding:0 24px}
   #gate .brand{border:0;text-align:center;font-size:18px;padding-bottom:8px}
+  #gate .sso{width:100%;padding:11px;font-size:14px}
+  .or{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:11px;
+    letter-spacing:.1em;text-transform:uppercase;margin:16px 0}
+  .or::before,.or::after{content:"";flex:1;border-top:1px solid var(--border)}
   [hidden]{display:none !important}
   form.orgform .row{margin-bottom:14px}
+  /* activity chart */
+  .chart-wrap{position:relative}
+  .chart-wrap svg{display:block;width:100%;height:150px}
+  .chart-bar{fill:var(--bar)}
+  .chart-bar:hover,.chart-bar.hot{fill:var(--accent)}
+  .chart-grid{stroke:var(--border-strong);stroke-width:1}
+  .chart-ylab,.chart-xlab{fill:var(--muted);font-size:10px}
+  .chart-maxlab{fill:var(--text-2);font-size:10px}
+  #tooltip{position:fixed;pointer-events:none;background:var(--surface-2);
+    border:1px solid var(--border-strong);border-radius:8px;padding:8px 12px;font-size:12px;
+    color:var(--text);display:none;z-index:10;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+  #tooltip .t-day{color:var(--muted);margin-bottom:2px}
 </style>
 </head>
 <body>
 
-<div id="gate">
+<div id="gate" hidden>
   <div class="brand">Glyph<b>io</b> admin</div>
+  <div class="card" id="sso-card" hidden>
+    <button class="sso" id="sso">Sign in with SSO</button>
+    <p class="hint">Authorization Code + PKCE in this browser. The token stays in this tab's session.</p>
+  </div>
+  <div class="or" id="gate-or" hidden>or paste a token</div>
   <div class="card">
     <label for="token">Bearer token</label>
     <div class="row">
@@ -89,6 +118,7 @@
     </div>
     <p class="hint">Kept in this tab's memory only — nothing is stored.</p>
   </div>
+  <p class="hint" id="gate-msg"></p>
 </div>
 
 <div class="shell" id="shell" hidden>
@@ -97,19 +127,22 @@
     <button class="navbtn" data-view="overview">Overview</button>
     <button class="navbtn" data-view="teams">Teams</button>
     <button class="navbtn" data-view="members">Members</button>
-    <button class="navbtn" data-view="org" id="nav-org">Org settings</button>
     <button class="navbtn" data-view="audit" id="nav-audit">Audit</button>
-    <div class="whoami" id="whoami"></div>
+    <button class="navbtn" data-view="org" id="nav-org">Org settings</button>
+    <div class="whoami"><span id="whoami"></span><button class="ghost" id="signout">Sign out</button></div>
   </nav>
   <main id="main"></main>
 </div>
 <div id="status"></div>
+<div id="tooltip"></div>
 
 <script>
 "use strict";
 const ROLES = ["reader","writer","manager","admin","owner"];
 const rank = r => ROLES.indexOf(r);
 let token = "", me = null, myTeams = [], view = "overview";
+const SESSION_KEY = "glyphio.admin.session";
+const PKCE_KEY = "glyphio.admin.pkce";
 
 const $ = s => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -125,6 +158,7 @@ const api = async (path, opts = {}) => {
   const res = await fetch(path, { ...opts,
     headers: { "Authorization": "Bearer " + token,
                ...(opts.body ? { "Content-Type": "application/json" } : {}) } });
+  if (res.status === 401) { signOut(false); throw new Error("session expired — sign in again"); }
   if (!res.ok) {
     let d = res.status + " " + res.statusText;
     try { const p = await res.json(); d = p.detail || p.title || d; } catch {}
@@ -144,14 +178,116 @@ function toast(msg, cls) {
 const isOwner = () => myTeams.some(t => t.role === "owner");
 const isAdmin = () => myTeams.some(t => rank(t.role) >= rank("admin"));
 
-// ---- connect -------------------------------------------------------------------
+// ---- sign-in: OIDC (Authorization Code + PKCE, browser-side) or token paste ----------
 
-$("#connect").addEventListener("click", connect);
-$("#token").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+const b64url = bytes => btoa(String.fromCharCode(...bytes))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const randUrl = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
+async function s256(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return b64url(new Uint8Array(digest));
+}
+const jwtPayload = t => {
+  try { return JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))); }
+  catch { return null; }
+};
 
-async function connect() {
-  token = $("#token").value.trim();
-  if (!token) return toast("Paste a token first.", "err");
+async function oidcStart() {
+  try {
+    const cfg = await fetch("/admin/v1/config").then(r => r.json());
+    const issuer = cfg.issuer.replace(/\/$/, "");
+    const disc = await fetch(issuer + "/.well-known/openid-configuration").then(r => r.json());
+    const verifier = randUrl(48), state = randUrl(12), nonce = randUrl(12);
+    sessionStorage.setItem(PKCE_KEY, JSON.stringify({
+      verifier, state, nonce,
+      tokenEndpoint: disc.token_endpoint, clientId: cfg.clientId,
+    }));
+    const p = new URLSearchParams({
+      response_type: "code",
+      client_id: cfg.clientId,
+      redirect_uri: location.origin + "/admin",
+      scope: cfg.scopes || "openid profile email",
+      state, nonce,
+      code_challenge: await s256(verifier),
+      code_challenge_method: "S256",
+    });
+    location.href = disc.authorization_endpoint + "?" + p;
+  } catch (e) { toast("SSO start failed: " + e.message, "err"); }
+}
+
+// Handles the ?code=… return leg. Returns the ID token, or null if this isn't a return.
+async function oidcComplete() {
+  const q = new URLSearchParams(location.search);
+  const code = q.get("code");
+  if (!code) {
+    if (q.get("error")) toast("SSO failed: " + (q.get("error_description") || q.get("error")), "err");
+    return null;
+  }
+  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) || "null");
+  sessionStorage.removeItem(PKCE_KEY);
+  history.replaceState({}, "", "/admin"); // never leave the code in the URL/history
+  if (!saved || q.get("state") !== saved.state) {
+    toast("SSO failed: state mismatch — try again.", "err");
+    return null;
+  }
+  const res = await fetch(saved.tokenEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: location.origin + "/admin",
+      client_id: saved.clientId,
+      code_verifier: saved.verifier,
+    }),
+  });
+  if (!res.ok) {
+    toast("SSO token exchange failed (" + res.status + ") — is the console client registered as a public SPA client with CORS?", "err");
+    return null;
+  }
+  const tokens = await res.json();
+  const idToken = tokens.id_token;
+  const claims = idToken && jwtPayload(idToken);
+  if (!claims || (saved.nonce && claims.nonce && claims.nonce !== saved.nonce)) {
+    toast("SSO failed: bad ID token.", "err");
+    return null;
+  }
+  // The server re-validates signature/issuer/audience/expiry on every request; the
+  // session copy here is only a convenience cache for this tab.
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token: idToken, exp: claims.exp || 0 }));
+  return idToken;
+}
+
+function savedSession() {
+  const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+  if (s && s.exp && s.exp * 1000 > Date.now() + 60_000) return s.token;
+  sessionStorage.removeItem(SESSION_KEY);
+  return null;
+}
+
+function signOut(navigate = true) {
+  sessionStorage.removeItem(SESSION_KEY);
+  token = ""; me = null; myTeams = [];
+  if (navigate) location.replace("/admin");
+}
+
+async function boot() {
+  const cfg = await fetch("/admin/v1/config").then(r => r.json()).catch(() => ({ oidcEnabled: false }));
+  $("#sso-card").hidden = !cfg.oidcEnabled;
+  $("#gate-or").hidden = !cfg.oidcEnabled;
+
+  const fromRedirect = await oidcComplete().catch(e => { toast("SSO failed: " + e.message, "err"); return null; });
+  const t = fromRedirect || savedSession();
+  if (t) {
+    token = t;
+    const ok = await connectWith(t);
+    if (ok) return;
+  }
+  $("#gate").hidden = false;
+}
+
+async function connectWith(t) {
+  token = t;
   try {
     [me, myTeams] = await Promise.all([api("/v1/me"), api("/admin/v1/teams")]);
     $("#gate").hidden = true;
@@ -160,21 +296,49 @@ async function connect() {
     $("#nav-org").hidden = !isOwner();
     $("#nav-audit").hidden = !isAdmin() && !isOwner();
     show("overview");
-    toast("Connected.", "ok");
-  } catch (e) { toast("Connect failed: " + e.message, "err"); }
+    return true;
+  } catch (e) {
+    toast("Connect failed: " + e.message, "err");
+    $("#gate").hidden = false;
+    return false;
+  }
 }
+
+$("#sso").addEventListener("click", oidcStart);
+$("#signout").addEventListener("click", () => signOut());
+$("#connect").addEventListener("click", () => {
+  const t = $("#token").value.trim();
+  if (!t) return toast("Paste a token first.", "err");
+  connectWith(t).then(ok => { if (ok) toast("Connected.", "ok"); });
+});
+$("#token").addEventListener("keydown", e => { if (e.key === "Enter") $("#connect").click(); });
+
+boot();
+
+// ---- navigation ------------------------------------------------------------------
 
 document.querySelectorAll(".navbtn").forEach(b =>
   b.addEventListener("click", () => show(b.dataset.view)));
 
-function show(v) {
+const VIEWS = {
+  overview: () => overview(),
+  teams: () => teams(),
+  team: arg => teamDetail(arg),
+  members: () => members(),
+  member: arg => memberDetail(arg),
+  org: () => org(),
+  audit: () => audit(),
+};
+
+function show(v, arg) {
   view = v;
+  const navFor = { team: "teams", member: "members" }[v] || v;
   document.querySelectorAll(".navbtn").forEach(b =>
-    b.classList.toggle("active", b.dataset.view === v));
+    b.classList.toggle("active", b.dataset.view === navFor));
   const main = $("#main");
   main.innerHTML = "";
   main.appendChild(el("div", "spin", "Loading…"));
-  ({ overview, teams, members, org, audit })[v]().catch(e => {
+  VIEWS[v](arg).catch(e => {
     main.innerHTML = "";
     main.appendChild(el("div", "empty", "Failed to load: " + e.message));
   });
@@ -182,63 +346,155 @@ function show(v) {
 
 async function refreshTeams() { myTeams = await api("/admin/v1/teams"); }
 
+function heading(text, backView, crumb) {
+  const h = el("h2");
+  if (backView) {
+    const b = el("button", "back", "‹ " + backView[1]);
+    b.addEventListener("click", () => show(backView[0]));
+    h.appendChild(b);
+  }
+  h.appendChild(document.createTextNode(text));
+  if (crumb) h.appendChild(el("span", "crumb", crumb));
+  return h;
+}
+
 // ---- overview ------------------------------------------------------------------
 
 async function overview() {
-  const rosters = await Promise.all(
-    myTeams.map(t => api(`/v1/teams/${encodeURIComponent(t.team)}/members`).catch(() => ({ members: [] }))));
-  const people = new Set();
-  rosters.forEach(r => r.members.forEach(m => people.add(m.sub)));
+  const stats = await api("/admin/v1/stats");
+  const totalMembers = new Set();
+  // Cross-team unique members need rosters; team counters cover per-team uniqueness.
+  const rosters = await Promise.all(stats.teams.map(t =>
+    api(`/v1/teams/${encodeURIComponent(t.team)}/members`).catch(() => ({ members: [] }))));
+  rosters.forEach(r => r.members.forEach(m => totalMembers.add(m.sub)));
+  const events30 = stats.activity.reduce((n, d) => n + d.pushes + d.roles + d.invites + d.other, 0);
 
   const main = $("#main");
   main.innerHTML = "";
-  main.appendChild(el("h2", null, "Overview"));
-  const stats = el("div", "stats");
+  main.appendChild(heading("Overview"));
+  const tiles = el("div", "stats");
   const stat = (n, l) => {
     const s = el("div", "stat");
     s.appendChild(el("div", "n", String(n)));
     s.appendChild(el("div", "l", l));
     return s;
   };
-  stats.appendChild(stat(myTeams.length, "teams"));
-  stats.appendChild(stat(people.size, "members"));
-  main.appendChild(stats);
+  tiles.appendChild(stat(stats.teams.filter(t => !t.archived).length, "teams"));
+  tiles.appendChild(stat(totalMembers.size, "members"));
+  if (stats.activity.length || isAdmin() || isOwner()) tiles.appendChild(stat(events30, "events · 30 days"));
+  main.appendChild(tiles);
+
+  if (stats.activity.length) {
+    const card = el("div", "card");
+    card.appendChild(el("label", null, "Activity — last 30 days"));
+    card.appendChild(activityChart(stats.activity));
+    main.appendChild(card);
+  }
 
   if (isOwner() || isAdmin()) {
     const card = el("div", "card");
     card.appendChild(el("label", null, "Recent activity"));
     try {
-      const entries = await api("/admin/v1/audit?limit=12");
+      const entries = await api("/admin/v1/audit?limit=8");
       card.appendChild(auditTable(entries));
     } catch (e) { card.appendChild(el("p", "empty", "Audit unavailable: " + e.message)); }
     main.appendChild(card);
   }
 }
 
-// ---- teams ---------------------------------------------------------------------
+// Daily event counts as a single-series bar chart (SVG, hover tooltip with the
+// per-category breakdown; the max bar is direct-labeled).
+function activityChart(activity) {
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
+    const row = activity.find(a => a.day === d);
+    days.push(row || { day: d, pushes: 0, roles: 0, invites: 0, other: 0 });
+  }
+  const total = d => d.pushes + d.roles + d.invites + d.other;
+  const max = Math.max(1, ...days.map(total));
 
-let currentTeam = null;
+  const W = 960, H = 150, padL = 30, padB = 18, padT = 14;
+  const plotW = W - padL - 6, plotH = H - padT - padB;
+  const bw = plotW / days.length;
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Daily admin/sync events over the last 30 days");
+
+  // Recessive grid: baseline + one reference line at the max.
+  for (const [y, lab] of [[padT, String(max)], [padT + plotH, "0"]]) {
+    const line = document.createElementNS(svgNS, "line");
+    line.setAttribute("x1", padL); line.setAttribute("x2", W - 6);
+    line.setAttribute("y1", y); line.setAttribute("y2", y);
+    line.setAttribute("class", "chart-grid");
+    svg.appendChild(line);
+    const t = document.createElementNS(svgNS, "text");
+    t.setAttribute("x", padL - 6); t.setAttribute("y", y + 3);
+    t.setAttribute("text-anchor", "end");
+    t.setAttribute("class", "chart-ylab");
+    t.textContent = lab;
+    svg.appendChild(t);
+  }
+
+  const tooltip = $("#tooltip");
+  const maxIdx = days.reduce((best, d, i) => total(d) > total(days[best]) ? i : best, 0);
+  days.forEach((d, i) => {
+    const n = total(d);
+    const h = Math.round((n / max) * plotH);
+    const x = padL + i * bw + 1;
+    const y = padT + plotH - h;
+    const rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", x); rect.setAttribute("width", Math.max(2, bw - 2));
+    // Rounded top on data end, square at the baseline: clip a slightly taller rect.
+    rect.setAttribute("y", y); rect.setAttribute("height", Math.max(n > 0 ? 2 : 0, h));
+    rect.setAttribute("rx", 2);
+    rect.setAttribute("class", "chart-bar");
+    rect.addEventListener("mousemove", ev => {
+      tooltip.style.display = "block";
+      tooltip.style.left = Math.min(ev.clientX + 14, innerWidth - 220) + "px";
+      tooltip.style.top = (ev.clientY + 14) + "px";
+      tooltip.innerHTML = `<div class="t-day">${esc(d.day)}</div>` +
+        `<b>${n}</b> event${n === 1 ? "" : "s"}` +
+        (n ? `<br><span class="dim">${d.pushes} pushes · ${d.roles} roles · ${d.invites} invites · ${d.other} other</span>` : "");
+    });
+    rect.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+    svg.appendChild(rect);
+    if (i === maxIdx && n > 0) {
+      const t = document.createElementNS(svgNS, "text");
+      t.setAttribute("x", x + bw / 2); t.setAttribute("y", y - 4);
+      t.setAttribute("text-anchor", "middle");
+      t.setAttribute("class", "chart-maxlab");
+      t.textContent = String(n);
+      svg.appendChild(t);
+    }
+    if (i % 7 === 0) {
+      const t = document.createElementNS(svgNS, "text");
+      t.setAttribute("x", x); t.setAttribute("y", H - 4);
+      t.setAttribute("class", "chart-xlab");
+      t.textContent = d.day.slice(5);
+      svg.appendChild(t);
+    }
+  });
+
+  const wrap = el("div", "chart-wrap");
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// ---- teams (list → detail) --------------------------------------------------------
 
 async function teams() {
-  await refreshTeams();
+  const [, stats] = await Promise.all([refreshTeams(), api("/admin/v1/stats").catch(() => ({ teams: [] }))]);
+  const counts = new Map(stats.teams.map(t => [t.team, t]));
   const main = $("#main");
   main.innerHTML = "";
-  main.appendChild(el("h2", null, "Teams"));
+  main.appendChild(heading("Teams"));
 
-  const list = el("div", "card");
-  list.appendChild(el("label", null, "My teams"));
-  const chips = el("div", "row");
-  if (!myTeams.length) chips.appendChild(el("p", "empty", "No teams you can administer."));
-  for (const t of myTeams) {
-    const c = el("button", "teamchip" + (currentTeam === t.team ? " active" : ""), t.team);
-    c.addEventListener("click", () => { currentTeam = t.team; teams(); });
-    chips.appendChild(c);
-  }
-  list.appendChild(chips);
-
-  // Create (the server enforces the org policy; errors are surfaced as-is).
-  const create = el("div", "row");
-  create.style.marginTop = "14px";
+  const card = el("div", "card");
+  const top = el("div", "row");
+  const search = el("input", "search"); search.placeholder = "Filter teams…";
   const inp = el("input"); inp.placeholder = "new-team-name"; inp.maxLength = 64;
   const btn = el("button", null, "Create team");
   btn.addEventListener("click", async () => {
@@ -247,26 +503,61 @@ async function teams() {
     try {
       await api("/admin/v1/teams", { method: "POST", body: JSON.stringify({ team: name }) });
       toast(`Team ${name} created — you are its owner.`, "ok");
-      inp.value = ""; currentTeam = name;
-      await refreshTeams(); teams();
+      show("team", name);
     } catch (e) { toast("Create failed: " + e.message, "err"); }
   });
-  create.appendChild(inp); create.appendChild(btn);
-  list.appendChild(create);
-  list.appendChild(el("p", "hint",
-    "Creation follows the org team-creation policy; the creator becomes owner. Re-creating an archived team's name (as its owner) revives it."));
-  main.appendChild(list);
+  top.appendChild(search);
+  top.appendChild(el("span")).style.flex = "1";
+  top.appendChild(inp); top.appendChild(btn);
+  card.appendChild(top);
 
-  if (currentTeam && myTeams.some(t => t.team === currentTeam)) {
-    const t = myTeams.find(x => x.team === currentTeam);
-    main.appendChild(await rosterCard(t));
-    main.appendChild(await groupsCard(t));
-  }
+  const table = el("table");
+  table.innerHTML = `<thead><tr><th>Team</th><th>Members</th><th>Your role</th></tr></thead>`;
+  const tb = el("tbody");
+  const draw = () => {
+    const f = search.value.trim().toLowerCase();
+    tb.innerHTML = "";
+    const rows = myTeams.filter(t => !f || t.team.toLowerCase().includes(f));
+    for (const t of rows) {
+      const c = counts.get(t.team);
+      const tr = el("tr", "click");
+      tr.innerHTML = `
+        <td class="strong">${esc(t.team)}${c?.archived ? ' <span class="pill archived">archived</span>' : ""}</td>
+        <td class="dim">${c ? c.members : "—"}</td>
+        <td><span class="pill ${t.role}">${t.role}</span></td>`;
+      tr.addEventListener("click", () => show("team", t.team));
+      tb.appendChild(tr);
+    }
+    if (!rows.length) tb.innerHTML = `<tr><td colspan="3" class="empty">No teams you can administer.</td></tr>`;
+  };
+  search.addEventListener("input", draw);
+  draw();
+  table.appendChild(tb);
+  card.appendChild(table);
+  card.appendChild(el("p", "hint",
+    "Creation follows the org team-creation policy; the creator becomes owner. Re-creating an archived team's name (as its owner) revives it."));
+  main.appendChild(card);
 }
 
-async function rosterCard(t) {
+async function teamDetail(team) {
+  await refreshTeams();
+  const t = myTeams.find(x => x.team === team);
+  const main = $("#main");
+  main.innerHTML = "";
+  if (!t) {
+    main.appendChild(heading("Teams"));
+    main.appendChild(el("p", "empty", `No admin access to ${team}.`));
+    return;
+  }
+  main.appendChild(heading(t.team, ["teams", "Teams"], `you: ${t.role}`));
+  const refresh = () => show("team", team);
+  main.appendChild(await rosterCard(t, refresh));
+  main.appendChild(await groupsCard(t, refresh));
+}
+
+async function rosterCard(t, refresh) {
   const card = el("div", "card");
-  card.appendChild(el("label", null, `Roster — ${t.team} (you: ${t.role})`));
+  card.appendChild(el("label", null, "Roster"));
   try {
     const [rows, mem] = await Promise.all([
       api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles`),
@@ -275,7 +566,7 @@ async function rosterCard(t) {
     const bySub = new Map();
     for (const m of mem.members) bySub.set(m.sub, { ...m });
     for (const r of rows) bySub.set(r.sub, { ...(bySub.get(r.sub) || { sub: r.sub }), role: r.role });
-    card.appendChild(rosterTable(t, [...bySub.values()].sort((a, b) => a.sub.localeCompare(b.sub))));
+    card.appendChild(rosterTable(t, [...bySub.values()].sort((a, b) => a.sub.localeCompare(b.sub)), refresh));
   } catch (e) { card.appendChild(el("p", "empty", "Failed: " + e.message)); }
 
   // Add member by sub — manager+ (their grant ceiling; the server enforces it regardless).
@@ -292,7 +583,7 @@ async function rosterCard(t) {
     try {
       await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles/${encodeURIComponent(s)}`,
         { method: "PUT", body: JSON.stringify({ role: sel.value }) });
-      toast(`${s} → ${sel.value}.`, "ok"); sub.value = ""; teams();
+      toast(`${s} → ${sel.value}.`, "ok"); sub.value = ""; refresh();
     } catch (e) { toast("Failed: " + e.message, "err"); }
   });
   add.appendChild(sub); add.appendChild(sel); add.appendChild(btn);
@@ -307,8 +598,8 @@ async function rosterCard(t) {
       if (!confirm(`Archive ${t.team}? Data is kept; sync stops; re-create with the same name to revive.`)) return;
       try {
         await api(`/admin/v1/teams/${encodeURIComponent(t.team)}`, { method: "DELETE" });
-        toast(`${t.team} archived.`, "ok"); currentTeam = null;
-        await refreshTeams(); teams();
+        toast(`${t.team} archived.`, "ok");
+        show("teams");
       } catch (e) { toast("Archive failed: " + e.message, "err"); }
     });
     arch.appendChild(b);
@@ -317,7 +608,7 @@ async function rosterCard(t) {
   return card;
 }
 
-function rosterTable(t, people) {
+function rosterTable(t, people, refresh) {
   const table = el("table");
   table.innerHTML = `<thead><tr><th>Member</th><th>Last seen</th><th>Role</th><th></th></tr></thead>`;
   const tb = el("tbody");
@@ -327,7 +618,9 @@ function rosterTable(t, people) {
   for (const p of people) {
     const tr = el("tr");
     const who = el("td", "strong");
-    who.innerHTML = esc(p.sub) + (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
+    who.innerHTML = `<span class="click" style="cursor:pointer">${esc(p.sub)}</span>` +
+      (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
+    who.firstChild.addEventListener("click", () => show("member", p.sub));
     tr.appendChild(who);
     const seen = el("td");
     seen.innerHTML = `<span class="dimmer">${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—"}</span>`;
@@ -348,8 +641,8 @@ function rosterTable(t, people) {
         try {
           if (sel.value === "") await api(url, { method: "DELETE" });
           else await api(url, { method: "PUT", body: JSON.stringify({ role: sel.value }) });
-          toast(`${p.sub} → ${sel.value || "default"}.`, "ok"); teams();
-        } catch (e) { toast("Change failed: " + e.message, "err"); teams(); }
+          toast(`${p.sub} → ${sel.value || "default"}.`, "ok"); refresh();
+        } catch (e) { toast("Change failed: " + e.message, "err"); refresh(); }
       });
       roleTd.appendChild(sel);
     } else {
@@ -364,7 +657,7 @@ function rosterTable(t, people) {
       rm.addEventListener("click", async () => {
         try {
           await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/roles/${encodeURIComponent(p.sub)}`, { method: "DELETE" });
-          toast(`Removed role row for ${p.sub}.`, "ok"); teams();
+          toast(`Removed role row for ${p.sub}.`, "ok"); refresh();
         } catch (e) { toast("Remove failed: " + e.message, "err"); }
       });
       act.appendChild(rm);
@@ -377,7 +670,7 @@ function rosterTable(t, people) {
         if (!confirm(`Revoke ${p.sub}'s access to ${t.team}? Their invite tokens for this team stop working.`)) return;
         try {
           await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/access/${encodeURIComponent(p.sub)}`, { method: "DELETE" });
-          toast(`Access revoked for ${p.sub}.`, "ok"); teams();
+          toast(`Access revoked for ${p.sub}.`, "ok"); refresh();
         } catch (e) { toast("Revoke failed: " + e.message, "err"); }
       });
       act.appendChild(rv);
@@ -432,7 +725,7 @@ function inviteSection(t) {
         const row = el("div", "row");
         row.style.marginBottom = "8px";
         const inp = el("input"); inp.readOnly = true; inp.value = value; inp.style.flex = "1";
-        inp.style.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+        inp.className = "mono";
         inp.title = labelText;
         const b = el("button", null, buttonText);
         b.addEventListener("click", async () => {
@@ -464,9 +757,9 @@ function inviteSection(t) {
 
 // ---- restricted groups ---------------------------------------------------------------
 
-async function groupsCard(t) {
+async function groupsCard(t, refresh) {
   const card = el("div", "card");
-  card.appendChild(el("label", null, `Groups — ${t.team}`));
+  card.appendChild(el("label", null, "Groups"));
   let groups;
   try { groups = await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups`); }
   catch (e) { card.appendChild(el("p", "empty", "Failed: " + e.message)); return card; }
@@ -488,7 +781,7 @@ async function groupsCard(t) {
         await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/restricted`,
           { method: "PUT", body: JSON.stringify({ restricted: !g.restricted }) });
         toast(`${g.name} is now ${!g.restricted ? "restricted" : "open"}.`, "ok");
-        teams();
+        refresh();
       } catch (e) { toast("Toggle failed: " + e.message, "err"); }
     });
     row.appendChild(flag);
@@ -509,7 +802,7 @@ async function groupsCard(t) {
             try {
               await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/acl/${encodeURIComponent(a.sub)}`,
                 { method: "DELETE" });
-              toast(`Grant removed for ${a.sub}.`, "ok"); teams();
+              toast(`Grant removed for ${a.sub}.`, "ok"); refresh();
             } catch (e) { toast("Failed: " + e.message, "err"); }
           });
           arow.appendChild(del);
@@ -528,7 +821,7 @@ async function groupsCard(t) {
         try {
           await api(`/admin/v1/teams/${encodeURIComponent(t.team)}/groups/${encodeURIComponent(g.id)}/acl/${encodeURIComponent(sv)}`,
             { method: "PUT", body: JSON.stringify({ level: glevel.value }) });
-          toast(`${sv} → ${glevel.value} on ${g.name}.`, "ok"); teams();
+          toast(`${sv} → ${glevel.value} on ${g.name}.`, "ok"); refresh();
         } catch (e) { toast("Grant failed: " + e.message, "err"); }
       });
       grow.appendChild(gsub); grow.appendChild(glevel); grow.appendChild(gbtn);
@@ -541,11 +834,10 @@ async function groupsCard(t) {
   return card;
 }
 
-// ---- members (cross-team, deduped) ------------------------------------------------
+// ---- members (cross-team, deduped, searchable → detail) ----------------------------
 
-async function members() {
+async function collectPeople() {
   await refreshTeams();
-  const main = $("#main");
   const results = await Promise.all(myTeams.map(async t => {
     const [mem, rows] = await Promise.all([
       api(`/v1/teams/${encodeURIComponent(t.team)}/members`).catch(() => ({ members: [] })),
@@ -569,29 +861,97 @@ async function members() {
         people.get(sub).teams.push({ team: r.team, role });
     }
   }
+  return people;
+}
+
+async function members() {
+  const people = await collectPeople();
+  const main = $("#main");
   main.innerHTML = "";
-  main.appendChild(el("h2", null, "Members"));
+  main.appendChild(heading("Members"));
   const card = el("div", "card");
+  const search = el("input", "search"); search.placeholder = "Filter by sub / email / team…";
+  card.appendChild(search);
+  const holder = el("div"); holder.style.marginTop = "12px";
+  card.appendChild(holder);
+
+  const draw = () => {
+    const f = search.value.trim().toLowerCase();
+    const rows = [...people.values()]
+      .filter(p => !f || p.sub.toLowerCase().includes(f) || (p.email || "").toLowerCase().includes(f)
+        || p.teams.some(x => x.team.toLowerCase().includes(f)))
+      .sort((a, b) => a.sub.localeCompare(b.sub));
+    holder.innerHTML = "";
+    const table = el("table");
+    table.innerHTML = `<thead><tr><th>Member</th><th>Last seen</th><th>Teams · roles</th></tr></thead>`;
+    const tb = el("tbody");
+    for (const p of rows) {
+      const tr = el("tr", "click");
+      const who = el("td", "strong");
+      who.innerHTML = esc(p.sub) + (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
+      tr.appendChild(who);
+      const seen = el("td");
+      seen.innerHTML = `<span class="dimmer">${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—"}</span>`;
+      tr.appendChild(seen);
+      const tt = el("td");
+      tt.innerHTML = p.teams.map(x =>
+        `<span class="pill ${x.role}">${esc(x.team)} · ${x.role}</span>`).join(" ");
+      tr.appendChild(tt);
+      tr.addEventListener("click", () => show("member", p.sub));
+      tb.appendChild(tr);
+    }
+    if (!rows.length) tb.innerHTML = `<tr><td colspan="3" class="empty">Nobody matches.</td></tr>`;
+    table.appendChild(tb);
+    holder.appendChild(table);
+  };
+  search.addEventListener("input", draw);
+  draw();
+  main.appendChild(card);
+}
+
+async function memberDetail(sub) {
+  const people = await collectPeople();
+  const p = people.get(sub);
+  const main = $("#main");
+  main.innerHTML = "";
+  main.appendChild(heading(sub, ["members", "Members"], p?.email || ""));
+  if (!p) {
+    main.appendChild(el("p", "empty", "Not seen in any team you administer."));
+    return;
+  }
+  const card = el("div", "card");
+  card.appendChild(el("label", null, "Team access"));
   const table = el("table");
-  table.innerHTML = `<thead><tr><th>Member</th><th>Last seen</th><th>Teams · roles</th></tr></thead>`;
+  table.innerHTML = `<thead><tr><th>Team</th><th>Role</th><th></th></tr></thead>`;
   const tb = el("tbody");
-  for (const p of [...people.values()].sort((a, b) => a.sub.localeCompare(b.sub))) {
+  for (const x of p.teams.sort((a, b) => a.team.localeCompare(b.team))) {
+    const t = myTeams.find(y => y.team === x.team);
     const tr = el("tr");
-    const who = el("td", "strong");
-    who.innerHTML = esc(p.sub) + (p.email ? ` <span class="dim">· ${esc(p.email)}</span>` : "");
-    tr.appendChild(who);
-    const seen = el("td");
-    seen.innerHTML = `<span class="dimmer">${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "—"}</span>`;
-    tr.appendChild(seen);
-    const tt = el("td");
-    tt.innerHTML = p.teams.map(x =>
-      `<span class="pill ${x.role}">${esc(x.team)} · ${x.role}</span>`).join(" ");
-    tr.appendChild(tt);
+    tr.innerHTML = `<td class="strong">${esc(x.team)}</td><td><span class="pill ${x.role}">${x.role}</span></td>`;
+    const act = el("td");
+    if (t && sub !== me.sub) {
+      const open = el("button", "ghost", "manage in team");
+      open.addEventListener("click", () => show("team", x.team));
+      act.appendChild(open);
+      const rv = el("button", "danger", "revoke access");
+      rv.style.marginLeft = "6px";
+      rv.addEventListener("click", async () => {
+        if (!confirm(`Revoke ${sub}'s access to ${x.team}?`)) return;
+        try {
+          await api(`/admin/v1/teams/${encodeURIComponent(x.team)}/access/${encodeURIComponent(sub)}`, { method: "DELETE" });
+          toast(`Access revoked for ${sub} on ${x.team}.`, "ok");
+          show("member", sub);
+        } catch (e) { toast("Revoke failed: " + e.message, "err"); }
+      });
+      act.appendChild(rv);
+    }
+    tr.appendChild(act);
     tb.appendChild(tr);
   }
-  if (!people.size) tb.innerHTML = `<tr><td colspan="3" class="empty">Nobody seen yet.</td></tr>`;
   table.appendChild(tb);
   card.appendChild(table);
+  card.appendChild(el("p", "hint",
+    `Last seen: ${p.lastSeen ? new Date(p.lastSeen).toLocaleString() : "never"}. Role changes respect your per-team grant ceiling (server-enforced).`));
   main.appendChild(card);
 }
 
@@ -601,7 +961,7 @@ async function org() {
   const settings = await api("/admin/v1/org");
   const main = $("#main");
   main.innerHTML = "";
-  main.appendChild(el("h2", null, "Org settings"));
+  main.appendChild(heading("Org settings"));
   const card = el("div", "card");
   card.innerHTML = `
     <form class="orgform">
@@ -648,31 +1008,52 @@ async function audit() {
   await refreshTeams();
   const main = $("#main");
   main.innerHTML = "";
-  main.appendChild(el("h2", null, "Audit log"));
+  main.appendChild(heading("Audit log"));
   const card = el("div", "card");
   const filter = el("div", "row");
   const sel = el("select");
   sel.append(new Option("all my teams", ""));
   for (const t of myTeams) if (rank(t.role) >= rank("admin")) sel.append(new Option(t.team, t.team));
+  const action = el("input"); action.placeholder = "action contains…"; action.style.width = "160px";
+  const actor = el("input"); actor.placeholder = "actor contains…"; actor.style.width = "160px";
   const n = el("input"); n.type = "number"; n.min = 1; n.max = 500; n.value = 100; n.style.width = "90px";
   const go = el("button", null, "Load");
-  filter.appendChild(sel); filter.appendChild(n); filter.appendChild(go);
+  const csv = el("button", "ghost", "Export CSV");
+  filter.appendChild(sel); filter.appendChild(action); filter.appendChild(actor);
+  filter.appendChild(n); filter.appendChild(go); filter.appendChild(csv);
   card.appendChild(filter);
   const holder = el("div"); holder.style.marginTop = "12px";
   card.appendChild(holder);
   main.appendChild(card);
 
+  let loaded = [];
   async function load() {
     holder.innerHTML = "";
     holder.appendChild(el("div", "spin", "Loading…"));
     try {
-      const q = sel.value ? `team=${encodeURIComponent(sel.value)}&` : "";
-      const entries = await api(`/admin/v1/audit?${q}limit=${n.value}`);
+      const q = new URLSearchParams({ limit: n.value });
+      if (sel.value) q.set("team", sel.value);
+      if (action.value.trim()) q.set("action", action.value.trim());
+      if (actor.value.trim()) q.set("actor", actor.value.trim());
+      loaded = await api(`/admin/v1/audit?${q}`);
       holder.innerHTML = "";
-      holder.appendChild(auditTable(entries));
+      holder.appendChild(auditTable(loaded));
     } catch (e) { holder.innerHTML = ""; holder.appendChild(el("p", "empty", "Failed: " + e.message)); }
   }
   go.addEventListener("click", load);
+  [action, actor].forEach(i => i.addEventListener("keydown", e => { if (e.key === "Enter") load(); }));
+  csv.addEventListener("click", () => {
+    if (!loaded.length) return toast("Load some entries first.", "err");
+    const head = ["ts", "actor", "action", "team", "target", "detail"];
+    const cell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const body = loaded.map(e => head.map(k => cell(e[k])).join(",")).join("\n");
+    const blob = new Blob([head.join(",") + "\n" + body], { type: "text/csv" });
+    const a = el("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `glyphio-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
   load();
 }
 

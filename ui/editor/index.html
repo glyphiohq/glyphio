@@ -14,6 +14,10 @@
         <span>Note</span>
         <input id="note" type="text" placeholder="e.g. a ticket id or short context" autocomplete="off">
       </label>
+      <label class="banner-toggle" title="Show the timestamp/context banner on this capture (the original capture time is always kept)">
+        <input id="banner-toggle" type="checkbox" checked>
+        <span>Banner</span>
+      </label>
       <div class="actions">
         <button id="copy" class="primary" type="button">Copy to clipboard</button>
         <button id="download" class="secondary" type="button">Download</button>
@@ -37,7 +41,7 @@
   </header>
   <main>
     <div id="crop-toolbar" class="crop-toolbar" hidden>
-      <span class="crop-hint">Drag on the image to select a region, then Apply. Esc cancels.</span>
+      <span class="crop-hint">Drag to select — corners resize, inside moves. Enter applies, Esc cancels.</span>
       <button id="crop-apply" class="primary" type="button">Apply</button>
       <button id="crop-cancel" type="button">Cancel</button>
     </div>

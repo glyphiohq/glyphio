@@ -317,12 +317,156 @@ pub async fn put_org(
     Ok(Json(new))
 }
 
+// ---- console config (unauthenticated) --------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsoleConfig {
+    /// Whether the console can offer browser OIDC sign-in (issuer + client id configured).
+    pub oidc_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Space-separated scopes for the console's auth request (`ADMIN_OIDC_SCOPES`,
+    /// default `openid profile email`; include your groups scope if the IdP needs it).
+    pub scopes: String,
+}
+
+/// GET /admin/v1/config — public: the console needs the issuer/client id BEFORE sign-in,
+/// and both are public knowledge (they appear in every auth redirect). No secrets here.
+/// `ADMIN_OIDC_CLIENT_ID` lets operators register a dedicated public SPA client for the
+/// console; it falls back to `OIDC_AUDIENCE` when the same client is used for both.
+pub async fn console_config() -> Json<ConsoleConfig> {
+    let non_empty = |v: std::result::Result<String, std::env::VarError>| {
+        v.ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let issuer = non_empty(std::env::var("OIDC_ISSUER"));
+    let client_id = non_empty(std::env::var("ADMIN_OIDC_CLIENT_ID"))
+        .or_else(|| non_empty(std::env::var("OIDC_AUDIENCE")));
+    let scopes = non_empty(std::env::var("ADMIN_OIDC_SCOPES"))
+        .unwrap_or_else(|| "openid profile email".to_string());
+    Json(ConsoleConfig {
+        oidc_enabled: issuer.is_some() && client_id.is_some(),
+        issuer,
+        client_id,
+        scopes,
+    })
+}
+
+// ---- stats (dashboard overview) ---------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStat {
+    pub team: String,
+    pub role: Role,
+    pub members: usize,
+    pub archived: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayActivity {
+    pub day: String, // YYYY-MM-DD (UTC)
+    pub pushes: u32,
+    pub roles: u32,
+    pub invites: u32,
+    pub other: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stats {
+    pub teams: Vec<TeamStat>,
+    /// Last 30 days of audit activity, oldest first. Empty for callers without audit access
+    /// (managers see team counters only).
+    pub activity: Vec<DayActivity>,
+}
+
+/// GET /admin/v1/stats — Overview counters + activity sparkline data. Team counters cover
+/// the teams the caller administers; activity is bucketed from the audit log under the same
+/// visibility rules as `GET /admin/v1/audit`.
+pub async fn stats(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+) -> Result<Json<Stats>, ApiError> {
+    let org = rbac::org(&state).await?;
+    let mine = caller_roles(&state, &id, &org).await?;
+    let admin_or_up: Vec<&String> =
+        mine.iter().filter(|(_, r)| *r >= Role::Admin).map(|(t, _)| t).collect();
+    let is_owner = mine.iter().any(|(_, r)| *r == Role::Owner);
+    if mine.iter().all(|(_, r)| *r < Role::Manager) {
+        return Err(ApiError::Forbidden);
+    }
+
+    let mut teams = Vec::new();
+    for (team, role) in mine.iter().filter(|(_, r)| *r >= Role::Manager) {
+        let mut subs: std::collections::HashSet<String> = state
+            .storage
+            .roles(team)
+            .await
+            .map_err(ApiError::Storage)?
+            .into_iter()
+            .map(|(sub, _)| sub)
+            .collect();
+        for m in state.storage.members(team).await.map_err(ApiError::Storage)? {
+            subs.insert(m.sub);
+        }
+        teams.push(TeamStat {
+            team: team.clone(),
+            role: *role,
+            members: subs.len(),
+            archived: state.storage.archived(team).await.map_err(ApiError::Storage)?,
+        });
+    }
+    teams.sort_by(|a, b| a.team.cmp(&b.team));
+
+    // Activity buckets, mirroring get_audit visibility (owner: everything; admins: their teams).
+    let mut activity: Vec<DayActivity> = Vec::new();
+    if is_owner || !admin_or_up.is_empty() {
+        let mut entries = state.storage.audit(None, 2000).await.map_err(ApiError::Storage)?;
+        if !is_owner {
+            entries.retain(|e| e.team.as_ref().is_some_and(|t| admin_or_up.contains(&t)));
+        }
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let mut buckets: std::collections::BTreeMap<String, DayActivity> = Default::default();
+        for e in entries.iter().filter(|e| e.ts.as_str() >= cutoff.as_str()) {
+            let day = e.ts.get(0..10).unwrap_or("").to_string();
+            if day.is_empty() {
+                continue;
+            }
+            let b = buckets.entry(day.clone()).or_insert_with(|| DayActivity {
+                day,
+                pushes: 0,
+                roles: 0,
+                invites: 0,
+                other: 0,
+            });
+            match e.action.as_str() {
+                "push" => b.pushes += 1,
+                a if a.starts_with("role.") || a == "access.revoke" => b.roles += 1,
+                a if a.starts_with("invite.") => b.invites += 1,
+                _ => b.other += 1,
+            }
+        }
+        activity = buckets.into_values().collect();
+    }
+
+    Ok(Json(Stats { teams, activity }))
+}
+
 // ---- audit ----------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub struct AuditParams {
     pub team: Option<String>,
     pub limit: Option<usize>,
+    /// Substring filter on the action name (e.g. `role`, `push`, `org.settings`).
+    pub action: Option<String>,
+    /// Substring filter on the actor sub/email.
+    pub actor: Option<String>,
 }
 
 /// GET /admin/v1/audit — owners (of any team) see everything; admins see entries for teams
@@ -342,6 +486,17 @@ pub async fn get_audit(
     }
     let limit = params.limit.unwrap_or(100).clamp(1, 500);
 
+    // action/actor are substring filters, applied within the fetched window.
+    let post_filter = |mut entries: Vec<AuditEntry>| {
+        if let Some(a) = params.action.as_deref().map(str::to_lowercase).filter(|a| !a.is_empty()) {
+            entries.retain(|e| e.action.to_lowercase().contains(&a));
+        }
+        if let Some(a) = params.actor.as_deref().map(str::to_lowercase).filter(|a| !a.is_empty()) {
+            entries.retain(|e| e.actor.to_lowercase().contains(&a));
+        }
+        entries
+    };
+
     if let Some(team) = &params.team {
         let may = is_owner || admin_teams.contains(&team);
         if !may {
@@ -349,14 +504,14 @@ pub async fn get_audit(
         }
         let entries =
             state.storage.audit(Some(team), limit).await.map_err(ApiError::Storage)?;
-        return Ok(Json(entries));
+        return Ok(Json(post_filter(entries)));
     }
     let mut entries = state.storage.audit(None, limit).await.map_err(ApiError::Storage)?;
     if !is_owner {
         // Admins: only their teams' entries (org-wide entries like org.settings are owner-only).
         entries.retain(|e| e.team.as_ref().is_some_and(|t| admin_teams.contains(&t)));
     }
-    Ok(Json(entries))
+    Ok(Json(post_filter(entries)))
 }
 
 /// The bundled single-file admin console. Static, no build step, no external resources.

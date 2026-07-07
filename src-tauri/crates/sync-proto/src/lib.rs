@@ -16,6 +16,15 @@ use serde::{Deserialize, Serialize};
 /// Protocol version segment used in URL paths (`/v1/...`).
 pub const VERSION: &str = "v1";
 
+fn default_kind() -> String {
+    "text".to_string()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_default_kind(k: &String) -> bool {
+    k == "text"
+}
+
 /// A snippet record on the wire. Field semantics match the client store: `updated_at` is
 /// RFC3339 UTC with milliseconds (lexicographically ordered), `version` increments per edit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,6 +34,11 @@ pub struct SnippetRec {
     pub trigger: String,
     pub replacement: String,
     pub format: String,
+    /// Snippet kind (additive in v1): `text` (default when absent) | `form` | `popup`.
+    /// `command` is NOT a valid wire value — command snippets never sync, and compliant
+    /// servers reject pushes carrying it (or `shell`/`script` variables).
+    #[serde(default = "default_kind", skip_serializing_if = "is_default_kind")]
+    pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variables: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +199,23 @@ pub struct Problem {
     pub detail: Option<String>,
 }
 
+/// Whether an engine `variables` JSON array contains an executable variable (`shell` /
+/// `script`). **Compliant servers MUST reject** pushed snippets where this returns true or
+/// where `kind == "command"`: executable content never syncs — a synced shell command would
+/// be remote code execution on every teammate's machine. Clients exclude such records from
+/// push and quarantine them on pull as defense in depth.
+pub fn has_exec_vars(vars: &Option<serde_json::Value>) -> bool {
+    let Some(serde_json::Value::Array(items)) = vars else {
+        return false;
+    };
+    items.iter().any(|v| {
+        matches!(
+            v.get("type").and_then(|t| t.as_str()),
+            Some("shell") | Some("script")
+        )
+    })
+}
+
 /// Last-write-wins: does `(a_updated_at, a_version)` beat `(b_updated_at, b_version)`?
 /// `updated_at` is RFC3339 UTC-with-millis, so string comparison is chronological; `version`
 /// breaks same-millisecond ties. Exact ties do NOT win (the holder keeps the record), which
@@ -197,14 +228,16 @@ pub fn lww_wins(a_updated_at: &str, a_version: i64, b_updated_at: &str, b_versio
 pub mod limits {
     /// Max records (snippets + groups) per push batch.
     pub const MAX_BATCH: usize = 500;
-    /// Max bytes for a snippet `replacement` body.
-    pub const MAX_REPLACEMENT: usize = 100 * 1024;
+    /// Max bytes for a snippet `replacement` body. Sized for rich-HTML snippets carrying
+    /// inline data-URI images (the editor downscales inserts to stay well under this).
+    pub const MAX_REPLACEMENT: usize = 1024 * 1024;
     /// Max bytes for the serialized `variables` array.
     pub const MAX_VARIABLES: usize = 16 * 1024;
     /// Max bytes for `trigger`, `name`, and other short string fields.
     pub const MAX_SHORT_STRING: usize = 512;
-    /// Max request body size servers must accept.
-    pub const MAX_BODY: usize = 1024 * 1024;
+    /// Max request body size servers must accept (a push batch may hold several
+    /// image-bearing snippets).
+    pub const MAX_BODY: usize = 8 * 1024 * 1024;
     /// Default / max page size for `changes`.
     pub const DEFAULT_PAGE: usize = 200;
     pub const MAX_PAGE: usize = 1000;
@@ -226,12 +259,15 @@ mod tests {
     fn wire_shapes_roundtrip_camel_case() {
         let s = SnippetRec {
             id: "i".into(), trigger: ":t".into(), replacement: "r".into(), format: "plain".into(),
-            variables: None, group_id: None, app_scope: None, owner: "me".into(),
-            team: "sec".into(), updated_at: "2026-07-02T00:00:00.000Z".into(), version: 1,
-            deleted_at: None,
+            kind: "text".into(), variables: None, group_id: None, app_scope: None,
+            owner: "me".into(), team: "sec".into(),
+            updated_at: "2026-07-02T00:00:00.000Z".into(), version: 1, deleted_at: None,
         };
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("updatedAt") && !j.contains("groupId")); // camelCase + skipped None
+        // Default kind is omitted on the wire (additive for old servers), and absent kind
+        // deserializes back to "text" — the round trip below covers both directions.
+        assert!(!j.contains("kind"));
         assert_eq!(serde_json::from_str::<SnippetRec>(&j).unwrap(), s);
     }
 }

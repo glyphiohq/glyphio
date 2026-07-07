@@ -52,6 +52,41 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Open a bridge-driven surface (`popup` | `form`). Always recreated (never focused-in-place):
+/// the window must show the payload stashed for THIS expansion, not a stale one.
+pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
+    if let Some(win) = app.get_webview_window(surface) {
+        win.close().ok();
+    }
+    let win = match surface {
+        "popup" => WebviewWindowBuilder::new(
+            app,
+            "popup",
+            WebviewUrl::App("popup/index.html".into()),
+        )
+        .title("Glyphio")
+        .inner_size(460.0, 540.0)
+        .min_inner_size(280.0, 200.0)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()?,
+        "form" => WebviewWindowBuilder::new(
+            app,
+            "form",
+            WebviewUrl::App("form/index.html".into()),
+        )
+        .title("Glyphio")
+        .inner_size(440.0, 420.0)
+        .min_inner_size(320.0, 240.0)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()?,
+        other => anyhow::bail!("unknown surface: {other}"),
+    };
+    win.set_focus()?;
+    Ok(())
+}
+
 /// Open the transparent scrolling-capture selection overlay, sized to the display under the
 /// cursor. Label `scroll-overlay`; it closes itself via the run/cancel commands.
 pub fn open_scroll_overlay(app: &AppHandle) -> anyhow::Result<()> {

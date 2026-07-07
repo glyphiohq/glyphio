@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyphio</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <style>
+    body { display: flex; flex-direction: column; height: 100vh; margin: 0; }
+    .form-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      -webkit-user-select: none; user-select: none;
+    }
+    .form-trigger {
+      font-family: var(--font-mono);
+      font-size: 12px; color: var(--accent);
+    }
+    .spacer { flex: 1; }
+    .form-fields { flex: 1; overflow: auto; padding: 16px; }
+    .ffield { margin-bottom: 12px; }
+    .ffield label {
+      display: block; margin-bottom: 4px;
+      font-size: 12px; font-weight: 500; color: var(--text-secondary);
+    }
+    .ffield input, .ffield textarea, .ffield select {
+      width: 100%; box-sizing: border-box;
+      background: var(--inset); color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px; font: inherit;
+    }
+    .ffield textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
+    .ffield input:focus, .ffield textarea:focus, .ffield select:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .form-actions {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .form-hint { font-size: 11px; color: var(--text-muted); }
+    .form-error { color: var(--danger); font-size: 12px; padding: 0 16px 8px; }
+    .form-error:empty { display: none; }
+  </style>
+</head>
+<body>
+  <header class="form-head">
+    <span class="form-trigger" id="trigger"></span>
+    <span class="spacer"></span>
+  </header>
+  <main class="form-fields" id="fields"></main>
+  <p class="form-error" id="error"></p>
+  <footer class="form-actions">
+    <span class="form-hint">⌘↵ inserts · Esc cancels</span>
+    <span class="spacer"></span>
+    <button class="secondary" id="cancel" type="button">Cancel</button>
+    <button class="primary" id="submit" type="button">Insert</button>
+  </footer>
+  <script type="module" src="form.js"></script>
+</body>
+</html>

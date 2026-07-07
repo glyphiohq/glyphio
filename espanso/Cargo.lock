@@ -1151,6 +1151,7 @@ dependencies = [
  "log",
  "rand 0.8.6",
  "regex",
+ "serde_json",
  "sys-locale",
  "thiserror 1.0.56",
 ]

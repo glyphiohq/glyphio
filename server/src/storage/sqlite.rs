@@ -601,6 +601,7 @@ mod tests {
             trigger: ":t".into(),
             replacement: body.into(),
             format: "plain".into(),
+            kind: "text".into(),
             variables: None,
             group_id: None,
             app_scope: None,

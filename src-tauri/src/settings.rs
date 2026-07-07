@@ -13,6 +13,7 @@ pub struct Settings {
     pub enable_visible_capture: bool,
     pub enable_snip_capture: bool,
     pub enable_full_window_capture: bool,
+    pub enable_front_window_capture: bool,
     pub enable_scrolling_capture: bool,
 
     // ---- edit tool toggles (Settings -> Capture modes pattern) ----
@@ -45,6 +46,7 @@ pub struct Settings {
     pub shortcut_capture_visible: String,
     pub shortcut_capture_snip: String,
     pub shortcut_capture_full: String,
+    pub shortcut_capture_front_window: String,
     pub shortcut_capture_scroll: String,
     pub shortcut_capture_scroll_page: String,
     pub shortcut_open_history: String,
@@ -56,6 +58,7 @@ impl Default for Settings {
             enable_visible_capture: true,
             enable_snip_capture: true,
             enable_full_window_capture: true,
+            enable_front_window_capture: true,
             enable_scrolling_capture: true,
             enable_crop: true,
             enable_redact: true,
@@ -79,6 +82,7 @@ impl Default for Settings {
             shortcut_capture_full: "Alt+Shift+S".into(),
             shortcut_capture_visible: "Alt+Shift+V".into(),
             shortcut_capture_snip: "Alt+Shift+X".into(),
+            shortcut_capture_front_window: "Alt+Shift+W".into(), // W = frontmost window
             shortcut_capture_scroll: "Alt+Shift+L".into(), // L = long/scrolling area
             shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),

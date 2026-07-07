@@ -218,6 +218,30 @@
   padding: 1px 5px;
 }
 
+.kind-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-ghost);
+  background: var(--accent-ghost);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.off-badge { color: var(--danger); border-color: transparent; background: rgba(229, 72, 77, 0.12); }
+.snip-disabled .snip-main { opacity: 0.55; }
+
+/* Form-kind field builder rows (name · label · type · options · remove). */
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr auto 1fr auto;
+  gap: 6px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+.field-row input, .field-row select { min-width: 0; }
+
 .name { font-weight: 500; }
 
 .snip-preview {
@@ -435,6 +459,10 @@
 .fmt-hint { margin: 5px 0 0; font-size: 11px; color: var(--text-muted); }
 
 .content-field { display: flex; flex-direction: column; }
+.content-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.content-head label { margin-bottom: 0; }
+.seg-mini { padding: 1px; }
+.seg-mini .seg-opt { padding: 2px 9px; font-size: 11px; }
 .body-area {
   min-height: 130px;
   resize: vertical;

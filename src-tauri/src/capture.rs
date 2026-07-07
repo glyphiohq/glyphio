@@ -39,7 +39,8 @@ pub struct PendingCapture {
     pub captured_at: String,
 }
 
-/// Entry point for a capture. `mode` is `visible` | `snip` | `fullWindow` | `scrolling`
+/// Entry point for a capture. `mode` is `visible` | `snip` | `fullWindow` (interactive picker)
+/// | `frontWindow` (frontmost window, no picker — e.g. just the browser window) | `scrolling`
 /// (drag a region) | `scrollingPage` (whole frontmost window, auto-targeted).
 pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
     if mode == "scrolling" {

@@ -14,18 +14,22 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let cap_scroll_page = MenuItem::with_id(app, "cap_scroll_page", "Capture Scrolling Page", true, None::<&str>)?;
     let capture_menu = Submenu::with_items(app, "Capture", true, &[&cap_visible, &cap_snip, &cap_full, &cap_front, &cap_scroll, &cap_scroll_page])?;
 
+    let search = MenuItem::with_id(app, "search", "Search Snippets…", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Snippets & Settings…", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, "reload", "Reload", true, None::<&str>)?;
     let quit = PredefinedMenuItem::quit(app, Some("Quit Glyphio"))?;
 
     let menu = Menu::with_items(
         app,
         &[
+            &search,
             &capture_menu,
             &PredefinedMenuItem::separator(app)?,
             &history,
             &settings,
             &PredefinedMenuItem::separator(app)?,
+            &reload,
             &quit,
         ],
     )?;
@@ -45,13 +49,28 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 "cap_front" => { let _ = crate::capture::trigger(&inner, "frontWindow"); }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
+                "search" => { let _ = crate::windows::toggle_palette(&inner); }
+                "reload" => {
+                    if let Err(e) = crate::commands::do_reload(&inner) {
+                        log::error!("reload failed: {e}");
+                    }
+                }
                 _ => {}
             });
         });
 
-    // Use the app's bundle icon as the tray icon if available.
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon).icon_as_template(true);
+    // Dedicated monochrome menu-bar mark (capture frame + text caret). A template image is
+    // black+alpha; macOS tints it for the light/dark menu bar. Falling back to the full app
+    // icon (a colour square) as a template just renders a black blob, so prefer the bundled
+    // tray.png and only fall back if it fails to decode.
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png")) {
+        Ok(icon) => { builder = builder.icon(icon).icon_as_template(true); }
+        Err(e) => {
+            log::warn!("tray icon decode failed ({e}); using app icon");
+            if let Some(icon) = app.default_window_icon().cloned() {
+                builder = builder.icon(icon).icon_as_template(true);
+            }
+        }
     }
     builder.build(app)?;
     Ok(())

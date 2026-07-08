@@ -233,32 +233,33 @@ pub fn save_file(path: String, png_base64: String) -> CmdResult<()> {
     std::fs::write(&path, bytes).map_err(err)
 }
 
-/// Recognize text in a stored capture — on-device via the Vision-framework sidecar
-/// (`glyphio-ocr`). Nothing leaves the machine; OCR runs on demand, never automatically.
+/// Recognize text in an image — on-device via the Vision-framework sidecar (`glyphio-ocr`).
+/// Nothing leaves the machine; OCR runs on demand, never automatically. Takes the editor's
+/// current content pixels (so it reflects crops/redactions) and returns recognized lines
+/// with normalized bounding boxes, for the selectable text overlay.
 #[tauri::command]
-pub async fn ocr_capture(app: AppHandle, id: String) -> CmdResult<String> {
-    let path = {
-        let state = app.state::<AppState>();
-        let meta = state.history.get(&id).map_err(err)?.ok_or("capture not found")?;
-        meta.full_path.clone()
-    };
+pub async fn ocr_image(app: AppHandle, png_base64: String) -> CmdResult<serde_json::Value> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(strip_data_url(&png_base64))
+        .map_err(err)?;
+    let tmp = std::env::temp_dir().join(format!("glyphio-ocr-{}.png", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, &bytes).map_err(err)?;
     use tauri_plugin_shell::ShellExt;
     let output = app
         .shell()
         .sidecar("glyphio-ocr")
         .map_err(err)?
-        .arg(&path)
+        .arg(&tmp)
         .output()
-        .await
-        .map_err(err)?;
+        .await;
+    let _ = std::fs::remove_file(&tmp);
+    let output = output.map_err(err)?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        return Err("No text recognized in this capture.".into());
-    }
-    Ok(text)
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("bad OCR output: {e}"))?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -343,6 +344,93 @@ pub fn open_history_view(app: AppHandle) -> CmdResult<()> {
 #[tauri::command]
 pub fn open_capture(app: AppHandle, id: String) -> CmdResult<()> {
     crate::windows::open_capture(&app, &id).map_err(err)
+}
+
+// ---- snippet palette ---------------------------------------------------------
+
+/// Hide the snippet palette (Esc, focus loss, or after an expansion).
+#[tauri::command]
+pub fn palette_hide(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("palette") {
+        let _ = win.hide();
+    }
+}
+
+/// Expand a snippet from the palette into the previously focused app. Hides the palette,
+/// gives macOS a beat to hand focus back, then asks the engine worker (over its IPC) to run
+/// the full match pipeline — exactly as if the trigger had been typed, so variables, forms,
+/// popups, and command snippets all behave normally.
+#[tauri::command]
+pub async fn palette_exec(app: AppHandle, trigger: String) -> CmdResult<()> {
+    if let Some(win) = app.get_webview_window("palette") {
+        let _ = win.hide();
+    }
+    // Deactivate the whole app, not just the palette: if another Glyphio window is open,
+    // macOS would hand key focus to it and the expansion would land inside Glyphio instead
+    // of the app the user came from.
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let paths = app.state::<AppState>().paths.clone();
+    use crate::paths::s;
+    use tauri_plugin_shell::ShellExt;
+    let output = app
+        .shell()
+        .sidecar("glyphio-engine")
+        .map_err(err)?
+        .args(["match", "exec", "--trigger", &trigger])
+        .env("ESPANSO_CONFIG_DIR", s(&paths.engine_config))
+        .env("ESPANSO_RUNTIME_DIR", s(&paths.engine_runtime()))
+        .env("ESPANSO_PACKAGE_DIR", s(&paths.engine_packages()))
+        .output()
+        .await
+        .map_err(err)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// Run a capture mode from the palette. Hides the palette and deactivates the app first so
+/// focus (and the "frontmost window") returns to where the user was, then triggers the same
+/// capture pipeline the tray and hotkeys use.
+#[tauri::command]
+pub async fn palette_capture(app: AppHandle, mode: String) -> CmdResult<()> {
+    if let Some(win) = app.get_webview_window("palette") {
+        let _ = win.hide();
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let inner = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(e) = crate::capture::trigger(&inner, &mode) {
+            log::error!("palette capture ({mode}) failed: {e}");
+        }
+    })
+    .map_err(err)
+}
+
+// ---- reload ------------------------------------------------------------------
+
+/// Full reload: re-read settings from disk, regenerate the engine config from the snippet
+/// store, re-register hotkeys, restart the engine, and refresh open windows. Wired to the
+/// tray's "Reload" item as a one-click recovery/refresh.
+pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
+    let state = app.state::<AppState>();
+    *state.settings.lock().unwrap() = Settings::load(&state.paths.settings_json);
+    state.snippets.render_yaml(&state.paths.engine_config)?;
+    crate::shortcuts::register(app)?;
+    state.supervisor.restart(app, &state.paths)?;
+    let _ = app.emit("snippets-changed", ());
+    let _ = app.emit("groups-changed", ());
+    let _ = app.emit("settings-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reload_all(app: AppHandle) -> CmdResult<()> {
+    do_reload(&app).map_err(err)
 }
 
 // ---- engine / permissions -------------------------------------------------

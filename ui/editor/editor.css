@@ -79,7 +79,7 @@
   flex-wrap: wrap;
 }
 
-.actions button { padding: 7px 12px; font-size: 13px; }
+.actions button:not(.iconbtn) { padding: 7px 12px; font-size: 13px; }
 
 .status {
   margin-top: 8px;
@@ -173,6 +173,38 @@ main {
 }
 .crop-overlay[hidden] { display: none; }
 
+/* Live-Text-style selectable OCR overlay. Each recognized line is an absolutely
+ * positioned span with transparent glyphs sized to its bounding box — the pixels
+ * underneath stay visible while the browser's native text selection works on top.
+ * Recognized regions carry a faint tint (and a stronger one on hover) so the user
+ * can see exactly what's selectable, and each line's hit area is padded vertically
+ * so dragging across it is forgiving. */
+.ocr-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: text;
+  overflow: hidden;
+}
+.ocr-overlay[hidden] { display: none; }
+.ocr-line {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  transform-origin: 0 0;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+  border-radius: 3px;
+  background: rgba(96, 165, 250, 0.12);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18);
+  transition: background-color 100ms ease;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.ocr-line:hover { background: rgba(96, 165, 250, 0.22); }
+.ocr-line::selection { background: rgba(96, 165, 250, 0.55); color: transparent; }
+.ocr-line::-moz-selection { background: rgba(96, 165, 250, 0.55); color: transparent; }
+
 body.cropping #canvas { cursor: crosshair; }
 
 .redact-mode {
@@ -211,17 +243,30 @@ body.cropping #canvas { cursor: crosshair; }
 .edit-dropdown[hidden] { display: none; }
 .edit-dropdown .edit-item {
   all: unset;
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   padding: 8px 12px;
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
   border-radius: 4px;
 }
+.edit-dropdown .edit-item .ico { color: var(--text-secondary); }
 .edit-dropdown .edit-item:hover,
 .edit-dropdown .edit-item:focus-visible {
   background: var(--surface-2);
   outline: none;
+}
+.edit-dropdown .edit-item:hover .ico { color: var(--text); }
+
+/* Thin divider between action groups in the toolbar. */
+.toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 20px;
+  background: var(--border-strong);
+  margin: 0 2px;
 }
 
 /* --- Draw mode ----------------------------------------------------------- */

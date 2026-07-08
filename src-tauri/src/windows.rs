@@ -23,6 +23,9 @@ fn spec(name: &str) -> Option<Spec> {
 pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
     let label = format!("capture-{id}");
     if let Some(win) = app.get_webview_window(&label) {
+        // Reload so the view reflects the row's current content and the latest settings
+        // (the page reads both once, at load).
+        let _ = win.eval("window.location.reload()");
         win.show()?;
         win.set_focus()?;
         return Ok(());
@@ -39,6 +42,12 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
 /// Open (or focus, if already open) a named window.
 pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
     if let Some(win) = app.get_webview_window(name) {
+        // The editor pulls its one-shot pending capture at page load. If a capture fires
+        // while an old editor window is open, focusing it would show the previous image —
+        // reload so the new capture is picked up.
+        if name == "editor" {
+            let _ = win.eval("window.location.reload()");
+        }
         win.show()?;
         win.set_focus()?;
         return Ok(());
@@ -83,6 +92,41 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
         .build()?,
         other => anyhow::bail!("unknown surface: {other}"),
     };
+    win.set_focus()?;
+    Ok(())
+}
+
+/// Toggle the Spotlight-style snippet palette: a frameless, always-on-top search window.
+/// Hidden (not destroyed) on dismiss so summoning it again is instant; the page refreshes
+/// its snippet list on every `palette-show`.
+pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
+    use tauri::Emitter;
+    if let Some(win) = app.get_webview_window("palette") {
+        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
+            win.hide()?;
+        } else {
+            win.center()?;
+            win.show()?;
+            win.set_focus()?;
+            let _ = app.emit_to("palette", "palette-show", ());
+        }
+        return Ok(());
+    }
+    let win = WebviewWindowBuilder::new(
+        app,
+        "palette",
+        WebviewUrl::App("palette/index.html".into()),
+    )
+    .title("Glyphio Search")
+    .inner_size(640.0, 460.0)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .visible_on_all_workspaces(true)
+    .center()
+    .build()?;
     win.set_focus()?;
     Ok(())
 }

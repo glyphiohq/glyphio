@@ -2,12 +2,26 @@
 // No network, no models to ship: recognition runs entirely locally, which is the only
 // OCR consistent with Glyphio's privacy posture (captures never leave the device).
 //
-// Usage: glyphio-ocr <image-path>   → recognized text on stdout, reading order top-to-bottom.
+// Usage: glyphio-ocr <image-path>
+// Output: JSON on stdout — { "lines": [ { "text", "x", "y", "w", "h" } ] } where the box is
+// normalized to the image (0–1), top-left origin — ready for a selectable text overlay.
 // Build: scripts/build-ocr.sh (compiled per-arch, bundled as a Tauri sidecar).
 
 import Foundation
 import Vision
 import CoreImage
+
+struct Line: Codable {
+    let text: String
+    let x: Double
+    let y: Double
+    let w: Double
+    let h: Double
+}
+
+struct Output: Codable {
+    let lines: [Line]
+}
 
 guard CommandLine.arguments.count > 1 else {
     FileHandle.standardError.write("usage: glyphio-ocr <image-path>\n".data(using: .utf8)!)
@@ -35,11 +49,24 @@ do {
 let observations = request.results ?? []
 // Sort by vertical position (Vision's coordinates are bottom-left origin), then horizontal —
 // gives natural reading order for screenshots.
-let lines = observations
+let lines: [Line] = observations
     .sorted {
         let a = $0.boundingBox, b = $1.boundingBox
         return abs(a.midY - b.midY) > 0.01 ? a.midY > b.midY : a.minX < b.minX
     }
-    .compactMap { $0.topCandidates(1).first?.string }
+    .compactMap { obs in
+        guard let text = obs.topCandidates(1).first?.string, !text.isEmpty else { return nil }
+        let box = obs.boundingBox // normalized, bottom-left origin
+        return Line(
+            text: text,
+            x: Double(box.minX),
+            y: Double(1.0 - box.maxY), // flip to top-left origin
+            w: Double(box.width),
+            h: Double(box.height)
+        )
+    }
 
-print(lines.joined(separator: "\n"))
+let encoder = JSONEncoder()
+let data = try! encoder.encode(Output(lines: lines))
+FileHandle.standardOutput.write(data)
+FileHandle.standardOutput.write("\n".data(using: .utf8)!)

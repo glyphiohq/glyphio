@@ -197,6 +197,22 @@ button.danger:hover { background: var(--danger-bg); border-color: var(--danger);
 
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Inline icon glyphs (from shared/icons.js) — inherit currentColor, align to text. */
+.ico { display: inline-block; vertical-align: -2px; }
+
+/* Icon buttons — square affordances that name themselves via a title tooltip. Same colour
+ * variants as text buttons. Used anywhere a labelled button would crowd the surface. */
+button.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+button.iconbtn .ico { vertical-align: 0; }
+button.iconbtn.sm { width: 28px; height: 28px; }
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,

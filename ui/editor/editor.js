@@ -7,6 +7,7 @@
 import { config, resolveSettings, DEFAULT_SHORTCUTS } from '../config.js';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
+import { icon } from '../shared/icons.js';
 
 // Glyphio: Tauri bridge (chrome.* APIs replaced by native commands/plugins).
 const { invoke } = window.__TAURI__.core;
@@ -47,6 +48,11 @@ const drawToolbar = document.getElementById('draw-toolbar');
 const drawApplyBtn = document.getElementById('draw-apply');
 const drawCancelBtn = document.getElementById('draw-cancel');
 const drawUndoBtn = document.getElementById('draw-undo');
+const selectTextBtn = document.getElementById('select-text');
+const ocrToolbar = document.getElementById('ocr-toolbar');
+const ocrOverlay = document.getElementById('ocr-overlay');
+const ocrCopyAllBtn = document.getElementById('ocr-copy-all');
+const ocrDoneBtn = document.getElementById('ocr-done');
 const textBtn = document.getElementById('text');
 const textOverlay = document.getElementById('text-overlay');
 const textToolbar = document.getElementById('text-toolbar');
@@ -85,8 +91,24 @@ let cropModeActive = false;
 let redactModeActive = false;
 let drawModeActive = false;
 let textModeActive = false;
+let ocrModeActive = false;
+let ocrLines = [];          // recognized lines of the current OCR pass ({text,x,y,w,h})
 
+fillIcons();
 init().catch((err) => setStatus(err.message, 'err'));
+
+// Populate every [data-ico] control from the shared icon set. Icon-only buttons (.iconbtn)
+// get the glyph alone; menu items keep their text label with the glyph in front.
+function fillIcons() {
+  for (const el of document.querySelectorAll('[data-ico]')) {
+    const svg = icon(el.dataset.ico, 18);
+    if (el.classList.contains('iconbtn')) {
+      el.innerHTML = svg;
+    } else {
+      el.innerHTML = `${icon(el.dataset.ico, 15)}<span>${el.textContent.trim()}</span>`;
+    }
+  }
+}
 
 async function init() {
   settings = await loadSettings();
@@ -112,6 +134,10 @@ async function init() {
     await displayStored();
   } else {
     await render({ autoCopy: !isHistoryMode && settings.autoCopyOnOpen });
+    // Every capture lands in history as soon as it exists (when history is enabled) —
+    // not only after a manual Copy/Download. Note, banner and edit changes then persist
+    // to the row automatically.
+    await saveToHistoryOnce();
   }
 }
 
@@ -187,14 +213,15 @@ async function displayStored() {
 }
 
 function wireEvents() {
+  // Retry re-runs the original capture — impossible for a stored history entry, so hide it
+  // entirely rather than show a dead button.
+  if (isHistoryMode) retryBtn.hidden = true;
+
   if (isHistoryMode && meta.bannerBaked) {
-    // Legacy history row (banner baked into the PNG): note + banner are locked;
-    // retry doesn't make sense because the original tab may be gone.
+    // Legacy history row (banner baked into the PNG): note + banner are locked.
     noteInput.disabled = true;
     noteInput.placeholder = 'Saved before editable history — note is read-only';
     bannerToggle.disabled = true;
-    retryBtn.disabled = true;
-    retryBtn.title = 'Retry is not available on history entries';
   } else if (isHistoryMode) {
     // Editable history row: note + banner edits persist to the stored entry.
     // The banner timestamp always renders from the original captured_at.
@@ -204,8 +231,6 @@ function wireEvents() {
         render({ autoCopy: false }).then(() => persistMeta());
       }, 300);
     });
-    retryBtn.disabled = true;
-    retryBtn.title = 'Retry is not available on history entries';
   } else {
     noteInput.addEventListener('input', () => {
       clearTimeout(noteTimer);
@@ -279,6 +304,37 @@ function wireEvents() {
     textBtn.hidden = true;
   }
 
+  selectTextBtn.addEventListener('click', () => {
+    if (ocrModeActive) exitOcrMode();
+    else enterOcrMode().catch((e) => setStatus(e.message || String(e), 'err'));
+  });
+  ocrDoneBtn.addEventListener('click', () => exitOcrMode());
+  // Absolutely-positioned spans copy as one run-on string natively; rebuild the
+  // selected text line-by-line so pasted output keeps its layout.
+  ocrOverlay.addEventListener('copy', (e) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !e.clipboardData) return;
+    const range = sel.getRangeAt(0);
+    const chunks = [];
+    for (const span of ocrOverlay.querySelectorAll('.ocr-line')) {
+      const textNode = span.firstChild;
+      if (!textNode || !sel.containsNode(span, true)) continue;
+      const start = range.startContainer === textNode ? range.startOffset : 0;
+      const end = range.endContainer === textNode ? range.endOffset : textNode.length;
+      const piece = textNode.data.slice(start, end);
+      if (piece) chunks.push(piece);
+    }
+    if (!chunks.length) return;
+    e.clipboardData.setData('text/plain', chunks.join('\n'));
+    e.preventDefault();
+  });
+  ocrCopyAllBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(ocrLines.map((l) => l.text).join('\n'));
+      setStatus(`Copied ${ocrLines.length} line${ocrLines.length === 1 ? '' : 's'} of text.`, 'ok');
+    } catch (e) { setStatus(String(e), 'err'); }
+  });
+
   // Hide the whole Edit button if every edit tool is disabled.
   if (
     !settings.enableCrop &&
@@ -321,6 +377,7 @@ function onKeyDown(e) {
     if (e.key === 'Enter')  { e.preventDefault(); applyText().catch((err) => setStatus(err.message, 'err')); return; }
     if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); undoText(); return; }
   }
+  if (ocrModeActive && e.key === 'Escape') { e.preventDefault(); exitOcrMode(); return; }
 
   // Copy — disable the image copy if the user has a text selection in flight;
   // let the browser's normal copy path handle text.
@@ -420,6 +477,9 @@ async function render({ autoCopy }) {
   // Legacy history rows never re-render — the stored PNG (banner baked in) is the image.
   if (bannerBaked) return;
 
+  // Recompositing changes the canvas geometry — a live OCR overlay would misalign.
+  if (ocrModeActive) exitOcrMode();
+
   const note = noteInput.value.trim();
   lastBannerPxH = compositeBanner(canvas, contentCanvas, {
     meta, settings, note, enabled: bannerEnabled,
@@ -431,7 +491,7 @@ async function render({ autoCopy }) {
     autoCopyDone = true;
     try {
       await writeBlobToClipboard(currentBlob);
-      setStatus('Copied to clipboard. Paste into your ticket.', 'ok');
+      setStatus('Copied to clipboard.', 'ok');
     } catch (err) {
       setStatus(`Ready. Click "Copy to clipboard" (auto-copy blocked: ${err.message})`, 'info');
     }
@@ -492,6 +552,8 @@ function ensureExitOtherModes(target) {
     if (n > 0 && !confirm(`Exit text mode? ${n} label${n > 1 ? 's' : ''} will be discarded.`)) return false;
     exitTextMode();
   }
+  // OCR selection holds no unsaved work — always safe to leave silently.
+  if (target !== 'ocr' && ocrModeActive) exitOcrMode();
   return true;
 }
 
@@ -1303,6 +1365,86 @@ async function applyText() {
   exitTextMode();
   await refreshAfterEdit();
   setStatus(`Annotated ${count} text label${count > 1 ? 's' : ''}.`, 'ok');
+}
+
+// --- Select text (OCR) ------------------------------------------------------
+// Live-Text-style selection: recognize text on-device (Vision sidecar), then lay
+// transparent, selectable spans over each recognized line so the user can drag-select
+// and ⌘C text straight off the image. Runs on the CURRENT content pixels, so crops
+// and redactions are respected.
+
+async function enterOcrMode() {
+  if (ocrModeActive || !contentCanvas) return;
+  if (!ensureExitOtherModes('ocr')) return;
+
+  setStatus('Recognizing text…', 'info');
+  selectTextBtn.disabled = true;
+  let result;
+  try {
+    result = await invoke('ocr_image', { pngBase64: contentCanvas.toDataURL('image/png') });
+  } finally {
+    selectTextBtn.disabled = false;
+  }
+  ocrLines = (result && Array.isArray(result.lines)) ? result.lines : [];
+  if (ocrLines.length === 0) {
+    setStatus('No text recognized in this capture.', 'info');
+    return;
+  }
+
+  ocrModeActive = true;
+  ocrOverlay.hidden = false; // must be visible before layout — spans measure at 0 when hidden
+  layoutOcrOverlay();
+  ocrToolbar.hidden = false;
+  setStatus(`Recognized ${ocrLines.length} line${ocrLines.length === 1 ? '' : 's'} — select on the image, ⌘C copies.`, 'ok');
+}
+
+/// Position one transparent span per recognized line, in CSS pixels over the canvas.
+/// Boxes are normalized to the content image; the banner (when composited above the
+/// content) shifts everything down by lastBannerPxH canvas pixels.
+function layoutOcrOverlay() {
+  const bcr = canvas.getBoundingClientRect();
+  const scaleX = bcr.width / canvas.width;
+  const scaleY = bcr.height / canvas.height;
+  ocrOverlay.style.width = `${bcr.width}px`;
+  ocrOverlay.style.height = `${bcr.height}px`;
+  ocrOverlay.style.left = `${canvas.offsetLeft}px`;
+  ocrOverlay.style.top = `${canvas.offsetTop}px`;
+  ocrOverlay.textContent = '';
+
+  const bannerOffset = bannerBaked ? 0 : lastBannerPxH;
+  for (const line of ocrLines) {
+    const span = document.createElement('span');
+    span.className = 'ocr-line';
+    span.textContent = line.text;
+    const x = line.x * contentCanvas.width * scaleX;
+    const y = (bannerOffset + line.y * contentCanvas.height) * scaleY;
+    const w = line.w * contentCanvas.width * scaleX;
+    const h = line.h * contentCanvas.height * scaleY;
+    // Pad the hit area above and below the text band so a drag doesn't have to land
+    // pixel-perfectly on a thin line — the text stays vertically centred in the taller box.
+    const pad = Math.max(3, h * 0.3);
+    span.style.left = `${x}px`;
+    span.style.top = `${y - pad}px`;
+    span.style.paddingTop = `${pad}px`;
+    span.style.paddingBottom = `${pad}px`;
+    span.style.fontSize = `${Math.max(4, h * 0.85)}px`;
+    span.style.lineHeight = `${h}px`;
+    ocrOverlay.appendChild(span);
+    // Stretch the glyphs to the recognized box so selection highlights track the pixels.
+    // Vertical padding doesn't affect the measured width, so scaleX stays accurate.
+    const natural = span.getBoundingClientRect().width;
+    if (natural > 0 && w > 0) span.style.transform = `scaleX(${w / natural})`;
+  }
+}
+
+function exitOcrMode() {
+  if (!ocrModeActive) return;
+  ocrModeActive = false;
+  ocrOverlay.hidden = true;
+  ocrToolbar.hidden = true;
+  ocrOverlay.textContent = '';
+  window.getSelection?.()?.removeAllRanges();
+  setStatus('', '');
 }
 
 // --- Actions --------------------------------------------------------------

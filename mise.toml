@@ -1,2 +1,10 @@
 [tools]
 node = "lts"
+
+[tasks.dev]
+description = "Start local development server"
+run = "npm run dev"
+
+[tasks.build]
+description = "Build the project using npm"
+run = "npm run build"

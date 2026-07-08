@@ -23,6 +23,7 @@ pub fn register(app: &AppHandle) -> anyhow::Result<()> {
         &s.shortcut_capture_scroll,
         &s.shortcut_capture_scroll_page,
         &s.shortcut_open_history,
+        &s.shortcut_open_palette,
     ] {
         if acc.is_empty() {
             continue;
@@ -66,6 +67,13 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
         let inner = app.clone();
         let _ = app.run_on_main_thread(move || {
             let _ = crate::commands::open_history_view(inner.clone());
+        });
+    } else if matches(shortcut, &s.shortcut_open_palette) {
+        let inner = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Err(e) = crate::windows::toggle_palette(&inner) {
+                log::error!("snippet palette failed: {e}");
+            }
         });
     }
 }

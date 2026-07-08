@@ -159,7 +159,7 @@ pub fn run() {
             commands::list_captures,
             commands::read_capture_data_url,
             commands::save_file,
-            commands::ocr_capture,
+            commands::ocr_image,
             commands::delete_capture,
             commands::clear_captures,
             commands::trigger_capture,
@@ -181,6 +181,10 @@ pub fn run() {
             commands::request_screen_recording,
             commands::open_screen_recording_settings,
             commands::relaunch_app,
+            commands::palette_hide,
+            commands::palette_exec,
+            commands::palette_capture,
+            commands::reload_all,
             sync::get_sync_config,
             sync::save_sync_config,
             sync::sync_status,
@@ -196,8 +200,26 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building Glyphio")
         .run(|app_handle, event| match event {
-            // Closing the last window must NOT quit: Glyphio is a menu-bar service (expansion
-            // keeps running, hotkeys stay live). Only an explicit quit (tray) carries a code.
+            // Closing the main window HIDES it instead of destroying it: Glyphio is a menu-bar
+            // service, so the window is a surface that comes and goes while the app keeps
+            // running (expansion, hotkeys, tray all stay live). Hiding (vs. destroying) also
+            // keeps the app from ever dropping to zero windows — the state where macOS could
+            // tear the process down — and makes reopening from the tray instant. Transient
+            // windows (editor/capture/popup/form/palette) close normally.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } => {
+                if label == "settings" {
+                    if let Some(win) = app_handle.get_webview_window(&label) {
+                        let _ = win.hide();
+                    }
+                    api.prevent_close();
+                }
+            }
+            // Belt-and-suspenders: should every window still end up closed, keep the process
+            // alive on a window-driven exit. Only an explicit quit (tray) carries a code.
             tauri::RunEvent::ExitRequested { code, api, .. } => {
                 if code.is_none() {
                     api.prevent_exit();

@@ -19,20 +19,22 @@
         <span>Banner</span>
       </label>
       <div class="actions">
-        <button id="copy" class="primary" type="button">Copy to clipboard</button>
-        <button id="download" class="secondary" type="button">Download</button>
+        <button id="copy" class="primary iconbtn" type="button" data-ico="copy" title="Copy to clipboard" aria-label="Copy to clipboard"></button>
+        <button id="download" class="secondary iconbtn" type="button" data-ico="download" title="Download" aria-label="Download"></button>
         <div class="edit-menu" id="edit-menu">
-          <button id="edit" class="secondary" type="button" aria-haspopup="menu" aria-expanded="false" title="Edit the image">Edit ▾</button>
+          <button id="edit" class="secondary iconbtn" type="button" data-ico="pencil" aria-haspopup="menu" aria-expanded="false" title="Edit the image" aria-label="Edit the image"></button>
           <div class="edit-dropdown" id="edit-dropdown" role="menu" hidden>
-            <button id="crop" class="edit-item" role="menuitem" type="button">Crop</button>
-            <button id="redact" class="edit-item" role="menuitem" type="button">Redact</button>
-            <button id="draw" class="edit-item" role="menuitem" type="button">Draw</button>
-            <button id="text" class="edit-item" role="menuitem" type="button">Text</button>
+            <button id="crop" class="edit-item" role="menuitem" type="button" data-ico="crop">Crop</button>
+            <button id="redact" class="edit-item" role="menuitem" type="button" data-ico="redact">Redact</button>
+            <button id="draw" class="edit-item" role="menuitem" type="button" data-ico="draw">Draw</button>
+            <button id="text" class="edit-item" role="menuitem" type="button" data-ico="type">Text</button>
           </div>
         </div>
-        <button id="retry" class="secondary" type="button">Retry</button>
-        <button id="history" class="ghost" type="button" title="Open capture history">History</button>
-        <button id="options" class="ghost" type="button" title="Open settings">Settings</button>
+        <button id="select-text" class="secondary iconbtn" type="button" data-ico="scanText" title="Select text — recognize text on-device and select it like normal text" aria-label="Select text"></button>
+        <button id="retry" class="secondary iconbtn" type="button" data-ico="refresh" title="Retry capture" aria-label="Retry capture"></button>
+        <span class="toolbar-sep" aria-hidden="true"></span>
+        <button id="history" class="ghost iconbtn" type="button" data-ico="history" title="Capture history" aria-label="Capture history"></button>
+        <button id="options" class="ghost iconbtn" type="button" data-ico="settings" title="Settings" aria-label="Settings"></button>
       </div>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -108,12 +110,18 @@
       <button id="text-apply" class="primary" type="button">Apply</button>
       <button id="text-cancel" type="button">Cancel</button>
     </div>
+    <div id="ocr-toolbar" class="crop-toolbar" hidden>
+      <span class="crop-hint" id="ocr-hint">Select text on the image with the cursor, then copy with ⌘C. Esc closes.</span>
+      <button id="ocr-copy-all" class="primary" type="button">Copy all text</button>
+      <button id="ocr-done" type="button">Done</button>
+    </div>
     <div id="canvas-wrap" class="canvas-wrap">
       <canvas id="canvas"></canvas>
       <canvas id="crop-overlay" class="crop-overlay" hidden></canvas>
       <canvas id="redact-overlay" class="crop-overlay" hidden></canvas>
       <canvas id="draw-overlay" class="crop-overlay" hidden></canvas>
       <canvas id="text-overlay" class="crop-overlay" hidden></canvas>
+      <div id="ocr-overlay" class="ocr-overlay" hidden></div>
     </div>
   </main>
   <script type="module" src="editor.js"></script>

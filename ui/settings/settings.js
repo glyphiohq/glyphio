@@ -42,10 +42,10 @@ const KINDS = [
 ];
 
 const KIND_HINTS = {
-  text: 'Classic expansion — the content replaces the trigger.',
-  form: 'Typing the trigger opens a small form; the filled-in content is pasted.',
-  popup: 'Typing the trigger opens a popup window showing the content (great for cheatsheets — images welcome). Nothing is pasted.',
-  command: 'Runs a shell command and pastes its output. Runs on THIS device only — command snippets never sync.',
+  text: 'The content replaces the trigger.',
+  form: 'The trigger opens a form; the filled-in content is pasted.',
+  popup: 'The trigger opens a popup showing the content. Nothing is pasted.',
+  command: 'Pastes the output of a shell command. Runs on this device only and never syncs.',
 };
 
 const SETTINGS_SECTIONS = [
@@ -82,6 +82,7 @@ const SETTINGS_SECTIONS = [
     ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
     ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
     ['shortcutOpenHistory', 'text', 'Open history'],
+    ['shortcutOpenPalette', 'text', 'Snippet search (Spotlight-style)'],
   ]},
 ];
 
@@ -97,6 +98,7 @@ async function init() {
   maybeShowWelcome();
   await listen('snippets-changed', reloadSnippets);
   await listen('groups-changed', reloadGroups);
+  await listen('settings-changed', reloadAll); // tray "Reload" refreshes everything
 }
 
 async function reloadAll() {
@@ -407,7 +409,6 @@ function renderMain() {
         ? teamGroups.map((g) => `<button class="team-group-chip" data-goto="${g.id}">${icon('share', 10)} ${escapeHtml(g.name)} <span class="nav-count">${state.snippets.filter((s) => s.groupId === g.id).length}</span></button>`).join('')
         : '<span class="adv-hint">No groups shared with this team yet — use ⇅ on a group, or create a snippet here.</span>'
     }</div>` : ''}
-    <p class="hint">Changes apply instantly — type a trigger anywhere and it expands. Rich &amp; Markdown snippets paste with formatting intact.</p>
     <div class="snip-list" id="snip-list"></div>
   `;
   const search = main.querySelector('.search');
@@ -436,7 +437,6 @@ async function renderHistory(main) {
       <span class="hist-stats" id="hist-stats"></span>
       <button class="danger" id="hist-clear">Clear all</button>
     </div>
-    <p class="hint">Captures never leave this device. Oldest are removed automatically at the size cap.</p>
     <ul class="hist-grid" id="hist-grid"></ul>
     <div class="empty" id="hist-empty" hidden>No captures yet — press ⌥⇧X to snip or ⌥⇧L for a scrolling capture.</div>`;
   main.querySelector('#hist-clear').addEventListener('click', async () => {
@@ -473,6 +473,28 @@ async function exportDataUrl(item) {
   return cvs.toDataURL('image/png');
 }
 
+// Thumbnails are stored content-only; composite the banner at thumbnail scale so the grid
+// preview matches what Open/Copy/Save produce (timestamp strip included).
+async function bannerizeThumb(item, img) {
+  if (item.bannerBaked || item.bannerEnabled === false || !item.thumbPath) return;
+  const settings = resolveSettings(state.settings || {});
+  const thumb = new Image();
+  await new Promise((resolve, reject) => {
+    thumb.onload = resolve;
+    thumb.onerror = () => reject(new Error('thumbnail failed to load'));
+    thumb.src = convertFileSrc(item.thumbPath);
+  });
+  const ratio = item.imageWidthPx ? thumb.naturalWidth / item.imageWidthPx : 1;
+  const cvs = document.createElement('canvas');
+  compositeBanner(cvs, thumb, {
+    meta: { capturedAt: item.capturedAt, url: item.url || '', targetFrameUrl: '', dpr: (item.dpr || 1) * ratio },
+    settings,
+    note: item.note || '',
+    enabled: true,
+  });
+  img.src = cvs.toDataURL('image/png');
+}
+
 function historyCard(item, redraw) {
   const li = document.createElement('li');
   li.className = 'hist-card';
@@ -480,6 +502,7 @@ function historyCard(item, redraw) {
   img.className = 'hist-thumb';
   img.alt = item.title || 'capture';
   if (item.thumbPath) img.src = convertFileSrc(item.thumbPath);
+  bannerizeThumb(item, img).catch(() => { /* keep the plain thumb */ });
   img.addEventListener('click', () => invoke('open_capture', { id: item.id }));
   const meta = document.createElement('div');
   meta.className = 'hist-meta';
@@ -488,21 +511,25 @@ function historyCard(item, redraw) {
     <span class="hist-title">${escapeHtml(item.title || item.url || '')}</span>`;
   const actions = document.createElement('div');
   actions.className = 'hist-actions';
-  const mk = (label, fn, cls = 'ghost') => {
+  const mk = (name, title, fn, cls = 'ghost') => {
     const b = document.createElement('button');
-    b.className = cls; b.textContent = label; b.addEventListener('click', fn);
+    b.className = `${cls} iconbtn sm`;
+    b.innerHTML = icon(name, 15);
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.addEventListener('click', fn);
     return b;
   };
   actions.append(
-    mk('Open', () => invoke('open_capture', { id: item.id })),
-    mk('Copy', async () => {
+    mk('open', 'Open', () => invoke('open_capture', { id: item.id })),
+    mk('copy', 'Copy to clipboard', async () => {
       try {
         const blob = await (await fetch(await exportDataUrl(item))).blob();
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
         setStatus('Capture copied to clipboard.', 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),
-    mk('Save…', async () => {
+    mk('download', 'Save to file…', async () => {
       const iso = (item.capturedAt || '').replace(/[:T]/g, '-').slice(0, 19);
       const path = await window.__TAURI__.dialog.save({
         defaultPath: `${(state.settings?.filenamePrefix || 'glyphio')}-${iso}.png`,
@@ -514,15 +541,7 @@ function historyCard(item, redraw) {
         setStatus(`Saved → ${path}`, 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),
-    mk('Text', async () => {
-      setStatus('Recognizing text…');
-      try {
-        const text = await invoke('ocr_capture', { id: item.id });
-        await navigator.clipboard.writeText(text);
-        setStatus(`Recognized ${text.split('\n').length} line(s) — copied to clipboard.`, 'ok');
-      } catch (e) { setStatus(String(e), 'err'); }
-    }),
-    mk('Delete', async () => { await invoke('delete_capture', { id: item.id }); redraw(); }, 'danger'),
+    mk('trash', 'Delete', async () => { await invoke('delete_capture', { id: item.id }); redraw(); }, 'danger'),
   );
   li.append(img, meta, actions);
   return li;
@@ -755,9 +774,9 @@ async function deleteSnippet(s) {
 // --- Editor (two-pane modal: form + live preview) ---------------------------
 
 const FMT_HINTS = {
-  plain: 'Inserted verbatim. No formatting.',
-  html: 'WYSIWYG rich text — pastes with formatting (auto plain-text fallback).',
-  markdown: 'Markdown source (**bold**, lists, tables). Rendered to rich text on paste.',
+  plain: 'Inserted exactly as typed.',
+  html: 'Rich text — pastes with formatting. Click an image to resize it.',
+  markdown: 'Markdown source, pasted as rich text.',
 };
 
 function openEditor(existing) {
@@ -939,6 +958,11 @@ function openEditor(existing) {
         e.preventDefault();
         insertImageFile(file, getRich, updatePreview);
       });
+      // Clicking an inline image opens a size popover (resize after paste/insert).
+      ed.addEventListener('click', (e) => {
+        const img = e.target.closest('img');
+        if (img && ed.contains(img)) openImageSizePopover(img, updatePreview);
+      });
       selectionHandler = () => { if (document.activeElement === ed) refresh(); };
       document.addEventListener('selectionchange', selectionHandler);
     } else {
@@ -1097,7 +1121,7 @@ function openEditor(existing) {
       if (isEdit) await invoke('update_snippet', { id: existing.id, patch: payload });
       else await invoke('create_snippet', { snippet: payload });
       close();
-      setStatus(isEdit ? 'Snippet saved — live everywhere.' : 'Snippet created — live everywhere.', 'ok');
+      setStatus(isEdit ? 'Snippet saved.' : 'Snippet created.', 'ok');
     } catch (e) { setStatus(String(e), 'err'); }
   }
 
@@ -1220,6 +1244,42 @@ async function insertImageFile(file, getEditor, onChange) {
   } catch (e) {
     setStatus(`Could not insert image: ${e.message || e}`, 'err');
   }
+}
+
+/// Resize an inline snippet image: a popover with a width slider + presets. Width is stored
+/// as an absolute `width` attribute (height auto-follows), which survives sanitization, the
+/// popup/form surfaces, and rich paste into target apps.
+function openImageSizePopover(img, onChange) {
+  const natural = img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
+  if (!natural) return;
+  const current = parseInt(img.getAttribute('width'), 10) || natural;
+  const pct = Math.max(10, Math.min(100, Math.round((current / natural) * 100)));
+  openPopover(img, `
+    <div class="pop-row img-size-row">
+      <input type="range" data-size min="10" max="100" step="5" value="${pct}" aria-label="Image width" />
+      <span class="img-size-val" data-val>${pct}%</span>
+    </div>
+    <div class="pop-actions">
+      <button class="secondary sm" data-preset="25" type="button">S</button>
+      <button class="secondary sm" data-preset="50" type="button">M</button>
+      <button class="secondary sm" data-preset="75" type="button">L</button>
+      <button class="secondary sm" data-preset="100" type="button">Full</button>
+    </div>`,
+    ({ root }) => {
+      const slider = root.querySelector('[data-size]');
+      const val = root.querySelector('[data-val]');
+      const apply = (p) => {
+        slider.value = String(p);
+        val.textContent = `${p}%`;
+        if (p >= 100) { img.removeAttribute('width'); }
+        else { img.setAttribute('width', Math.max(1, Math.round((natural * p) / 100))); }
+        img.removeAttribute('height'); // keep aspect ratio
+        onChange?.();
+      };
+      slider.addEventListener('input', () => apply(parseInt(slider.value, 10)));
+      root.querySelectorAll('[data-preset]').forEach((b) =>
+        b.addEventListener('click', () => apply(parseInt(b.dataset.preset, 10))));
+    });
 }
 
 async function downscaleImageToDataUrl(blob) {

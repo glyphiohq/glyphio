@@ -50,6 +50,8 @@ pub struct Settings {
     pub shortcut_capture_scroll: String,
     pub shortcut_capture_scroll_page: String,
     pub shortcut_open_history: String,
+    /// Summons the Spotlight-style snippet search palette.
+    pub shortcut_open_palette: String,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             shortcut_capture_scroll: "Alt+Shift+L".into(), // L = long/scrolling area
             shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),
+            shortcut_open_palette: "Alt+Space".into(),
         }
     }
 }

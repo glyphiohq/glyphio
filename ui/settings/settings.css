@@ -595,12 +595,6 @@
 /* Personal (off) team-sync state */
 .sync-off { margin-top: 4px; }
 .sync-off .sync-actions { margin: 4px 0 10px; }
-.linkish {
-  background: none; border: none; padding: 4px 0; margin-top: 4px;
-  color: var(--text-muted); font-size: 12px; text-decoration: underline;
-  text-underline-offset: 2px; cursor: pointer;
-}
-.linkish:hover { color: var(--text-secondary); }
 
 /* --- Team share picker --- */
 .team-pick { list-style: none; margin: 10px 0 0; padding: 0; max-height: 220px; overflow-y: auto; }

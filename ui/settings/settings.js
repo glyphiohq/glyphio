@@ -26,7 +26,6 @@ const state = {
   selectedTeam: null,     // team whose roster is shown in the sync panel
   teamMembers: {},        // team -> [{sub,email,lastSeen}]
   memberSearch: '',
-  showSyncSetup: false,   // personal mode: reveal the manual backend form on request
 };
 
 const FORMATS = [
@@ -1513,7 +1512,7 @@ function renderSyncSection(form) {
   const st = state.syncStatus || { state: 'disabled' };
   const cfg = state.syncConfig || {};
   const mode = cfg.managed ? 'locked' : (cfg.enabled ? 'active' : 'off');
-  const showForm = mode === 'active' || (mode === 'off' && state.showSyncSetup);
+  const showForm = mode === 'active';
   const who = st.identity
     ? `${escapeHtml(st.identity.email || st.identity.sub)} · teams: ${st.identity.teams.map(escapeHtml).join(', ') || '—'}`
     : '';
@@ -1557,7 +1556,9 @@ function renderSyncSection(form) {
   } else if (mode === 'active') {
     body = `${cardHtml}${formHtml}`;
   } else {
-    // off / personal
+    // off / personal — provisioning is invite-link only (an admin-managed config is the other
+    // path; both keep an arbitrary backend URL out of the user's hands and route through the
+    // invite confirmation dialog).
     body = `
       <div class="sync-off">
         <p class="adv-hint">Team sync is off — everything stays on this device. Join a team with an
@@ -1565,7 +1566,6 @@ function renderSyncSection(form) {
         <div class="sync-actions">
           <button class="primary" id="sync-join">Join with an invite link…</button>
         </div>
-        ${state.showSyncSetup ? formHtml : '<button class="linkish" id="sync-reveal">Set up a backend manually…</button>'}
       </div>`;
   }
 
@@ -1582,10 +1582,6 @@ function renderSyncSection(form) {
     toggleOidc();
     div.querySelector('#sc-mode').addEventListener('change', toggleOidc);
   }
-  div.querySelector('#sync-reveal')?.addEventListener('click', () => {
-    state.showSyncSetup = true;
-    renderMain();
-  });
   div.querySelector('#sync-join')?.addEventListener('click', async () => {
     const url = await promptDialog('Join a team', {
       label: 'Paste the invite link or code from your admin',

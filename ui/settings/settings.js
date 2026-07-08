@@ -26,6 +26,7 @@ const state = {
   selectedTeam: null,     // team whose roster is shown in the sync panel
   teamMembers: {},        // team -> [{sub,email,lastSeen}]
   memberSearch: '',
+  showSyncSetup: false,   // personal mode: reveal the manual backend form on request
 };
 
 const FORMATS = [
@@ -1498,18 +1499,26 @@ const SYNC_STATE_LABELS = {
   error: 'Error',
 };
 
+// Team sync is one build with three experiences, driven entirely by configuration — no
+// separate "personal" vs "self-host" binaries:
+//   • locked  — a system-wide managed config is present (dropped by IT/an admin). The server
+//               is fixed; users just sign in. No connection fields, no invite, no manual setup.
+//   • active  — the user has configured/joined a backend themselves; the editable form shows.
+//   • off     — personal install (default). No backend form at all — just a calm off state
+//               with "Join with an invite link". The manual backend form is tucked behind a
+//               discreet disclosure for the rare self-hoster configuring their first client.
 function renderSyncSection(form) {
   const div = document.createElement('div');
   div.className = 'form-section';
   const st = state.syncStatus || { state: 'disabled' };
   const cfg = state.syncConfig || {};
+  const mode = cfg.managed ? 'locked' : (cfg.enabled ? 'active' : 'off');
+  const showForm = mode === 'active' || (mode === 'off' && state.showSyncSetup);
   const who = st.identity
     ? `${escapeHtml(st.identity.email || st.identity.sub)} · teams: ${st.identity.teams.map(escapeHtml).join(', ') || '—'}`
     : '';
-  div.innerHTML = `
-    <h3>Team sync</h3>
-    <p class="adv-hint">Syncs <strong>team-shared</strong> snippet groups through your configured backend.
-    Personal snippets and capture history never leave this device.</p>
+
+  const cardHtml = `
     <div class="sync-card">
       <div class="sync-state" data-state="${escapeHtml(st.state)}">${SYNC_STATE_LABELS[st.state] || escapeHtml(st.state)}</div>
       ${who ? `<div class="sync-who">${who}</div>` : ''}
@@ -1521,12 +1530,9 @@ function renderSyncSection(form) {
         ${['idle', 'error', 'syncing'].includes(st.state) ? '<button class="secondary" id="sync-now">Sync now</button> <button class="ghost" id="sync-signout">Sign out</button>' : ''}
       </div>
       ${renderTeamPanel(st)}
-    </div>
-    ${cfg.managed ? `
-    <div class="managed-note">
-      <strong>Managed by your organization.</strong> The sync connection is configured centrally
-      and cannot be changed here. Sign-in and team sharing work as normal.
-    </div>` : `
+    </div>`;
+
+  const formHtml = `
     <div class="mfield"><label>Enable sync</label><input type="checkbox" id="sc-enabled" ${cfg.enabled ? 'checked' : ''}></div>
     <div class="mfield"><label>Backend URL</label><input type="text" id="sc-backend" placeholder="https://sync.example.com" value="${escapeHtml(cfg.backendUrl || '')}"></div>
     <div class="mfield"><label>Auth mode</label>
@@ -1537,15 +1543,56 @@ function renderSyncSection(form) {
     <div class="mfield sc-oidc"><label>OIDC issuer</label><input type="text" id="sc-issuer" placeholder="https://your-tenant.okta.com" value="${escapeHtml(cfg.issuer || '')}"></div>
     <div class="mfield sc-oidc"><label>Client ID</label><input type="text" id="sc-client" value="${escapeHtml(cfg.clientId || '')}"></div>
     <div class="mfield sc-oidc"><label>Scopes (beyond openid)</label><input type="text" id="sc-scopes" placeholder="profile email offline_access groups" value="${escapeHtml((cfg.scopes || []).join(' '))}"></div>
-    <button class="primary" id="sc-save">Save sync settings</button>`}
-  `;
+    <button class="primary" id="sc-save">Save sync settings</button>`;
+
+  let body;
+  if (mode === 'locked') {
+    body = `
+      <div class="managed-note">
+        <strong>Managed by your organization.</strong> The sync connection is configured
+        centrally${cfg.backendUrl ? ` (<code>${escapeHtml(cfg.backendUrl)}</code>)` : ''} and can't
+        be changed here. Just sign in; team sharing works as normal.
+      </div>
+      ${cardHtml}`;
+  } else if (mode === 'active') {
+    body = `${cardHtml}${formHtml}`;
+  } else {
+    // off / personal
+    body = `
+      <div class="sync-off">
+        <p class="adv-hint">Team sync is off — everything stays on this device. Join a team with an
+        invite link from your admin.</p>
+        <div class="sync-actions">
+          <button class="primary" id="sync-join">Join with an invite link…</button>
+        </div>
+        ${state.showSyncSetup ? formHtml : '<button class="linkish" id="sync-reveal">Set up a backend manually…</button>'}
+      </div>`;
+  }
+
+  div.innerHTML = `
+    <h3>Team sync</h3>
+    <p class="adv-hint">Syncs <strong>team-shared</strong> snippet groups through your configured
+    backend. Personal snippets and capture history never leave this device.</p>
+    ${body}`;
+
   const toggleOidc = () => div.querySelectorAll('.sc-oidc').forEach((el) => {
     el.style.display = div.querySelector('#sc-mode').value === 'oidc' ? '' : 'none';
   });
-  if (!cfg.managed) {
+  if (showForm) {
     toggleOidc();
     div.querySelector('#sc-mode').addEventListener('change', toggleOidc);
   }
+  div.querySelector('#sync-reveal')?.addEventListener('click', () => {
+    state.showSyncSetup = true;
+    renderMain();
+  });
+  div.querySelector('#sync-join')?.addEventListener('click', async () => {
+    const url = await promptDialog('Join a team', {
+      label: 'Paste the invite link or code from your admin',
+      placeholder: 'glyphio://join?server=…', confirmLabel: 'Continue',
+    });
+    if (url) confirmInvite(url);
+  });
   div.querySelector('#sc-save')?.addEventListener('click', async () => {
     const config = {
       ...cfg,

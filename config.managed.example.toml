@@ -1,0 +1,38 @@
+# Glyphio MANAGED (org-locked) sync configuration — EXAMPLE.
+#
+# Drop a filled-in copy of this at the SYSTEM-WIDE, root-owned path:
+#   macOS:  /Library/Application Support/Glyphio/managed.toml
+#   Linux:  /etc/glyphio/managed.toml
+#
+# When this file exists, Glyphio runs in LOCKED mode: the sync connection below is
+# authoritative, the in-app connection fields disappear, and users can neither edit the
+# server nor apply invite links (the anti-exfiltration control that stops team content
+# being redirected to a rogue backend). Remove the file to return to a personal install.
+#
+# Same schema as sync.toml, and it still contains NO secrets — tokens/OIDC sessions live
+# in each user's OS keychain after they sign in. Distribute this via MDM (Jamf, Kandji,
+# Intune) or a management script; you do NOT re-sign or re-bundle the app.
+
+# Master switch — must be true for a managed deployment.
+enabled = true
+
+# ---------------------------------------------------------------------------------------
+# QUICK LOCAL TEST (works out of the box against a dev server on this machine).
+# Drop this file as-is to see locked mode; the app will prompt "Set API token…".
+# ---------------------------------------------------------------------------------------
+backendUrl = "http://127.0.0.1:8787"
+authMode = "token"
+
+# ---------------------------------------------------------------------------------------
+# PRODUCTION — single sign-on (comment out the two lines above, uncomment these):
+# ---------------------------------------------------------------------------------------
+# backendUrl = "https://sync.your-org.com"
+# authMode = "oidc"
+# issuer = "https://your-tenant.okta.com"
+# clientId = "<OIDC_CLIENT_ID>"
+# scopes = ["profile", "email", "offline_access", "groups"]
+# audience = ""            # only if your IdP requires it (e.g. Auth0)
+# redirectPort = 0         # set a fixed port only if your IdP needs an exact redirect URI
+
+# Background sync interval in seconds (min 60, default 300).
+intervalSecs = 300

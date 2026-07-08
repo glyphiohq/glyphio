@@ -25,6 +25,7 @@ const bannerToggle = document.getElementById('banner-toggle');
 const copyBtn = document.getElementById('copy');
 const downloadBtn = document.getElementById('download');
 const retryBtn = document.getElementById('retry');
+const discardBtn = document.getElementById('discard');
 const cropBtn = document.getElementById('crop');
 const historyBtn = document.getElementById('history');
 const optionsBtn = document.getElementById('options');
@@ -251,6 +252,7 @@ function wireEvents() {
   downloadBtn.addEventListener('click', () => downloadPng().catch((e) => setStatus(e.message, 'err')));
   historyBtn.addEventListener('click', () => invoke('open_history_view'));
   optionsBtn.addEventListener('click', () => invoke('open_window', { name: 'settings' }));
+  discardBtn.addEventListener('click', () => discardCapture());
 
   // --- Edit dropdown ------------------------------------------------------
   // Single "Edit ▾" button opens a menu of Crop / Redact / Draw. Each item
@@ -1555,6 +1557,20 @@ async function retry() {
   await invoke('trigger_capture', { mode: meta.mode });
   // The capture flow refreshes the pending payload; reload to pick it up.
   location.reload();
+}
+
+// Discard the current capture: remove it from history (if it was saved) and close the window.
+// Works both for a just-taken capture (auto-saved on open) and one opened from history.
+async function discardCapture() {
+  if (!confirm('Delete this capture? This cannot be undone.')) return;
+  try {
+    if (savedId) await invoke('delete_capture', { id: savedId });
+  } catch (err) {
+    setStatus(`Could not delete: ${err.message || err}`, 'err');
+    return;
+  }
+  try { window.close(); } catch { /* fall back to a status note */ }
+  setStatus('Capture deleted.', 'ok');
 }
 
 function canvasToPngBlob(cvs) {

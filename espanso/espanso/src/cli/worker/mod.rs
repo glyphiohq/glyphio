@@ -62,6 +62,15 @@ pub fn new() -> CliModule {
 fn worker_main(args: CliModuleArgs) -> i32 {
     prevent_running_as_root_on_macos();
 
+    // GLYPHIO DEVIATION: the worker builds an NSApplication for its UI module, which makes
+    // macOS register it as a *foreground* app — i.e. a Dock icon. Espanso's own bundle hides
+    // it with LSUIElement in Info.plist, but this binary ships inside a host app's bundle
+    // (Glyphio.app), inherits that bundle's Info.plist, and so surfaced a second Dock icon
+    // wearing the host's name and icon. Quitting that icon killed expansion while the host
+    // app kept running. Transform explicitly instead of relying on the host's plist.
+    #[cfg(target_os = "macos")]
+    espanso_mac_utils::convert_to_background_app();
+
     let paths = args.paths.expect("missing paths in worker main");
     let cli_args = args.cli_args.expect("missing cli_args in worker main");
 

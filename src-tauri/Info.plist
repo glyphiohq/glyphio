@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated bundle Info.plist by tauri-bundler.
+
+  LSUIElement makes every process in this bundle start as an agent (no Dock icon). It matters
+  for the *sidecars*: the engine daemon/worker live in Contents/MacOS/, so macOS resolves them
+  to this bundle and read this key. Without it the worker builds an NSApplication, registers as
+  a foreground app, and puts a SECOND Glyphio icon in the Dock — quitting that icon killed
+  expansion while the app itself kept running.
+
+  The main app overrides this at runtime (windows::sync_activation_policy): it becomes a
+  regular, Dock-visible app while a window is open and drops back to agent when they close.
+-->
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

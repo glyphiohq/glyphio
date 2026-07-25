@@ -17,7 +17,12 @@
  * along with espanso.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use std::{path::Path, process::Command, time::Instant};
+use std::{
+    path::Path,
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
 
 use crate::path::Paths;
 use crossbeam::{
@@ -33,6 +38,7 @@ use crate::{
     exit_code::{
         DAEMON_ALREADY_RUNNING, DAEMON_FATAL_CONFIG_ERROR, DAEMON_GENERAL_ERROR, DAEMON_SUCCESS,
         WORKER_ERROR_EXIT_NO_CODE, WORKER_EXIT_ALL_PROCESSES, WORKER_RESTART, WORKER_SUCCESS,
+        WORKER_UNEXPECTED_EXIT,
     },
     ipc::{create_ipc_client_to_worker, IPCEvent},
     lock::{acquire_daemon_lock, acquire_worker_lock},
@@ -45,6 +51,15 @@ mod ipc;
 mod keyboard_layout_watcher;
 mod troubleshoot;
 mod watcher;
+
+/// GLYPHIO DEVIATION: set while the daemon is deliberately terminating the worker (a restart),
+/// so the monitor thread can tell "we asked for this" apart from "something killed it".
+static WORKER_EXIT_EXPECTED: AtomicBool = AtomicBool::new(false);
+
+/// GLYPHIO DEVIATION: how many times a worker that died on its own is respawned before the
+/// daemon gives up. Bounded so a worker that crashes on startup can't spin forever — past the
+/// budget the daemon exits and the host app's supervisor reports it.
+const MAX_WORKER_RESPAWNS: u32 = 5;
 
 pub fn new() -> CliModule {
     #[allow(clippy::needless_update)]
@@ -137,6 +152,8 @@ fn daemon_main(args: CliModuleArgs) -> i32 {
     terminate_worker_if_already_running(&paths.runtime);
 
     let (exit_notify, exit_signal) = unbounded::<i32>();
+    // GLYPHIO DEVIATION: budget for respawning a worker that died on its own (see below).
+    let mut worker_respawns: u32 = 0;
 
     // TODO: register signals to terminate the worker if the daemon terminates
 
@@ -221,6 +238,18 @@ fn daemon_main(args: CliModuleArgs) -> i32 {
                     info!("worker requested a restart, spawning a new one...");
                     spawn_worker(&paths_overrides, exit_notify.clone(), Some(WORKER_START_REASON_MANUAL.to_string()));
                   }
+                  // GLYPHIO DEVIATION: the worker died without the daemon asking — quit from the
+                  // Dock, Activity Monitor, or a signal. Bring it back, else the daemon lives on
+                  // with no keystroke detection at all.
+                  WORKER_UNEXPECTED_EXIT | WORKER_ERROR_EXIT_NO_CODE => {
+                    worker_respawns += 1;
+                    if worker_respawns > MAX_WORKER_RESPAWNS {
+                      error!("worker died unexpectedly {MAX_WORKER_RESPAWNS} times, giving up");
+                      return DAEMON_GENERAL_ERROR;
+                    }
+                    warn!("worker exited without being asked to — respawning ({worker_respawns}/{MAX_WORKER_RESPAWNS})");
+                    spawn_worker(&paths_overrides, exit_notify.clone(), Some(WORKER_START_REASON_MANUAL.to_string()));
+                  }
                   _ => {
                     error!("received unexpected exit code from worker {code}, exiting");
                     return code;
@@ -303,7 +332,15 @@ fn spawn_worker(
             let result = child.wait();
             if let Ok(status) = result {
                 if let Some(code) = status.code() {
-                    if code != WORKER_SUCCESS {
+                    // GLYPHIO DEVIATION: a clean worker exit used to be ignored here, which is
+                    // right when the daemon asked for it (restart_worker) and wrong otherwise —
+                    // quitting the worker from outside left the daemon running with no worker,
+                    // so expansion silently stopped while the app still looked healthy.
+                    if code == WORKER_SUCCESS {
+                        if !WORKER_EXIT_EXPECTED.swap(false, Ordering::SeqCst) {
+                            let _ = exit_notify.send(WORKER_UNEXPECTED_EXIT);
+                        }
+                    } else {
                         exit_notify
                             .send(code)
                             .expect("unable to forward worker exit code");
@@ -324,6 +361,9 @@ fn restart_worker(
     exit_notify: Sender<i32>,
     start_reason: Option<String>,
 ) {
+    // GLYPHIO DEVIATION: mark the coming exit as ours so the monitor thread doesn't read it as
+    // an external kill and respawn a worker underneath the one we're about to spawn.
+    WORKER_EXIT_EXPECTED.store(true, Ordering::SeqCst);
     match create_ipc_client_to_worker(&paths.runtime) {
         Ok(mut worker_ipc) => {
             if let Err(err) = worker_ipc.send_async(IPCEvent::Exit) {

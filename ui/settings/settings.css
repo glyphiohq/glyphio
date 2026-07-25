@@ -387,6 +387,56 @@
 
 .modal.small { width: 400px; }
 .modal.editor2 { width: 880px; padding: 0; display: flex; flex-direction: column; }
+.modal.import-modal { width: 620px; }
+
+/* Import dialog: destination + the conflicts the user has to settle. */
+.modal-sub { margin: -6px 0 16px; color: var(--text-muted); font-size: 12px; }
+.imp-conflicts { border-top: 1px solid var(--border); padding-top: 12px; margin-bottom: 4px; }
+.imp-conflicts-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.imp-bulk { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.imp-rows { max-height: 34vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.imp-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.imp-row:hover { background: var(--surface-2); }
+.imp-row input { margin-top: 2px; flex: none; }
+.imp-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.imp-row-top { display: flex; align-items: center; gap: 8px; }
+.imp-row code { font-size: 12px; }
+/* Replacing a snippet that can run code deserves a warning at the moment of the decision. */
+.imp-exec {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--warn, #d9a54a);
+  border: 1px solid rgba(217, 165, 74, 0.4);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.imp-side {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  /* Bodies can be long; one line each keeps the list scannable. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.imp-side em { font-style: normal; opacity: 0.7; min-width: 34px; }
+.imp-unsupported { margin-top: 10px; }
 
 .modal h3 { margin: 0 0 14px; font-size: 15px; }
 .modal-head {
@@ -488,6 +538,10 @@
 }
 .tb-btn:hover { background: var(--surface-2); color: var(--text); }
 .tb-btn.active { background: var(--accent-ghost); color: var(--accent); }
+/* Resize is only meaningful with an image selected — dimmed, not hidden, so it's still
+   discoverable as "a thing images can do". */
+.tb-btn:disabled { opacity: 0.35; cursor: default; }
+.tb-btn:disabled:hover { background: none; color: var(--text-secondary); }
 
 .rich-editor {
   min-height: 130px;
@@ -504,20 +558,11 @@
 .rich-editor table { border-collapse: collapse; }
 .rich-editor td, .rich-editor th { border: 1px solid var(--border-strong); padding: 3px 8px; }
 
-/* Inline images are resizable (click → size popover) — make that discoverable:
-   pointer cursor, accent outline on hover, and a floating "Click to resize" pill
-   (positioned by JS; kept OUTSIDE the contenteditable so it never enters saved HTML). */
+/* Inline images are selectable: click one to arm the toolbar's resize button. The pointer
+   cursor and hover outline are what say "this is a thing you can act on". */
 .rich-editor img { cursor: pointer; max-width: 100%; }
 .rich-editor img:hover { outline: 2px solid rgba(217, 165, 74, 0.55); outline-offset: 1px; border-radius: 2px; }
-#e-body-wrap { position: relative; } /* anchor for the absolute resize badge */
-.img-resize-badge {
-  position: absolute; z-index: 30;
-  padding: 2px 8px; border-radius: 999px;
-  background: rgba(20, 22, 26, 0.88); color: #d9a54a;
-  border: 1px solid rgba(217, 165, 74, 0.35);
-  font: 11px/1.4 -apple-system, sans-serif;
-  pointer-events: none; white-space: nowrap;
-}
+#e-body-wrap { position: relative; }
 
 .adv { margin-top: 4px; }
 .adv summary {

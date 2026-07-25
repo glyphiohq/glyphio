@@ -127,22 +127,40 @@ pub fn export_snippets(
     std::fs::write(&path, json).map_err(err)
 }
 
-/// Import snippets from a Glyphio JSON export or a `matches:`-style YAML file
-/// (chosen by extension, with a content-sniff fallback). Additive — duplicates are skipped
-/// and reported, never overwritten.
+/// Read a Glyphio JSON export or a `matches:`-style YAML file (chosen by extension, with a
+/// content-sniff fallback).
+fn read_import(path: &str) -> CmdResult<snippet_store::ParsedImport> {
+    let text = std::fs::read_to_string(path).map_err(err)?;
+    let looks_json = path.ends_with(".json") || text.trim_start().starts_with('{');
+    if looks_json {
+        snippet_store::parse_json(&text).map_err(err)
+    } else {
+        snippet_store::parse_matches_yaml(&text).map_err(err)
+    }
+}
+
+/// What importing this file would do, without writing anything. The import dialog needs the
+/// answer up front: which snippets are new, which are already here byte-for-byte, and which
+/// triggers collide with different content and so need the user's decision.
+#[tauri::command]
+pub fn preview_import(state: State<AppState>, path: String) -> CmdResult<snippet_store::ImportPlan> {
+    state.snippets.plan_import(&read_import(&path)?).map_err(err)
+}
+
+/// Import snippets. `options` carries the destination group (all snippets land there,
+/// inheriting its team) and the triggers the user chose to overwrite; anything else that
+/// collides is left exactly as it is.
 #[tauri::command]
 pub fn import_snippets(
     state: State<AppState>,
     path: String,
+    options: Option<snippet_store::ImportOptions>,
 ) -> CmdResult<snippet_store::ImportReport> {
-    let text = std::fs::read_to_string(&path).map_err(err)?;
-    let looks_json =
-        path.ends_with(".json") || text.trim_start().starts_with('{');
-    let report = if looks_json {
-        state.snippets.import_json(&text).map_err(err)?
-    } else {
-        state.snippets.import_matches_yaml(&text).map_err(err)?
-    };
+    let parsed = read_import(&path)?;
+    let report = state
+        .snippets
+        .apply_import(&parsed, &options.unwrap_or_default())
+        .map_err(err)?;
     regen_yaml(&state)?;
     Ok(report)
 }

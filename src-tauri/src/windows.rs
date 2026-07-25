@@ -1,6 +1,9 @@
 //! Webview window management. Each surface is a static HTML page under `ui/`.
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 struct Spec {
     url: &'static str,
@@ -12,10 +15,151 @@ struct Spec {
 fn spec(name: &str) -> Option<Spec> {
     Some(match name {
         // The main index is the Settings / snippet-manager surface.
-        "settings" => Spec { url: "index.html", title: "Glyphio", width: 940.0, height: 660.0 },
-        "editor" => Spec { url: "editor/index.html", title: "Glyphio — Edit Capture", width: 1100.0, height: 820.0 },
+        "settings" => Spec { url: "index.html", title: "Glyphio", width: 1180.0, height: 820.0 },
+        "editor" => Spec { url: "editor/index.html", title: "Glyphio — Edit Capture", width: 1280.0, height: 880.0 },
         _ => return None,
     })
+}
+
+/// Windows that are "the app" rather than a transient surface. While one of these is on
+/// screen Glyphio behaves like a regular macOS app — Dock icon, menu bar, ⌘Q, working
+/// full screen — and reverts to a menu-bar agent once they're all gone. The palette,
+/// popup/form surfaces and the capture overlay deliberately don't count: they're summoned
+/// over whatever you're working in and must never steal an app slot in the Dock.
+fn is_main_window(label: &str) -> bool {
+    label == "settings" || label == "editor" || label.starts_with("capture-")
+}
+
+/// Re-derive the macOS activation policy from what's on screen. `ignoring` excludes a window
+/// that is closing right now — during `Destroyed` it may still be in the manager's map.
+pub fn sync_activation_policy(app: &AppHandle, ignoring: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The policy transition is visible (the Dock icon appears/disappears), so only apply
+        // it on an actual change — set_activation_policy on every window event flickers.
+        static IS_REGULAR: AtomicBool = AtomicBool::new(false);
+
+        let any_visible = app.webview_windows().iter().any(|(label, win)| {
+            is_main_window(label)
+                && Some(label.as_str()) != ignoring
+                && win.is_visible().unwrap_or(false)
+        });
+        if any_visible == IS_REGULAR.swap(any_visible, Ordering::SeqCst) {
+            return;
+        }
+        let policy = if any_visible {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        };
+        if let Err(e) = app.set_activation_policy(policy) {
+            log::warn!("could not set activation policy: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, ignoring);
+}
+
+// --- Remembered window geometry ----------------------------------------------------------
+// Size and position survive a quit: reopening Settings on a 6K display shouldn't hand back
+// the small default every launch. Stored next to the rest of the app data, keyed by surface
+// (every stored capture window shares one key — they're the same kind of window).
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct Geometry {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+fn geometry_key(label: &str) -> &str {
+    if label.starts_with("capture-") {
+        "capture"
+    } else {
+        label
+    }
+}
+
+fn geometry_file(app: &AppHandle) -> std::path::PathBuf {
+    app.state::<crate::AppState>().paths.root.join("window-state.json")
+}
+
+fn load_geometry(app: &AppHandle, label: &str) -> Option<Geometry> {
+    let text = std::fs::read_to_string(geometry_file(app)).ok()?;
+    let all: HashMap<String, Geometry> = serde_json::from_str(&text).ok()?;
+    let g = all.get(geometry_key(label)).copied()?;
+    // A window remembered on a monitor that's since been unplugged would open off-screen,
+    // where it can't be reached at all — keep the size, drop the position.
+    if g.w < 200.0 || g.h < 150.0 || !crate::capture::point_on_a_display(g.x + 40.0, g.y + 10.0) {
+        return None;
+    }
+    Some(g)
+}
+
+/// Record a window's current frame. Called while the window still exists (close *request*,
+/// app exit) — after destruction there's nothing left to measure.
+pub fn save_geometry(app: &AppHandle, label: &str) {
+    let Some(win) = app.get_webview_window(label) else { return };
+    // A full-screen or minimized frame is not what the user wants back on next launch.
+    if win.is_fullscreen().unwrap_or(false) || win.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(pos), Ok(size), Ok(scale)) = (win.outer_position(), win.inner_size(), win.scale_factor())
+    else {
+        return;
+    };
+    let pos = pos.to_logical::<f64>(scale);
+    let size = size.to_logical::<f64>(scale);
+    let path = geometry_file(app);
+    let mut all: HashMap<String, Geometry> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    all.insert(
+        geometry_key(label).to_string(),
+        Geometry { x: pos.x, y: pos.y, w: size.width, h: size.height },
+    );
+    if let Ok(json) = serde_json::to_vec_pretty(&all) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Save every open main window — used on app exit, where no per-window close event fires.
+pub fn save_all_geometry(app: &AppHandle) {
+    for (label, win) in app.webview_windows() {
+        if is_main_window(&label) && win.is_visible().unwrap_or(false) {
+            save_geometry(app, &label);
+        }
+    }
+}
+
+/// Where a window should open: remembered geometry, else the spec size centred on the display
+/// the user is working on. The default is clamped to the screen — a 1280×880 window must not
+/// open half off a 1280×800 laptop display.
+fn placement(app: &AppHandle, label: &str, spec: &Spec) -> Geometry {
+    if let Some(g) = load_geometry(app, label) {
+        return g;
+    }
+    let (origin, display) = crate::capture::display_bounds_for_active_window();
+    let w = spec.width.min(display.0 - 80.0).max(640.0);
+    let h = spec.height.min(display.1 - 120.0).max(480.0);
+    Geometry {
+        x: origin.0 + (display.0 - w) / 2.0,
+        y: origin.1 + (display.1 - h) / 2.0,
+        w,
+        h,
+    }
+}
+
+/// Bring an existing window to the front, adopting the Dock/menu-bar identity that goes with
+/// having a window on screen.
+fn present(app: &AppHandle, win: &WebviewWindow) -> anyhow::Result<()> {
+    win.show()?;
+    sync_activation_policy(app, None);
+    win.set_focus()?;
+    Ok(())
 }
 
 /// Open a stored capture (by id) in the editor's read-only view mode. Uses a per-capture window
@@ -26,18 +170,21 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
         // Reload so the view reflects the row's current content and the latest settings
         // (the page reads both once, at load).
         let _ = win.eval("window.location.reload()");
-        win.show()?;
-        win.set_focus()?;
-        return Ok(());
+        return present(app, &win);
     }
     let url = format!("editor/index.html?history={id}");
+    let spec = spec("editor").expect("editor spec");
+    let g = placement(app, &label, &spec);
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("Glyphio — Capture")
-        .inner_size(1100.0, 820.0)
+        .inner_size(g.w, g.h)
+        .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
-    // Accessory apps aren't active when a window is built, so a fresh window would appear
-    // BEHIND the frontmost app. set_focus activates us (activateIgnoringOtherApps).
+    // A menu-bar agent isn't active when a window is built, so a fresh window would appear
+    // BEHIND the frontmost app. Take the regular-app policy first, then set_focus activates
+    // us (activateIgnoringOtherApps).
+    sync_activation_policy(app, None);
     win.set_focus()?;
     Ok(())
 }
@@ -51,18 +198,19 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         if name == "editor" {
             let _ = win.eval("window.location.reload()");
         }
-        win.show()?;
-        win.set_focus()?;
-        return Ok(());
+        return present(app, &win);
     }
     let spec = spec(name).ok_or_else(|| anyhow::anyhow!("unknown window: {name}"))?;
+    let g = placement(app, name, &spec);
     let win = WebviewWindowBuilder::new(app, name, WebviewUrl::App(spec.url.into()))
         .title(spec.title)
-        .inner_size(spec.width, spec.height)
+        .inner_size(g.w, g.h)
+        .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
-    // See open_capture: without this, new windows of an accessory app open behind the
+    // See open_capture: without this, new windows of a menu-bar agent open behind the
     // frontmost app instead of on top.
+    sync_activation_policy(app, None);
     win.set_focus()?;
     Ok(())
 }

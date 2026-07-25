@@ -417,7 +417,7 @@ function renderMain() {
   main.innerHTML = `
     <div class="main-head">
       <input class="search" type="search" placeholder="Search snippets…" value="${escapeAttr(state.search)}" />
-      <button class="ghost" id="import-snips" title="Import snippets (Glyphio export or YAML match files)">Import</button>
+      <button class="ghost" id="import-snips" title="${currentGroupId() ? 'Import snippets into this group' : 'Import snippets (Glyphio export or YAML match files)'}">Import</button>
       <button class="ghost" id="export-snips" title="${isGroupView() ? 'Export this group' : 'Export all snippets'}">Export</button>
       <button class="primary" id="new-snippet">+ New snippet</button>
     </div>
@@ -435,7 +435,8 @@ function renderMain() {
   main.querySelectorAll('[data-goto]').forEach((b) => b.addEventListener('click', () => {
     state.selected = b.dataset.goto; renderSidebar(); renderMain();
   }));
-  main.querySelector('#import-snips').addEventListener('click', importSnippets);
+  // Importing while a group is open defaults to that group — the dialog can still redirect it.
+  main.querySelector('#import-snips').addEventListener('click', () => importSnippets(currentGroupId()));
   main.querySelector('#export-snips').addEventListener('click', () =>
     exportSnippets(isGroupView() ? state.selected : null));
   drawList();
@@ -443,6 +444,11 @@ function renderMain() {
 
 function isGroupView() {
   return !['all', 'ungrouped', 'settings'].includes(state.selected);
+}
+
+/// The real group being viewed, if any — `isGroupView` also covers history and team views.
+function currentGroupId() {
+  return state.groups.some((g) => g.id === state.selected) ? state.selected : null;
 }
 
 // --- Capture history (in-window view, replaces the old separate window) --------
@@ -659,7 +665,9 @@ function maybeShowWelcome() {
 
 // --- Import / export ---------------------------------------------------------
 // Exports are portable Glyphio JSON (content only — no team/owner/sync state).
-// Imports are ADDITIVE: existing triggers are skipped and reported, never overwritten.
+// Imports match on CONTENT HASH, not trigger: a snippet already here byte-for-byte is
+// skipped silently, and a trigger that exists with different content is a conflict the
+// user settles in the dialog below. Nothing is overwritten without being asked.
 
 async function exportSnippets(groupId) {
   const g = groupId ? state.groups.find((x) => x.id === groupId) : null;
@@ -676,24 +684,114 @@ async function exportSnippets(groupId) {
   } catch (e) { setStatus(String(e), 'err'); }
 }
 
-async function importSnippets() {
+async function importSnippets(intoGroupId = null) {
   const path = await window.__TAURI__.dialog.open({
     title: 'Import snippets',
     multiple: false,
     filters: [{ name: 'Glyphio export / YAML matches', extensions: ['json', 'yml', 'yaml'] }],
   });
   if (!path) return;
+  let plan;
   try {
-    const r = await invoke('import_snippets', { path });
-    const skipped = r.skipped.length
-      ? ` · ${r.skipped.length} skipped (already exist: ${r.skipped.slice(0, 3).join(', ')}${r.skipped.length > 3 ? '…' : ''})`
-      : '';
+    plan = await invoke('preview_import', { path });
+  } catch (e) { setStatus(String(e), 'err'); return; }
+
+  const options = await importDialog(plan, path, intoGroupId);
+  if (!options) return;
+  try {
+    const r = await invoke('import_snippets', { path, options });
+    const bits = [];
+    if (r.imported) bits.push(`${r.imported} added`);
+    if (r.replaced) bits.push(`${r.replaced} replaced`);
+    if (r.groupsCreated) bits.push(`${r.groupsCreated} group${r.groupsCreated === 1 ? '' : 's'} created`);
+    if (r.skipped.length) bits.push(`${r.skipped.length} already here`);
+    if (r.conflicts.length) bits.push(`${r.conflicts.length} kept as-is`);
+    if (r.unsupported?.length) bits.push(`${r.unsupported.length} unsupported`);
     const quarantined = r.quarantined?.length
       ? ` · ${r.quarantined.length} disabled for review (can run code: ${r.quarantined.slice(0, 3).join(', ')}${r.quarantined.length > 3 ? '…' : ''})`
       : '';
-    setStatus(`Imported ${r.imported} snippet${r.imported === 1 ? '' : 's'}${r.groupsCreated ? `, ${r.groupsCreated} group(s)` : ''}${skipped}${quarantined}`, quarantined ? 'info' : 'ok');
+    setStatus(`Import: ${bits.join(' · ') || 'nothing to do'}${quarantined}`, quarantined ? 'info' : 'ok');
     await reloadAll();
   } catch (e) { setStatus(String(e), 'err'); }
+}
+
+/// The import dialog: where everything lands, and what to do about triggers that already
+/// exist with different content. Resolves to the options for `import_snippets`, or null on
+/// cancel. Conflicts default to KEEPING what's stored — replacing is always a deliberate act.
+function importDialog(plan, path, intoGroupId) {
+  return new Promise((resolve) => {
+    const conflicts = plan.items.filter((i) => i.status === 'conflict');
+    const file = String(path).split('/').pop();
+    const groupOpt = (g) => {
+      const team = g.team ? ` — shared with ${escapeHtml(g.team)}` : '';
+      return `<option value="${escapeAttr(g.id)}"${g.id === intoGroupId ? ' selected' : ''}>${escapeHtml(g.name)}${team}</option>`;
+    };
+    const keepLabel = plan.groups.length
+      ? `Keep the file's groups (${plan.groups.map(escapeHtml).join(', ')})`
+      : 'No group';
+
+    const { modal, close } = openModal(`
+      <h3>Import snippets</h3>
+      <p class="modal-sub">${escapeHtml(file)} — <strong>${plan.newCount}</strong> new,
+        <strong>${plan.identicalCount}</strong> already here,
+        <strong>${conflicts.length}</strong> conflicting.</p>
+
+      <div class="mfield">
+        <label for="imp-group">Import into</label>
+        <select id="imp-group" data-group>
+          <option value=""${intoGroupId ? '' : ' selected'}>${keepLabel}</option>
+          ${state.groups.map(groupOpt).join('')}
+        </select>
+        <p class="hint">Snippets in a team-shared group sync with that team.</p>
+      </div>
+
+      ${conflicts.length ? `
+        <div class="imp-conflicts">
+          <div class="imp-conflicts-head">
+            <span>These triggers already exist with different content</span>
+            <span class="imp-bulk">
+              <button class="link" type="button" data-all>Replace all</button> ·
+              <button class="link" type="button" data-none>Keep all</button>
+            </span>
+          </div>
+          <div class="imp-rows">
+            ${conflicts.map((c) => `
+              <label class="imp-row">
+                <input type="checkbox" data-conflict value="${escapeAttr(c.trigger)}" />
+                <span class="imp-row-body">
+                  <span class="imp-row-top">
+                    <code>${escapeHtml(c.trigger)}</code>
+                    ${c.executable ? '<span class="imp-exec" title="Arrives disabled until you review it">can run code</span>' : ''}
+                  </span>
+                  <span class="imp-side"><em>yours</em> ${escapeHtml(c.existing || '')}</span>
+                  <span class="imp-side"><em>file</em> ${escapeHtml(c.incoming)}</span>
+                </span>
+              </label>`).join('')}
+          </div>
+          <p class="hint">Ticked entries are overwritten by the file. Unticked keep what you have.</p>
+        </div>` : ''}
+
+      ${plan.unsupported.length ? `<p class="hint imp-unsupported">${plan.unsupported.length} entr${plan.unsupported.length === 1 ? 'y' : 'ies'} in this file can't be represented in Glyphio and will be left out: ${escapeHtml(plan.unsupported.slice(0, 3).join(', '))}${plan.unsupported.length > 3 ? '…' : ''}</p>` : ''}
+
+      <div class="modal-actions">
+        <div class="spacer"></div>
+        <button class="secondary" data-cancel>Cancel</button>
+        <button class="primary" data-ok>Import</button>
+      </div>`, { className: 'import-modal', onClose: () => resolve(null) });
+
+    const boxes = [...modal.querySelectorAll('[data-conflict]')];
+    modal.querySelector('[data-all]')?.addEventListener('click', () => boxes.forEach((b) => { b.checked = true; }));
+    modal.querySelector('[data-none]')?.addEventListener('click', () => boxes.forEach((b) => { b.checked = false; }));
+    modal.querySelector('[data-cancel]').addEventListener('click', close);
+    modal.querySelector('[data-ok]').addEventListener('click', () => {
+      resolve({
+        groupId: modal.querySelector('[data-group]').value || null,
+        replace: boxes.filter((b) => b.checked).map((b) => b.value),
+      });
+      close();
+    });
+    modal.querySelector('[data-ok]').focus();
+  });
 }
 
 function visibleSnippets() {
@@ -793,7 +891,7 @@ async function deleteSnippet(s) {
 
 const FMT_HINTS = {
   plain: 'Inserted exactly as typed.',
-  html: 'Rich text — pastes with formatting. Click an image to resize it.',
+  html: 'Rich text — pastes with formatting. Select an image, then use the resize button in the toolbar.',
   markdown: 'Markdown source, pasted as rich text.',
 };
 
@@ -977,14 +1075,7 @@ function openEditor(existing) {
         e.preventDefault();
         insertImageFile(file, getRich, updatePreview);
       });
-      // Clicking an inline image opens a size popover (resize after paste/insert).
-      ed.addEventListener('click', (e) => {
-        const img = e.target.closest('img');
-        if (img && ed.contains(img)) openImageSizePopover(img, updatePreview);
-      });
-      // Hovering an image shows a "Click to resize" pill — the resize affordance was
-      // invisible before (nothing suggested images were clickable).
-      wireImageResizeBadge(ed);
+      // Clicking an inline image arms the toolbar's resize button (renderRichToolbar).
       selectionHandler = () => { if (document.activeElement === ed) refresh(); };
       document.addEventListener('selectionchange', selectionHandler);
     } else {
@@ -1192,7 +1283,33 @@ function renderRichToolbar(bar, getEditor, { onChange, saveSel, restoreSel }) {
   mk(icon('link'), 'Insert link', (b) => openLinkPopover(b));
   mk(icon('table'), 'Insert table', (b) => openTablePopover(b));
   mk(icon('image'), 'Insert image', () => pickImage());
+  const sizeBtn = mk(icon('resize'), 'Resize image — select one first', (b) => {
+    if (selectedImage()) openImageSizePopover(selectedImage(), onChange, b);
+  });
   mk(icon('eraser'), 'Clear formatting', () => exec('removeFormat'));
+
+  // Image sizing belongs here, alongside every other formatting control. It used to be a
+  // pill that appeared only while hovering the image, which people didn't find at all.
+  // Clicking an image arms this button; the editor's hover outline hints it's selectable.
+  let picked = null;
+  function selectedImage() {
+    // The image may have been deleted since it was picked.
+    return picked && getEditor().contains(picked) ? picked : null;
+  }
+  function armSizeButton(img) {
+    picked = img;
+    const on = !!selectedImage();
+    sizeBtn.disabled = !on;
+    sizeBtn.classList.toggle('active', on);
+    sizeBtn.title = on ? 'Resize this image' : 'Resize image — select one first';
+  }
+  armSizeButton(null);
+  {
+    const ed = getEditor();
+    ed.addEventListener('click', (e) => armSizeButton(e.target.closest('img')));
+    // Typing moves the point of interest away from the image.
+    ed.addEventListener('input', () => armSizeButton(null));
+  }
 
   function pickImage() {
     const input = el('input', { type: 'file', accept: 'image/*' });
@@ -1289,36 +1406,16 @@ async function insertImageFile(file, getEditor, onChange) {
   }
 }
 
-/// Floating "Click to resize" pill over the hovered editor image. Lives OUTSIDE the
-/// contenteditable (appended to its offset parent) so it can never leak into saved HTML.
-function wireImageResizeBadge(ed) {
-  let badge = null;
-  const hide = () => { badge?.remove(); badge = null; };
-  ed.addEventListener('mouseover', (e) => {
-    const img = e.target.closest('img');
-    if (!img || !ed.contains(img)) { hide(); return; }
-    if (!badge) {
-      badge = el('span', { className: 'img-resize-badge', textContent: 'Click to resize' });
-      ed.parentElement.appendChild(badge);
-    }
-    const edBox = ed.parentElement.getBoundingClientRect();
-    const box = img.getBoundingClientRect();
-    badge.style.left = `${box.right - edBox.left - badge.offsetWidth - 6}px`;
-    badge.style.top = `${box.bottom - edBox.top - 24}px`;
-  });
-  ed.addEventListener('mouseleave', hide);
-  ed.addEventListener('click', hide);
-}
-
-/// Resize an inline snippet image: a popover with a width slider + presets. Width is stored
-/// as an absolute `width` attribute (height auto-follows), which survives sanitization, the
-/// popup/form surfaces, and rich paste into target apps.
-function openImageSizePopover(img, onChange) {
+/// Resize an inline snippet image: a popover with a width slider + presets, anchored to the
+/// toolbar button that opened it (or to the image itself, right after inserting one). Width
+/// is stored as an absolute `width` attribute (height auto-follows), which survives
+/// sanitization, the popup/form surfaces, and rich paste into target apps.
+function openImageSizePopover(img, onChange, anchor = img) {
   const natural = img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
   if (!natural) return;
   const current = parseInt(img.getAttribute('width'), 10) || natural;
   const pct = Math.max(10, Math.min(100, Math.round((current / natural) * 100)));
-  openPopover(img, `
+  openPopover(anchor, `
     <div class="pop-row img-size-row">
       <input type="range" data-size min="10" max="100" step="5" value="${pct}" aria-label="Image width" />
       <span class="img-size-val" data-val>${pct}%</span>
@@ -1862,15 +1959,16 @@ function renderSnippetsTab(form) {
   div.innerHTML = `
     <h3>Portability</h3>
     <p class="adv-hint">Exports are portable Glyphio JSON — content only, no team or sync state.
-    Imports also accept <code>matches:</code>-style YAML from other expanders, and are additive: existing triggers
-    are skipped, never overwritten.${state.syncStatus?.identity?.policy?.exportTeamGroups && state.syncStatus.identity.policy.exportTeamGroups !== 'open'
+    Imports also accept <code>matches:</code>-style YAML from other expanders. You pick the group they land in;
+    snippets you already have are skipped, and a trigger that arrives with different content is shown side by side
+    so you can replace it or keep yours.${state.syncStatus?.identity?.policy?.exportTeamGroups && state.syncStatus.identity.policy.exportTeamGroups !== 'open'
       ? ' <strong>Note:</strong> your organization restricts exporting team-shared groups.' : ''}</p>
     <div class="sync-actions">
       <button class="secondary" id="tab-export">Export all snippets…</button>
       <button class="secondary" id="tab-import">Import…</button>
     </div>`;
   div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
-  div.querySelector('#tab-import').addEventListener('click', importSnippets);
+  div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
 }
 

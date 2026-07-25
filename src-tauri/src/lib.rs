@@ -80,6 +80,8 @@ pub fn run() {
         )
         .manage(state)
         .setup(|app| {
+            // Start as a menu-bar agent; opening a window promotes us to a regular app and
+            // closing the last one demotes us again (windows::sync_activation_policy).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -137,7 +139,8 @@ pub fn run() {
                 });
             }
 
-            // Show the settings/snippets window on launch (menu-bar app has no dock icon).
+            // Show the settings/snippets window on launch — which also flips us to a regular,
+            // Dock-visible app for as long as it's open (see windows::sync_activation_policy).
             windows::open(app.handle(), "settings")?;
             Ok(())
         })
@@ -151,6 +154,7 @@ pub fn run() {
             commands::update_group,
             commands::delete_group,
             commands::export_snippets,
+            commands::preview_import,
             commands::import_snippets,
             commands::get_settings,
             commands::save_settings,
@@ -212,12 +216,26 @@ pub fn run() {
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } => {
+                // Last chance to measure the frame — after this the window is hidden or gone.
+                windows::save_geometry(app_handle, &label);
                 if label == "settings" {
                     if let Some(win) = app_handle.get_webview_window(&label) {
                         let _ = win.hide();
                     }
                     api.prevent_close();
                 }
+                // With this window going away Glyphio may be back to a menu-bar-only service:
+                // drop the Dock icon unless another real window is still up.
+                windows::sync_activation_policy(app_handle, Some(&label));
+            }
+            // A destroyed window (editor, capture viewer) leaves the same question open —
+            // CloseRequested doesn't fire when a window is closed programmatically.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } => {
+                windows::sync_activation_policy(app_handle, Some(&label));
             }
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already
             // running fires Reopen — surface the settings window frontmost, like clicking
@@ -239,12 +257,14 @@ pub fn run() {
                 if code.is_none() {
                     api.prevent_exit();
                 } else {
+                    windows::save_all_geometry(app_handle);
                     app_handle.state::<AppState>().supervisor.stop();
                 }
             }
-            // Tray "Quit" (a predefined menu item) fires `Exit` — clean up the engine here,
-            // else the daemon/worker are orphaned and block the next launch.
+            // Tray "Quit" and ⌘Q (both predefined menu items) fire `Exit` — clean up the engine
+            // here, else the daemon/worker are orphaned and block the next launch.
             tauri::RunEvent::Exit => {
+                windows::save_all_geometry(app_handle);
                 app_handle.state::<AppState>().supervisor.stop();
             }
             _ => {}

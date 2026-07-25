@@ -26,7 +26,10 @@ use uuid::Uuid;
 mod portability;
 mod yaml;
 
-pub use portability::{ExportDoc, ImportReport};
+pub use portability::{
+    parse_json, parse_matches_yaml, ExportDoc, ImportOptions, ImportPlan, ImportReport,
+    ImportStatus, ParsedImport,
+};
 pub use yaml::render_matches_yaml;
 
 #[derive(Debug, thiserror::Error)]

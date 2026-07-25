@@ -22,6 +22,10 @@ pub const WORKER_ALREADY_RUNNING: i32 = 1;
 pub const WORKER_GENERAL_ERROR: i32 = 2;
 pub const WORKER_EXIT_ALL_PROCESSES: i32 = 50;
 pub const WORKER_RESTART: i32 = 51;
+/// GLYPHIO DEVIATION: the worker exited cleanly without the daemon asking it to — someone
+/// quit it from outside (Dock, Activity Monitor, a stray `kill`). Reported by the worker
+/// monitor thread so the daemon respawns instead of living on with no worker.
+pub const WORKER_UNEXPECTED_EXIT: i32 = 52;
 pub const WORKER_ERROR_EXIT_NO_CODE: i32 = 90;
 
 pub const DAEMON_SUCCESS: i32 = 0;

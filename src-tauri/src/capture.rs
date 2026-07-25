@@ -31,6 +31,13 @@ pub fn display_bounds_for_active_window() -> ((f64, f64), (f64, f64)) {
     backend::display_bounds_under_cursor()
 }
 
+/// Whether a point falls on some connected display. Used to reject a remembered window
+/// position belonging to a monitor that isn't attached any more — restoring it would put the
+/// window somewhere the user can't reach.
+pub fn point_on_a_display(x: f64, y: f64) -> bool {
+    backend::display_bounds_containing_point(x, y).is_some()
+}
+
 /// A captured, un-annotated frame handed to the editor webview.
 pub struct Shot {
     pub rgba: Vec<u8>,

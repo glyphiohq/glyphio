@@ -114,10 +114,39 @@ The team roster as known to the server, sorted by `sub`:
 ```
 
 Sources: in static-token mode, the configured token list; in OIDC mode, identities recorded as
-they authenticate ("seen members"). **Membership is owned by the IdP or the server's token
-config — there is deliberately no write API for it** (clients guide admins to the right place
-instead). `lastSeen` is absent for configured-but-never-seen members. Optional endpoint:
-servers without a roster concept may 404 it; clients must degrade gracefully.
+they authenticate ("seen members"). Who *else* is in a team is owned by the IdP or the server's
+token config — there is deliberately no write API for adding other people (clients guide admins
+to the right place instead). `lastSeen` is absent for configured-but-never-seen members.
+Optional endpoint: servers without a roster concept may 404 it; clients must degrade gracefully.
+
+### `POST /v1/invites/redeem` *(additive)*
+Join a team as the **calling identity**, using the credential already in hand:
+
+```json
+{ "code": "<invite token>" }
+```
+
+Responds with the same body as `GET /v1/me`, reflecting the new membership. This is what makes
+membership additive: an invite redeemed this way *adds* a team, where treating the invite token
+as a credential in its own right would replace whatever the client was using. A managed client,
+pinned to one backend, can therefore still join more of that backend's teams.
+
+Servers must: reject expired, revoked and unknown codes with the same error (no oracle for
+guessing codes); never *lower* an existing role; and consume the invite on success — unless the
+caller authenticated with that very token, which would log them out mid-request. Optional
+endpoint: servers without a membership concept may 404 it.
+
+### `DELETE /v1/teams/{team}/membership` *(additive)*
+Give up the caller's own membership of one team. Servers must refuse when the caller is the
+team's last owner (`422`), so a team can never be stranded. Membership that comes from an IdP
+claim cannot be removed here — the response reports that honestly:
+
+```json
+{ "left": "design", "stillGrantedByIdentityProvider": false }
+```
+
+Clients should stop syncing the team and un-share local groups that pointed at it; the content
+stays local. Optional endpoint, as above.
 
 ## Errors
 

@@ -33,6 +33,10 @@ pub struct Identity {
     /// Role pinned in static-token config (applies to all the token's teams unless an explicit
     /// role row overrides). Always `None` for OIDC identities.
     pub pinned_role: Option<sync_proto::Role>,
+    /// SHA-256 (hex) of the *stored* invite token this caller presented, when they presented
+    /// one. Lets a handler recognise its own credential — redeeming the invite you're already
+    /// authenticated with must not revoke it out from under the session.
+    pub token_sha: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +124,7 @@ impl Authenticator {
                         email: t.email.clone(),
                         teams: t.teams.clone(),
                         pinned_role: t.role.as_deref().and_then(crate::storage::role_from_str),
+                        token_sha: None, // env-configured, not a stored invite
                     });
                 }
             }
@@ -141,6 +146,7 @@ impl Authenticator {
                 email: t.email.clone(),
                 teams: t.teams.clone(),
                 pinned_role: t.role.as_deref().and_then(crate::storage::role_from_str),
+                token_sha: Some(sha_hex),
             });
         }
         if let Some(oidc) = &self.oidc {
@@ -297,7 +303,7 @@ impl OidcValidator {
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        Ok(Identity { sub, email, teams, pinned_role: None })
+        Ok(Identity { sub, email, teams, pinned_role: None, token_sha: None })
     }
 }
 

@@ -224,6 +224,151 @@ pub async fn members(
     Ok(Json(Members { members: merged.into_values().collect() }))
 }
 
+// ---- self-service membership -------------------------------------------------------
+// An identity belongs to as many teams as it has access to; `/v1/me` unions the IdP claim
+// with explicit role rows. These two endpoints let a *member* add and drop rows for
+// themselves — joining by redeeming an invite, and leaving on their own — so multi-team
+// membership doesn't require an admin round trip for every change.
+
+#[derive(Deserialize)]
+pub struct RedeemBody {
+    /// The invite's plaintext token, as minted by `POST /admin/v1/teams/{team}/invites`.
+    pub code: String,
+}
+
+/// Redeem an invite for the *caller's* identity, granting the invite's team(s) on top of
+/// whatever they already have. Authenticated with the caller's existing credential, so a
+/// second, third… team never displaces the first.
+///
+/// The invite is consumed (revoked) on success: it was minted for one person to join once,
+/// and leaving it live would be a second standing credential for the team.
+pub async fn redeem_invite(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Json(body): Json<RedeemBody>,
+) -> Result<Json<sync_proto::Me>, ApiError> {
+    use sha2::Digest;
+    let code = body.code.trim();
+    if code.is_empty() || code.len() > 512 {
+        return Err(ApiError::Validation("invite code missing or malformed".into()));
+    }
+    let sha = hex::encode(sha2::Sha256::digest(code.as_bytes()));
+    let invite = state
+        .storage
+        .token_by_sha(&sha)
+        .await
+        .map_err(ApiError::Storage)?
+        // One message for "no such invite" and "expired/revoked" alike: a distinguishable
+        // error would turn this endpoint into an oracle for guessing invite codes.
+        .filter(|t| t.revoked_at.is_none())
+        .filter(|t| t.expires_at.as_deref().is_none_or(|e| e > crate::storage::now_rfc3339().as_str()))
+        .ok_or_else(|| ApiError::Validation("this invite is not valid — it may have expired or already been used".into()))?;
+
+    let org = rbac::org(&state).await?;
+    let granted = invite.role.as_deref().and_then(crate::storage::role_from_str);
+    let mut joined = Vec::new();
+    for team in &invite.teams {
+        if state.storage.archived(team).await.map_err(ApiError::Storage)? {
+            continue;
+        }
+        let role = granted.unwrap_or(rbac::effective_default(&org, state.default_role));
+        // Never demote: redeeming an invite can only ever add access. Someone already an
+        // owner who redeems a reader invite stays an owner.
+        let effective = match state.storage.role(team, &id.sub).await.map_err(ApiError::Storage)? {
+            Some(existing) if existing >= role => existing,
+            _ => {
+                state.storage.set_role(team, &id.sub, role).await.map_err(ApiError::Storage)?;
+                role
+            }
+        };
+        joined.push(team.clone());
+        rbac::audit_log(
+            &state,
+            crate::storage::AuditEntry::new(&id.sub, "invite.redeem")
+                .team(team)
+                .target(&id.sub)
+                .detail(format!(
+                    "role={} invited={}",
+                    crate::storage::role_to_str(effective),
+                    invite.sub
+                )),
+        )
+        .await;
+    }
+    if joined.is_empty() {
+        return Err(ApiError::Validation("this invite's team is no longer available".into()));
+    }
+    // Consume it — unless the caller is *authenticated with this very invite*, in which case
+    // revoking would log them out of the session that just used it.
+    if id.token_sha.as_deref() != Some(sha.as_str()) {
+        state.storage.revoke_token(&sha).await.map_err(ApiError::Storage)?;
+    }
+    me(State(state), Extension(id)).await
+}
+
+/// Leave a team: drop the caller's own access. Refuses to strand a team without an owner,
+/// and can't undo membership that comes from the identity provider — the IdP is the
+/// authority there, so the honest answer is to say so rather than fail silently.
+pub async fn leave_team(
+    State(state): State<AppState>,
+    Extension(id): Extension<Identity>,
+    Path(team): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let org = rbac::org(&state).await?;
+    let Some(role) = rbac::resolve_role_with_org(&state, &org, &team, &id).await? else {
+        return Err(ApiError::Forbidden);
+    };
+    if role == Role::Owner {
+        let owners = state
+            .storage
+            .roles(&team)
+            .await
+            .map_err(ApiError::Storage)?
+            .into_iter()
+            .filter(|(_, r)| *r == Role::Owner)
+            .count();
+        if owners <= 1 {
+            return Err(ApiError::Validation(
+                "you are this team's only owner — make someone else an owner first".into(),
+            ));
+        }
+    }
+    state.storage.remove_role(&team, &id.sub).await.map_err(ApiError::Storage)?;
+    // Drop the team from any invite token of the caller's, so a stored credential can't keep
+    // the membership alive behind the removed role row.
+    let mut tokens_touched = 0u32;
+    for t in state.storage.tokens_for_sub(&id.sub).await.map_err(ApiError::Storage)? {
+        if t.revoked_at.is_some() || !t.teams.iter().any(|x| x == &team) {
+            continue;
+        }
+        let remaining: Vec<String> = t.teams.iter().filter(|x| *x != &team).cloned().collect();
+        if remaining.is_empty() {
+            state.storage.revoke_token(&t.token_sha256).await.map_err(ApiError::Storage)?;
+        } else {
+            state
+                .storage
+                .update_token_teams(&t.token_sha256, &remaining)
+                .await
+                .map_err(ApiError::Storage)?;
+        }
+        tokens_touched += 1;
+    }
+    rbac::audit_log(
+        &state,
+        crate::storage::AuditEntry::new(&id.sub, "team.leave")
+            .team(&team)
+            .target(&id.sub)
+            .detail(format!("tokens={tokens_touched}")),
+    )
+    .await;
+    // Claim-granted membership survives this: say so plainly instead of pretending it worked.
+    let still_a_member = id.teams.iter().any(|t| t == &team);
+    Ok(Json(serde_json::json!({
+        "left": team,
+        "stillGrantedByIdentityProvider": still_a_member,
+    })))
+}
+
 fn validate(team: &str, batch: &Push) -> Result<(), ApiError> {
     let total = batch.snippets.len() + batch.groups.len();
     if total == 0 {

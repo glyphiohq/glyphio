@@ -100,6 +100,23 @@ roster with role dropdowns, add-member-by-sub) · Members (people across your te
 Org settings (owners) · Audit (filterable). Views the caller can't use are hidden; the
 token stays in tab memory.
 
+## Joining and leaving (self-service membership)
+
+An identity belongs to as many teams as it has access to — `/v1/me` unions the IdP claim with
+explicit role rows — and members manage their own edges of that:
+
+- `POST /v1/invites/redeem` `{"code":"…"}` — redeem an invite **as the calling identity**, using
+  the credential they already have. The team is added on top of the ones they hold, so a second
+  invite never displaces the first; a managed client locked to one backend can still join more of
+  that backend's teams. The invite is consumed on success, unknown/expired/revoked codes all
+  return the same error, and an existing higher role is never lowered.
+- `DELETE /v1/teams/{team}/membership` — leave. Refused for a team's last owner (transfer
+  ownership first). The team is also dropped from any invite token of theirs, so a stored
+  credential can't keep a removed membership alive. Membership granted by an IdP claim can't be
+  dropped here; the response says so (`stillGrantedByIdentityProvider`).
+
+Both are audited (`invite.redeem`, `team.leave`).
+
 ## Invite tokens (day-to-day membership)
 
 Managers+ mint invite tokens from the dashboard (Teams → Invite member) or via

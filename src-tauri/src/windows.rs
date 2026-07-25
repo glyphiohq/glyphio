@@ -162,6 +162,41 @@ fn present(app: &AppHandle, win: &WebviewWindow) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Re-assert focus a beat later.
+///
+/// A capture that used the interactive picker leaves `screencapture` as the frontmost app;
+/// as it exits, macOS hands focus back to whatever was active before it — and that can land
+/// *after* our `set_focus`, leaving the editor open but behind the window you just captured.
+/// Asking again once the hand-back has settled is the reliable fix.
+fn refocus_shortly(app: &AppHandle, label: &str) {
+    let app = app.clone();
+    let label = label.to_string();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        let inner = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(win) = inner.get_webview_window(&label) {
+                if win.is_visible().unwrap_or(false) {
+                    let _ = win.set_focus();
+                }
+            }
+        });
+    });
+}
+
+/// Move a window onto the display the user is working on, keeping its size. Used for the
+/// capture editor: it should open where the capture happened, not wherever it last sat —
+/// which, with geometry remembered across launches, can be a different monitor entirely.
+fn move_to_active_display(win: &WebviewWindow) {
+    let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) else { return };
+    let size = size.to_logical::<f64>(scale);
+    let (origin, display) = crate::capture::display_bounds_for_active_window();
+    let _ = win.set_position(tauri::LogicalPosition::new(
+        origin.0 + (display.0 - size.width).max(0.0) / 2.0,
+        origin.1 + (display.1 - size.height).max(0.0) / 2.0,
+    ));
+}
+
 /// Open a stored capture (by id) in the editor's read-only view mode. Uses a per-capture window
 /// label so it never clashes with the live-capture editor window.
 pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
@@ -197,11 +232,24 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         // reload so the new capture is picked up.
         if name == "editor" {
             let _ = win.eval("window.location.reload()");
+            // A capture belongs where the user just was, even if this window was left open
+            // on another display.
+            move_to_active_display(&win);
         }
-        return present(app, &win);
+        present(app, &win)?;
+        if name == "editor" {
+            refocus_shortly(app, name);
+        }
+        return Ok(());
     }
     let spec = spec(name).ok_or_else(|| anyhow::anyhow!("unknown window: {name}"))?;
-    let g = placement(app, name, &spec);
+    let mut g = placement(app, name, &spec);
+    if name == "editor" {
+        // Keep the remembered size, but centre it on the display the capture came from.
+        let (origin, display) = crate::capture::display_bounds_for_active_window();
+        g.x = origin.0 + (display.0 - g.w).max(0.0) / 2.0;
+        g.y = origin.1 + (display.1 - g.h).max(0.0) / 2.0;
+    }
     let win = WebviewWindowBuilder::new(app, name, WebviewUrl::App(spec.url.into()))
         .title(spec.title)
         .inner_size(g.w, g.h)
@@ -212,6 +260,9 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
     // frontmost app instead of on top.
     sync_activation_policy(app, None);
     win.set_focus()?;
+    if name == "editor" {
+        refocus_shortly(app, name);
+    }
     Ok(())
 }
 

@@ -495,7 +495,7 @@ async function render({ autoCopy }) {
       await writeBlobToClipboard(currentBlob);
       setStatus('Copied to clipboard.', 'ok');
     } catch (err) {
-      setStatus(`Ready. Click "Copy to clipboard" (auto-copy blocked: ${err.message})`, 'info');
+      setStatus(`Ready. Click "Copy to clipboard" (copy failed: ${err.message || err})`, 'info');
     }
   }
 }
@@ -740,7 +740,7 @@ async function applyCrop() {
   }
   const r = toContentRect(raw);
   if (!r || r.w < 4 || r.h < 4) {
-    setStatus('The selection must include image content (the banner is regenerated, not cropped).', 'err');
+    setStatus('The selection must include image content (the timestamp strip is regenerated, not cropped).', 'err');
     return;
   }
   // Snapshot the content pixels, resize the content canvas, redraw at origin.
@@ -875,7 +875,7 @@ async function applyRedact() {
   // Regions land on the content canvas — clip away any part covering the banner.
   const contentRects = rects.map(toContentRect).filter(Boolean);
   if (contentRects.length === 0) {
-    setStatus('The regions must cover image content (the banner is regenerated, not stored).', 'err');
+    setStatus('The regions must cover image content (the timestamp strip is regenerated, not stored).', 'err');
     return;
   }
 
@@ -977,16 +977,32 @@ function enterDrawMode() {
   const onMove = (e) => {
     if (!drawState.dragging || !drawState.current) return;
     const p = overlayEventToCanvasXY(drawOverlay, e);
-    if (drawState.current.tool === 'marker') {
-      // Throttle point adds: only record a point if it's moved a few pixels
-      // from the last one. Cuts stored points by ~5-10x on fast sweeps
-      // without visibly changing stroke quality.
-      const pts = drawState.current.points;
-      const [lx, ly] = pts[pts.length - 1];
-      if (Math.abs(p.x - lx) + Math.abs(p.y - ly) >= 2) pts.push([p.x, p.y]);
+    const cur = drawState.current;
+    if (cur.tool === 'marker') {
+      if (e.shiftKey) {
+        // Shift turns freehand into a ruler: the stroke becomes a straight segment from
+        // where it began to the cursor. Releasing Shift resumes freehand from that point,
+        // so you can rule a line and keep scribbling in one gesture.
+        cur.points = [cur.points[0], [p.x, p.y]];
+      } else {
+        // Throttle point adds: only record a point if it's moved a few pixels
+        // from the last one. Cuts stored points by ~5-10x on fast sweeps
+        // without visibly changing stroke quality.
+        const pts = cur.points;
+        const [lx, ly] = pts[pts.length - 1];
+        if (Math.abs(p.x - lx) + Math.abs(p.y - ly) >= 2) pts.push([p.x, p.y]);
+      }
+    } else if (e.shiftKey) {
+      // Same modifier, the meaning every drawing tool gives it: squares for rectangles,
+      // 45°-snapped angles for arrows.
+      const [x, y] = cur.tool === 'arrow'
+        ? snapToAngle(cur.x1, cur.y1, p.x, p.y)
+        : squareOff(cur.x1, cur.y1, p.x, p.y);
+      cur.x2 = x;
+      cur.y2 = y;
     } else {
-      drawState.current.x2 = p.x;
-      drawState.current.y2 = p.y;
+      cur.x2 = p.x;
+      cur.y2 = p.y;
     }
     scheduleDrawRender();
   };
@@ -1009,7 +1025,24 @@ function enterDrawMode() {
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   drawState.listeners = { onDown, onMove, onUp };
-  setStatus('Draw mode. Pick a tool + colour, then drag. Enter to apply, Esc cancels.', 'info');
+  setStatus('Draw mode. Pick a tool + colour, then drag — hold ⇧ for straight lines, squares and 45° arrows. Enter to apply, Esc cancels.', 'info');
+}
+
+/// Snap (x2,y2) onto the nearest 45° ray from (x1,y1), keeping the drag's length.
+function snapToAngle(x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return [x2, y2];
+  const step = Math.PI / 4;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return [x1 + Math.cos(angle) * len, y1 + Math.sin(angle) * len];
+}
+
+/// Force a rectangle to a square, taking the larger drag extent and keeping its direction.
+function squareOff(x1, y1, x2, y2) {
+  const side = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+  return [x1 + Math.sign(x2 - x1 || 1) * side, y1 + Math.sign(y2 - y1 || 1) * side];
 }
 
 function initDrawToolUI() {
@@ -1458,8 +1491,11 @@ async function copyToClipboard() {
   setStatus('Copied to clipboard.', 'ok');
 }
 
+// Copy through the OS, not `navigator.clipboard`: the web API only writes during a
+// transient user activation (a real click), so copy-on-open — which has no click behind it —
+// was always refused with "not allowed by the user agent".
 async function writeBlobToClipboard(blob) {
-  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  await invoke('copy_image_to_clipboard', { pngBase64: await blobToDataUrl(blob) });
 }
 
 async function downloadPng() {

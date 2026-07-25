@@ -242,6 +242,26 @@ pub fn read_capture_data_url(state: State<AppState>, id: String) -> CmdResult<St
     Ok(format!("data:image/png;base64,{b64}"))
 }
 
+/// Put a base64 PNG on the system clipboard.
+///
+/// Copying goes through the OS rather than `navigator.clipboard`, whose write is gated on a
+/// *transient user activation* — a real click in the page. Copy-on-open has no click behind
+/// it, so the web API refused it ("not allowed by the user agent") and every capture opened
+/// with an apologetic error instead of the image on the clipboard.
+#[tauri::command]
+pub fn copy_image_to_clipboard(app: AppHandle, png_base64: String) -> CmdResult<()> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(strip_data_url(&png_base64))
+        .map_err(err)?;
+    // The clipboard wants raw RGBA + dimensions, not an encoded PNG.
+    let img = image::load_from_memory(&bytes).map_err(err)?.to_rgba8();
+    let (w, h) = img.dimensions();
+    app.clipboard()
+        .write_image(&tauri::image::Image::new(&img.into_raw(), w, h))
+        .map_err(err)
+}
+
 /// Write a base64 PNG (optionally a data URL) to a user-chosen path (editor Download).
 #[tauri::command]
 pub fn save_file(path: String, png_base64: String) -> CmdResult<()> {

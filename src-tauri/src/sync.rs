@@ -238,6 +238,74 @@ pub async fn sync_team_members(app: AppHandle, team: String) -> CmdResult<Vec<sy
     engine.members(&team).await.map_err(|e| e.to_string())
 }
 
+/// Join another team on the backend already connected, by redeeming an invite with the
+/// credential that's already signed in. This is what makes membership additive: a second
+/// invite adds a team instead of replacing the connection (which is what applying the whole
+/// invite link does). Works on managed installs too — the server stays fixed, only teams change.
+#[tauri::command]
+pub async fn sync_join_team(app: AppHandle, code: String) -> CmdResult<Vec<String>> {
+    let engine = app
+        .state::<AppState>()
+        .sync
+        .engine
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Sign in to your team backend first, then join with an invite.")?;
+    // An invite arrives either as a bare code or as a whole glyphio://join link; accept both,
+    // since what an admin sends depends on how they copied it.
+    let code = invite_code(&code).ok_or("That doesn't look like an invite code or link.")?;
+    let me = engine.redeem_invite(&code).await.map_err(|e| e.to_string())?;
+    Ok(me.teams)
+}
+
+/// Leave a team: drop the membership server-side, then un-share any local group that pointed
+/// at it. The group and its snippets stay — they simply become personal again, which is the
+/// only non-destructive reading of "leave".
+#[tauri::command]
+pub async fn sync_leave_team(app: AppHandle, team: String) -> CmdResult<()> {
+    let engine = app
+        .state::<AppState>()
+        .sync
+        .engine
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("sync is not configured or signed in")?;
+    engine.leave_team(&team).await.map_err(|e| e.to_string())?;
+    let store = app.state::<AppState>().snippets.clone();
+    let groups = store.list_groups().map_err(|e| e.to_string())?;
+    for g in groups.into_iter().filter(|g| g.team.as_deref() == Some(team.as_str())) {
+        if let Err(e) = store.set_group_team(&g.id, None) {
+            log::warn!("could not un-share group {} after leaving {team}: {e}", g.id);
+        }
+    }
+    let _ = app.emit("groups-changed", ());
+    Ok(())
+}
+
+/// The invite code inside whatever the user pasted: a bare code, or a `glyphio://join?...`
+/// link with a `token` parameter.
+fn invite_code(input: &str) -> Option<String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(u) = url::Url::parse(s) {
+        if u.scheme() == "glyphio" {
+            return u
+                .query_pairs()
+                .find(|(k, _)| k == "token")
+                .map(|(_, v)| v.into_owned())
+                .filter(|t| !t.is_empty());
+        }
+    }
+    if s.contains("://") || s.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(s.to_string())
+}
+
 #[tauri::command]
 pub fn sync_sign_out(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
     if let Some(t) = state.sync.task.lock().unwrap().take() {
@@ -268,6 +336,17 @@ pub struct InviteInfo {
     pub has_token: bool,
     pub issuer: Option<String>,
     pub client_id: Option<String>,
+    /// The invite is for the backend this install already uses, so applying it only adds a
+    /// team — no connection change. That's what lets a managed (locked) install join more
+    /// teams within its own organization, and what stops a second invite from displacing the
+    /// first on a personal one.
+    pub join_only: bool,
+}
+
+/// Whether two backend URLs address the same server (ignoring a trailing slash and case).
+fn same_backend(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim().trim_end_matches('/').to_ascii_lowercase();
+    !a.trim().is_empty() && norm(a) == norm(b)
 }
 
 fn parse_invite_url(url: &str) -> Result<(InviteInfo, Option<String>), String> {
@@ -285,6 +364,7 @@ fn parse_invite_url(url: &str) -> Result<(InviteInfo, Option<String>), String> {
         has_token: token.is_some(),
         issuer: q.get("issuer").cloned(),
         client_id: q.get("clientId").cloned(),
+        join_only: false, // decided by the caller, which knows the current connection
     };
     // Validate the resulting config up front so a bad link fails at parse, not after apply.
     let cfg = SyncConfig {
@@ -300,22 +380,53 @@ fn parse_invite_url(url: &str) -> Result<(InviteInfo, Option<String>), String> {
 }
 
 /// Parse an invite link/code WITHOUT applying it (the UI confirms with the user first).
+///
+/// An invite for the backend we're already on is a *join*: it adds a team and leaves the
+/// connection alone. That's the only kind a managed install accepts — the organization's
+/// server stays fixed, but its people can still be added to more of its teams.
 #[tauri::command]
 pub fn parse_invite(state: State<AppState>, url: String) -> CmdResult<InviteInfo> {
-    if state.sync.is_managed() {
-        return Err("This install is managed by your organization — invites can't change it.".into());
+    let (mut info, _) = parse_invite_url(&url)?;
+    let cfg = state.sync.config();
+    info.join_only = cfg.enabled && same_backend(&info.server, &cfg.backend_url);
+    if state.sync.is_managed() && !info.join_only {
+        return Err(
+            "This install is managed by your organization — it can only join teams on your organization's server."
+                .into(),
+        );
     }
-    parse_invite_url(&url).map(|(info, _)| info)
+    Ok(info)
 }
 
 /// Apply a confirmed invite: write the sync config, store the token in the keychain, start
 /// the engine. Only ever called after the user confirmed the parsed summary.
 #[tauri::command]
-pub fn apply_invite(app: AppHandle, state: State<AppState>, url: String) -> CmdResult<()> {
-    if state.sync.is_managed() {
-        return Err("This install is managed by your organization.".into());
-    }
-    let (info, token) = parse_invite_url(&url)?;
+pub async fn apply_invite(app: AppHandle, url: String) -> CmdResult<()> {
+    let (info, token) = {
+        let state = app.state::<AppState>();
+        let (info, token) = parse_invite_url(&url)?;
+        let cfg = state.sync.config();
+        // Same backend → this is a join, not a reconnection: redeem the invite with the
+        // credential already signed in so the teams we have are kept.
+        if cfg.enabled && same_backend(&info.server, &cfg.backend_url) {
+            let Some(code) = token else {
+                // OIDC invite for the server we're on: membership comes from the identity
+                // provider, so there is nothing to apply here.
+                return Ok(());
+            };
+            drop(state);
+            sync_join_team(app.clone(), code).await?;
+            return Ok(());
+        }
+        if state.sync.is_managed() {
+            return Err(
+                "This install is managed by your organization — it can only join teams on your organization's server."
+                    .into(),
+            );
+        }
+        (info, token)
+    };
+    let state = app.state::<AppState>();
     let cfg = SyncConfig {
         enabled: true,
         backend_url: info.server,
@@ -354,4 +465,33 @@ pub fn set_group_team(
         .map_err(|e| e.to_string())?;
     let _ = app.emit("groups-changed", ());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invite_codes_come_from_links_or_bare_codes() {
+        let code = "a".repeat(64);
+        // What an admin dashboard hands out, and what a link contains.
+        assert_eq!(invite_code(&code).as_deref(), Some(code.as_str()));
+        assert_eq!(invite_code(&format!("  {code}\n")).as_deref(), Some(code.as_str()));
+        assert_eq!(
+            invite_code(&format!("glyphio://join?server=https://s.example.com&token={code}")).as_deref(),
+            Some(code.as_str())
+        );
+        // Nothing usable: an OIDC invite carries no token, and a stray URL isn't a code.
+        assert!(invite_code("glyphio://join?server=https://s.example.com&mode=oidc").is_none());
+        assert!(invite_code("https://example.com/join").is_none());
+        assert!(invite_code("   ").is_none());
+    }
+
+    #[test]
+    fn backend_comparison_ignores_trailing_slash_and_case() {
+        assert!(same_backend("https://Sync.Example.com/", "https://sync.example.com"));
+        assert!(!same_backend("https://sync.example.com", "https://other.example.com"));
+        // An unset backend never matches — that would make every invite look like a join.
+        assert!(!same_backend("", ""));
+    }
 }

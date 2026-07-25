@@ -338,6 +338,16 @@
 .member-tools { display: flex; gap: 8px; margin: 12px 0 4px; }
 .member-tools input[type="search"] { flex: 1; padding: 5px 10px; font-size: 12px; }
 .member-tools button { padding: 5px 11px; font-size: 12px; }
+/* Leaving a team is a quiet action until you reach for it — never a primary button. */
+.danger-text { color: var(--danger, #e5534b); }
+.danger-text:hover { color: var(--danger, #e5534b); border-color: currentColor; }
+
+/* Joining another team: membership is additive, so this stays available once you're in one. */
+.join-team { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.join-team-empty { border-top: none; padding-top: 0; }
+.join-row { display: flex; gap: 8px; }
+.join-row input { flex: 1; padding: 5px 10px; font-size: 12px; }
+.join-row button { padding: 5px 11px; font-size: 12px; white-space: nowrap; }
 
 .member-list { list-style: none; margin: 0; padding: 0; max-height: 190px; overflow-y: auto; }
 .member-row {

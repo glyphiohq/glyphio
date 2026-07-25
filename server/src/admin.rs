@@ -446,7 +446,11 @@ pub async fn stats(
             });
             match e.action.as_str() {
                 "push" => b.pushes += 1,
-                a if a.starts_with("role.") || a == "access.revoke" => b.roles += 1,
+                // Membership movement, however it happened: an admin changing a role,
+                // revoking access, or a member joining/leaving on their own.
+                a if a.starts_with("role.") || a == "access.revoke" || a == "team.leave" => {
+                    b.roles += 1
+                }
                 a if a.starts_with("invite.") => b.invites += 1,
                 _ => b.other += 1,
             }

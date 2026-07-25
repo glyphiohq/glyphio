@@ -16,6 +16,17 @@ pub trait SyncProvider: Send + Sync {
     async fn members(&self, _bearer: &str, _team: &str) -> Result<Members> {
         Ok(Members::default())
     }
+
+    /// Redeem an invite for the signed-in identity, adding its team to whatever they already
+    /// have. Returns the refreshed identity. Backends without a membership concept say so.
+    async fn redeem_invite(&self, _bearer: &str, _code: &str) -> Result<Me> {
+        Err(SyncError::Other("this backend does not support joining teams".into()))
+    }
+
+    /// Give up membership of one team.
+    async fn leave_team(&self, _bearer: &str, _team: &str) -> Result<()> {
+        Err(SyncError::Other("this backend does not support leaving teams".into()))
+    }
 }
 
 /// HTTPS implementation of the v1 wire protocol (`docs/SYNC-PROTOCOL.md`).
@@ -113,6 +124,29 @@ impl SyncProvider for HttpSync {
             .await
             .map_err(|e| SyncError::Network(e.to_string()))?;
         Self::handle(resp).await
+    }
+
+    async fn redeem_invite(&self, bearer: &str, code: &str) -> Result<Me> {
+        let resp = self
+            .client
+            .post(self.url("v1/invites/redeem")?)
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "code": code }))
+            .send()
+            .await
+            .map_err(|e| SyncError::Network(e.to_string()))?;
+        Self::handle(resp).await
+    }
+
+    async fn leave_team(&self, bearer: &str, team: &str) -> Result<()> {
+        let resp = self
+            .client
+            .delete(self.url(&format!("v1/teams/{}/membership", urlencode(team)))?)
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|e| SyncError::Network(e.to_string()))?;
+        Self::handle::<serde_json::Value>(resp).await.map(|_| ())
     }
 }
 

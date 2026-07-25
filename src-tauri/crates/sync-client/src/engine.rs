@@ -82,6 +82,28 @@ impl SyncEngine {
         Ok(self.provider.members(&bearer, team).await?.members)
     }
 
+    /// Join another team by redeeming an invite with the credential already signed in — so
+    /// membership accumulates instead of one invite replacing the last. Syncs immediately
+    /// afterwards so the new team's content lands without waiting for the next tick.
+    pub async fn redeem_invite(&self, code: &str) -> Result<sync_proto::Me> {
+        let bearer = self.auth.bearer().await?;
+        let me = self.provider.redeem_invite(&bearer, code).await?;
+        self.set_status(|s| s.identity = Some(me.clone()));
+        self.kick();
+        Ok(me)
+    }
+
+    /// Leave a team. The server drops the membership; locally the caller is responsible for
+    /// un-sharing any group that pointed at it (the content stays, it just stops syncing).
+    pub async fn leave_team(&self, team: &str) -> Result<()> {
+        let bearer = self.auth.bearer().await?;
+        self.provider.leave_team(&bearer, team).await?;
+        if let Ok(me) = self.provider.me(&bearer).await {
+            self.set_status(|s| s.identity = Some(me));
+        }
+        Ok(())
+    }
+
     pub fn sign_out(&self) {
         self.auth.sign_out();
         self.set_status(|s| {

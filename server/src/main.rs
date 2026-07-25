@@ -90,6 +90,9 @@ pub fn router(state: AppState) -> Router {
         .route("/me", get(routes::me))
         .route("/teams/{team}/changes", get(routes::changes).post(routes::push))
         .route("/teams/{team}/members", get(routes::members))
+        // Self-service membership: join by redeeming an invite, leave on your own.
+        .route("/invites/redeem", axum::routing::post(routes::redeem_invite))
+        .route("/teams/{team}/membership", axum::routing::delete(routes::leave_team))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::auth_middleware));
     let admin_api = Router::new()
         .route("/teams", get(admin::teams).post(admin::create_team))
@@ -594,6 +597,88 @@ mod tests {
         assert!(!text.contains(&ivy_token), "audit must not contain token plaintext");
         assert!(!text.contains(&hex::encode(sha2::Sha256::digest(ivy_token.as_bytes()))),
             "audit must not contain token digests either");
+    }
+
+    /// Self-service membership: one credential accumulates teams by redeeming invites, an
+    /// invite is single-use, leaving drops access, and the last owner can't walk away.
+    #[tokio::test]
+    async fn join_and_leave_multiple_teams() {
+        let dir = tempfile::tempdir().unwrap();
+        let (alice, alice_sha) = tok("alice");
+        let (nick, nick_sha) = tok("nick");
+        let tokens = format!(
+            r#"[{{"tokenSha256":"{alice_sha}","sub":"alice","teams":["red","blue"]}},
+                {{"tokenSha256":"{nick_sha}","sub":"nick","teams":["own"]}}]"#
+        );
+        let app = router(test_state(&dir, &tokens));
+
+        // alice bootstraps ownership of both her teams; nick owns his.
+        for team in ["red", "blue"] {
+            let (st, _) = req(&app, "GET", &format!("/v1/teams/{team}/changes?since=0"), &alice, None).await;
+            assert_eq!(st, StatusCode::OK);
+        }
+        let (st, _) = req(&app, "GET", "/v1/teams/own/changes?since=0", &nick, None).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // nick starts with one team and joins alice's two by redeeming invites — with the
+        // credential he already has, so nothing displaces his existing membership.
+        let mut codes = Vec::new();
+        for (team, role) in [("red", "writer"), ("blue", "reader")] {
+            let (st, inv) = req(&app, "POST", &format!("/admin/v1/teams/{team}/invites"), &alice,
+                Some(serde_json::json!({"sub":"nick","role":role}))).await;
+            assert_eq!(st, StatusCode::OK);
+            codes.push(inv["token"].as_str().unwrap().to_string());
+        }
+        for code in &codes {
+            let (st, me) = req(&app, "POST", "/v1/invites/redeem", &nick,
+                Some(serde_json::json!({"code": code}))).await;
+            assert_eq!(st, StatusCode::OK);
+            assert_eq!(me["sub"], "nick");
+        }
+        let (_, me) = req(&app, "GET", "/v1/me", &nick, None).await;
+        assert_eq!(me["teams"], serde_json::json!(["blue", "own", "red"]));
+        assert_eq!(me["roles"]["red"], "writer");
+        assert_eq!(me["roles"]["blue"], "reader");
+        assert_eq!(me["roles"]["own"], "owner", "joining must not disturb existing roles");
+
+        // He can actually sync the joined team now.
+        let (st, _) = req(&app, "POST", "/v1/teams/red/changes", &nick,
+            Some(serde_json::json!({"snippets":[snip_json_t("n1","x",1,"2026-07-02T10:00:00.000Z","red")],"groups":[]}))).await;
+        assert_eq!(st, StatusCode::OK);
+
+        // An invite is single-use, and it never authenticates on its own afterwards.
+        let (st, _) = req(&app, "POST", "/v1/invites/redeem", &nick,
+            Some(serde_json::json!({"code": codes[0]}))).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (st, _) = req(&app, "GET", "/v1/me", &codes[0], None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        let (st, _) = req(&app, "POST", "/v1/invites/redeem", &nick,
+            Some(serde_json::json!({"code": "0".repeat(64)}))).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Leaving drops the row and the access that came with it.
+        let (st, out) = req(&app, "DELETE", "/v1/teams/blue/membership", &nick, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(out["left"], "blue");
+        let (_, me) = req(&app, "GET", "/v1/me", &nick, None).await;
+        assert_eq!(me["teams"], serde_json::json!(["own", "red"]));
+        let (st, _) = req(&app, "GET", "/v1/teams/blue/changes?since=0", &nick, None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+
+        // The only owner of a team can't strand it.
+        let (st, _) = req(&app, "DELETE", "/v1/teams/own/membership", &nick, None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (_, me) = req(&app, "GET", "/v1/me", &nick, None).await;
+        assert_eq!(me["roles"]["own"], "owner");
+
+        // Both membership changes are on the record, without token material.
+        let (_, audit) = req(&app, "GET", "/admin/v1/audit?limit=100", &alice, None).await;
+        let text = audit.to_string();
+        assert!(text.contains("invite.redeem"));
+        assert!(text.contains("team.leave"));
+        for code in &codes {
+            assert!(!text.contains(code.as_str()), "audit must not contain invite plaintext");
+        }
     }
 
     /// Restricted groups: pull filtering (with global cursor), generic push 403, read vs

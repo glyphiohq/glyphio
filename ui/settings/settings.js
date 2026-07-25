@@ -60,13 +60,15 @@ const SETTINGS_SECTIONS = [
     ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
     ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
   ]},
-  { title: 'Banner', fields: [
+  // The strip composited above a capture. Called "timestamp" throughout the UI — that's what
+  // it is and what people look for; the stored keys keep their original names.
+  { title: 'Timestamp', fields: [
     ['showTimestamp', 'toggle', 'Show timestamp'],
     ['showUrl', 'toggle', 'Show window / app title'],
     ['timestampFormat', 'select', 'Timestamp format', ['device-locale', 'iso-8601', 'utc-human']],
     ['timezone', 'text', 'Timezone'], ['locale', 'text', 'Locale'],
-    ['bannerBg', 'color', 'Banner background'], ['bannerFg', 'color', 'Banner text'],
-    ['bannerMuted', 'color', 'Banner muted text'],
+    ['bannerBg', 'color', 'Background'], ['bannerFg', 'color', 'Text'],
+    ['bannerMuted', 'color', 'Muted text'],
   ]},
   { title: 'History & downloads', fields: [
     ['historyEnabled', 'toggle', 'Save captures to history'],
@@ -589,8 +591,10 @@ async function confirmInvite(url) {
   try { info = await invoke('parse_invite', { url }); }
   catch (e) { setStatus(String(e), 'err'); return; }
   const { modal, close } = openModal(`
-    <h3>Join team sync?</h3>
-    <p class="confirm-body">This invite configures Glyphio to sync team snippets with:</p>
+    <h3>${info.joinOnly ? 'Join another team?' : 'Join team sync?'}</h3>
+    <p class="confirm-body">${info.joinOnly
+      ? 'This invite adds a team on the server you already use. Your current teams are kept.'
+      : 'This invite configures Glyphio to sync team snippets with:'}</p>
     <div class="invite-summary">
       <div><span class="invite-k">Server</span><code>${escapeHtml(info.server)}</code></div>
       <div><span class="invite-k">Sign-in</span>${info.authMode === 'oidc' ? 'Single sign-on (SSO)' : 'API token' + (info.hasToken ? ' (included in the invite)' : '')}</div>
@@ -607,12 +611,15 @@ async function confirmInvite(url) {
     try {
       await invoke('apply_invite', { url });
       localStorage.setItem('glyphio-welcomed', '1');
-      setStatus(info.authMode === 'oidc'
-        ? 'Connected — now sign in with SSO under Settings → Sync.'
-        : 'Connected — syncing with your team.', 'ok');
+      setStatus(info.joinOnly
+        ? 'Joined — the new team’s snippets are on their way.'
+        : info.authMode === 'oidc'
+          ? 'Connected — now sign in with SSO under Settings → Sync.'
+          : 'Connected — syncing with your team.', 'ok');
       state.selected = 'settings'; state.settingsTab = 'sync';
       renderSidebar(); renderMain();
       await refreshSync();
+      if (info.joinOnly) await reloadAll();
     } catch (e) { setStatus(String(e), 'err'); }
   });
 }
@@ -1792,11 +1799,13 @@ function renderSyncSection(form) {
   form.append(div);
 }
 
-// Teams + roster inside the sync card. Membership is owned by the IdP (OIDC groups claim) or
-// the server's token config — the panel is a viewer with mode-aware "how to add someone" help.
+// Teams + roster inside the sync card. You can belong to as many teams as you're invited to:
+// joining redeems an invite with the credential you're already signed in with (so it adds a
+// team rather than replacing the connection), and leaving drops one. Who else is in a team is
+// still owned by the IdP or the server's config — hence the "how to add someone" help.
 function renderTeamPanel(st) {
   const teams = st.identity?.teams || [];
-  if (!teams.length) return '';
+  if (!teams.length) return renderJoinTeam(st, true);
   if (!state.selectedTeam || !teams.includes(state.selectedTeam)) state.selectedTeam = teams[0];
   const roles = st.identity?.roles || {};
   const chips = teams.map((t) =>
@@ -1815,17 +1824,38 @@ function renderTeamPanel(st) {
             <span class="member-seen">${m.lastSeen ? 'seen ' + escapeHtml(m.lastSeen.slice(0, 10)) : 'never signed in'}</span>
           </li>`).join('')
       : `<li class="member-row muted">${mq ? 'No members match' : 'No members known yet'}</li>`;
+  const myRole = roles[state.selectedTeam];
   return `
     <div class="team-panel">
       <div class="team-panel-head">
-        <span class="team-panel-title">Teams</span>
+        <span class="team-panel-title">Your teams</span>
         <div class="team-chips">${chips}</div>
       </div>
       <div class="member-tools">
         <input type="search" id="member-search" placeholder="Search members…" value="${escapeAttr(state.memberSearch)}" />
         <button class="secondary" id="add-member">Add member…</button>
+        <button class="ghost danger-text" id="leave-team" title="Leave ${escapeAttr(state.selectedTeam)}">Leave</button>
       </div>
       <ul class="member-list">${rows}</ul>
+      ${myRole === 'owner' ? '<p class="adv-hint">You own this team — hand ownership to someone else before leaving it.</p>' : ''}
+    </div>
+    ${renderJoinTeam(st, false)}`;
+}
+
+/// The join box. `soleContent` renders the empty state (signed in, no teams yet) with a
+/// fuller explanation; otherwise it's a compact row under the team panel.
+function renderJoinTeam(st, soleContent) {
+  if (!st.identity) return '';
+  return `
+    <div class="join-team${soleContent ? ' join-team-empty' : ''}">
+      ${soleContent
+        ? `<p class="adv-hint">You're signed in but not in any team yet. Paste an invite from your
+           admin to join one — you can be in as many teams as you're invited to.</p>`
+        : ''}
+      <div class="join-row">
+        <input type="text" id="join-code" placeholder="Paste an invite link or code…" autocomplete="off" spellcheck="false" />
+        <button class="secondary" id="join-team">Join team</button>
+      </div>
     </div>`;
 }
 
@@ -1845,9 +1875,51 @@ function wireTeamPanel(div) {
     if (again) { again.focus(); again.setSelectionRange(pos, pos); }
   });
   div.querySelector('#add-member')?.addEventListener('click', showAddMemberHelp);
+  div.querySelector('#leave-team')?.addEventListener('click', () => leaveTeam(state.selectedTeam));
+  const joinInput = div.querySelector('#join-code');
+  const join = () => joinTeam(joinInput.value);
+  div.querySelector('#join-team')?.addEventListener('click', join);
+  joinInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); join(); } });
   if (state.selectedTeam && state.teamMembers[state.selectedTeam] === undefined) {
     loadMembers(state.selectedTeam);
   }
+}
+
+/// Redeem an invite for the backend already signed in — additive, so existing teams stay.
+async function joinTeam(code) {
+  const value = (code || '').trim();
+  if (!value) return;
+  try {
+    setStatus('Joining…', 'info');
+    const teams = await invoke('sync_join_team', { code: value });
+    setStatus(`Joined. You're now in ${teams.length} team${teams.length === 1 ? '' : 's'}: ${teams.join(', ')}`, 'ok');
+    await refreshSync();
+    await reloadAll();
+  } catch (e) { setStatus(String(e), 'err'); }
+}
+
+/// Leaving is destructive enough to confirm: shared groups become personal again, and
+/// getting back in needs a fresh invite.
+async function leaveTeam(team) {
+  if (!team) return;
+  const shared = state.groups.filter((g) => g.team === team);
+  const ok = await confirmDialog(
+    `Leave “${team}”?\n\n`
+    + (shared.length
+      ? `${shared.length} group${shared.length === 1 ? '' : 's'} (${shared.map((g) => g.name).join(', ')}) will stop syncing and become personal again. Your snippets stay on this Mac.\n\n`
+      : 'Its shared snippets stop syncing to this Mac.\n\n')
+    + 'You will need a new invite to rejoin.',
+    { confirmLabel: 'Leave team', danger: true },
+  );
+  if (!ok) return;
+  try {
+    await invoke('sync_leave_team', { team });
+    state.selectedTeam = null;
+    state.teamMembers = { ...state.teamMembers, [team]: undefined };
+    setStatus(`Left “${team}”.`, 'ok');
+    await refreshSync();
+    await reloadAll();
+  } catch (e) { setStatus(String(e), 'err'); }
 }
 
 async function loadMembers(team) {

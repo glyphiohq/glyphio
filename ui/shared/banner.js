@@ -11,25 +11,33 @@ function showFrameUrlLine(settings, meta) {
     && meta.targetFrameUrl !== meta.url;
 }
 
+// A capture with no window title (a snipped region is the common one) has nothing to put on
+// the URL line — reserving it would leave an empty band under the timestamp.
+function showUrlLine(settings, meta) {
+  return Boolean(settings.showUrl && (meta.url || '').trim());
+}
+
 export function hasAnyBannerContent(settings, meta, note) {
-  return Boolean(settings.showTimestamp || settings.showUrl || showFrameUrlLine(settings, meta) || note);
+  return Boolean(settings.showTimestamp || showUrlLine(settings, meta) || showFrameUrlLine(settings, meta) || note);
 }
 
 export function computeBannerCssHeight(settings, meta, note) {
   if (!hasAnyBannerContent(settings, meta, note)) return 0;
   const b = config.banner;
+  const url = showUrlLine(settings, meta);
+  const frame = showFrameUrlLine(settings, meta);
   let h = b.paddingPx;
   if (settings.showTimestamp) h += b.timestampFontPx;
-  if (settings.showUrl) {
+  if (url) {
     if (settings.showTimestamp) h += b.lineGapPx;
     h += b.urlFontPx;
   }
-  if (showFrameUrlLine(settings, meta)) {
-    if (settings.showTimestamp || settings.showUrl) h += b.lineGapPx;
+  if (frame) {
+    if (settings.showTimestamp || url) h += b.lineGapPx;
     h += b.urlFontPx;
   }
   if (note) {
-    if (settings.showTimestamp || settings.showUrl || showFrameUrlLine(settings, meta)) h += b.lineGapPx;
+    if (settings.showTimestamp || url || frame) h += b.lineGapPx;
     h += b.noteFontPx;
   }
   h += b.paddingPx;
@@ -59,6 +67,63 @@ export function formatTimestamp(iso, settings) {
   }
 }
 
+/**
+ * The timestamp at decreasing lengths, longest first. A narrow capture — a snipped region is
+ * usually the narrowest thing anyone captures — sheds precision rather than the date itself:
+ * losing the timezone or the seconds still leaves a legible record, whereas the fixed-size
+ * text simply ran off the edge and showed nothing usable.
+ */
+function timestampVariants(iso, settings) {
+  const d = new Date(iso);
+  const locale = settings.locale === 'device' ? undefined : settings.locale;
+  const tz = settings.timezone === 'device' ? undefined : settings.timezone;
+  const full = formatTimestamp(iso, settings);
+  const fmt = (opts, loc = locale) => {
+    try {
+      return new Intl.DateTimeFormat(loc, { timeZone: tz, ...opts }).format(d);
+    } catch {
+      return full;
+    }
+  };
+  switch (settings.timestampFormat) {
+    case 'iso-8601':
+      return [full, full.replace(/:\d{2}(Z|\s|$)/, '$1'), full.slice(0, 16)];
+    case 'utc-human':
+      return [
+        full,
+        new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(d) + ' UTC',
+        new Intl.DateTimeFormat('en-GB', { dateStyle: 'short', timeStyle: 'short', timeZone: 'UTC' }).format(d) + ' UTC',
+      ];
+    case 'device-locale':
+    default:
+      return [
+        full,
+        fmt({ dateStyle: 'medium', timeStyle: 'short' }),
+        fmt({ dateStyle: 'short', timeStyle: 'short' }),
+      ];
+  }
+}
+
+/**
+ * Draw `variants[0]`, or the first shorter one that fits, or the shortest shrunk down to
+ * `minPx` — and only truncate as a last resort. Returns nothing; sets the font on `ctx`.
+ */
+function fitTimestamp(ctx, variants, maxW, nominalPx, fontFamily, scale) {
+  const minPx = 11 * scale;
+  const setFont = (px) => { ctx.font = `bold ${px}px ${fontFamily}`; };
+  for (const text of variants) {
+    setFont(nominalPx);
+    if (ctx.measureText(text).width <= maxW) return text;
+  }
+  const shortest = variants[variants.length - 1];
+  for (let px = nominalPx - scale; px >= minPx; px -= scale) {
+    setFont(px);
+    if (ctx.measureText(shortest).width <= maxW) return shortest;
+  }
+  setFont(minPx);
+  return truncateToWidth(ctx, shortest, maxW);
+}
+
 function formatIsoInTz(d, tz) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -85,15 +150,25 @@ function drawBannerLines(ctx, canvasWidth, scale, settings, meta, note) {
   let y = b.paddingPx * scale;
   let prevLineExists = false;
 
+  const avail = canvasWidth - 2 * b.paddingPx * scale;
+
   if (settings.showTimestamp) {
-    ctx.font = `bold ${b.timestampFontPx * scale}px ${b.fontFamily}`;
+    // fitTimestamp picks the variant/size that fits and leaves it set on the context.
+    const text = fitTimestamp(
+      ctx,
+      timestampVariants(meta.capturedAt, settings),
+      avail,
+      b.timestampFontPx * scale,
+      b.fontFamily,
+      scale,
+    );
     ctx.fillStyle = settings.bannerFg;
-    ctx.fillText(formatTimestamp(meta.capturedAt, settings), b.paddingPx * scale, y);
+    ctx.fillText(text, b.paddingPx * scale, y);
     y += b.timestampFontPx * scale;
     prevLineExists = true;
   }
 
-  if (settings.showUrl) {
+  if (showUrlLine(settings, meta)) {
     if (prevLineExists) y += b.lineGapPx * scale;
     ctx.font = `${b.urlFontPx * scale}px ${b.fontFamily}`;
     ctx.fillStyle = settings.bannerMuted;

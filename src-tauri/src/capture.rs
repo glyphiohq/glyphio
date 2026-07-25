@@ -19,6 +19,18 @@ pub fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
     backend::display_bounds_under_cursor()
 }
 
+/// (origin, size) in points of the display hosting the frontmost window — where the user
+/// is typing. Expansion-summoned surfaces (popup/form/palette) belong there; the cursor
+/// can be on a different display entirely, so it's only the fallback.
+pub fn display_bounds_for_active_window() -> ((f64, f64), (f64, f64)) {
+    if let Ok(win) = backend::frontmost_window_bounds() {
+        if let Some(b) = backend::display_bounds_containing_point(win.x + win.w / 2.0, win.y + win.h / 2.0) {
+            return b;
+        }
+    }
+    backend::display_bounds_under_cursor()
+}
+
 /// A captured, un-annotated frame handed to the editor webview.
 pub struct Shot {
     pub rgba: Vec<u8>,

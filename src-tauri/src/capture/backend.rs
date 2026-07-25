@@ -296,6 +296,21 @@ pub(super) fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
     ((b.origin.x, b.origin.y), (b.size.width, b.size.height))
 }
 
+/// (origin, size) in points of the display containing a global point, if any.
+pub(super) fn display_bounds_containing_point(x: f64, y: f64) -> Option<((f64, f64), (f64, f64))> {
+    for id in CGDisplay::active_displays().ok()? {
+        let b = CGDisplay::new(id).bounds();
+        if x >= b.origin.x
+            && x < b.origin.x + b.size.width
+            && y >= b.origin.y
+            && y < b.origin.y + b.size.height
+        {
+            return Some(((b.origin.x, b.origin.y), (b.size.width, b.size.height)));
+        }
+    }
+    None
+}
+
 /// The `CGDirectDisplayID` of the display containing the current cursor position.
 fn display_id_under_cursor() -> Option<u32> {
     let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;

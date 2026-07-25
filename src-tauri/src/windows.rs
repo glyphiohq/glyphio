@@ -69,35 +69,31 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
 
 /// Open a bridge-driven surface (`popup` | `form`). Always recreated (never focused-in-place):
 /// the window must show the payload stashed for THIS expansion, not a stale one.
+///
+/// Summoned by TYPING a trigger, so the surface must appear centred on the display of the
+/// window being typed in — by default macOS would put it on the primary display, which on a
+/// multi-monitor setup can be nowhere near where the user is looking.
 pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
     if let Some(win) = app.get_webview_window(surface) {
         win.close().ok();
     }
-    let win = match surface {
-        "popup" => WebviewWindowBuilder::new(
-            app,
-            "popup",
-            WebviewUrl::App("popup/index.html".into()),
-        )
-        .title("Glyphio")
-        .inner_size(460.0, 540.0)
-        .min_inner_size(280.0, 200.0)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .build()?,
-        "form" => WebviewWindowBuilder::new(
-            app,
-            "form",
-            WebviewUrl::App("form/index.html".into()),
-        )
-        .title("Glyphio")
-        .inner_size(440.0, 420.0)
-        .min_inner_size(320.0, 240.0)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .build()?,
+    let (size, url) = match surface {
+        "popup" => ((460.0, 540.0), "popup/index.html"),
+        "form" => ((440.0, 420.0), "form/index.html"),
         other => anyhow::bail!("unknown surface: {other}"),
     };
+    let (origin, display) = crate::capture::display_bounds_for_active_window();
+    let win = WebviewWindowBuilder::new(app, surface, WebviewUrl::App(url.into()))
+        .title("Glyphio")
+        .inner_size(size.0, size.1)
+        .min_inner_size(if surface == "popup" { 280.0 } else { 320.0 }, if surface == "popup" { 200.0 } else { 240.0 })
+        .position(
+            origin.0 + (display.0 - size.0) / 2.0,
+            origin.1 + (display.1 - size.1) / 2.0,
+        )
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()?;
     win.set_focus()?;
     Ok(())
 }
@@ -107,11 +103,21 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
 /// its snippet list on every `palette-show`.
 pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
     use tauri::Emitter;
+    // Summon on the display the user is working on (frontmost window's display), never
+    // wherever the palette last was — Alt+Space should feel local, like Spotlight.
+    const PALETTE_SIZE: (f64, f64) = (640.0, 460.0);
+    let (origin, display) = crate::capture::display_bounds_for_active_window();
+    let pos = (
+        origin.0 + (display.0 - PALETTE_SIZE.0) / 2.0,
+        // Slightly above centre, Spotlight-style; also keeps result rows from spilling
+        // off-screen as the list grows downward.
+        origin.1 + (display.1 - PALETTE_SIZE.1) / 3.0,
+    );
     if let Some(win) = app.get_webview_window("palette") {
         if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
             win.hide()?;
         } else {
-            win.center()?;
+            win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
             win.show()?;
             win.set_focus()?;
             let _ = app.emit_to("palette", "palette-show", ());
@@ -124,14 +130,14 @@ pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
         WebviewUrl::App("palette/index.html".into()),
     )
     .title("Glyphio Search")
-    .inner_size(640.0, 460.0)
+    .inner_size(PALETTE_SIZE.0, PALETTE_SIZE.1)
+    .position(pos.0, pos.1)
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
     .visible_on_all_workspaces(true)
-    .center()
     .build()?;
     win.set_focus()?;
     Ok(())

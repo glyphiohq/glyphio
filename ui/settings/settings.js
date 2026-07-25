@@ -804,7 +804,8 @@ function openEditor(existing) {
       <div class="editor-form">
         <div class="mfield">
           <label for="e-trigger">Trigger</label>
-          <input id="e-trigger" type="text" placeholder=":sig" autocomplete="off" spellcheck="false" />
+          <input id="e-trigger" type="text" placeholder=":sig" autocomplete="off" spellcheck="false" autocapitalize="off" />
+          <p class="fmt-hint">Lowercase, no spaces — you type this inline to expand.</p>
           <p class="field-error" id="e-trigger-err"></p>
         </div>
         <div class="mfield">
@@ -964,6 +965,9 @@ function openEditor(existing) {
         const img = e.target.closest('img');
         if (img && ed.contains(img)) openImageSizePopover(img, updatePreview);
       });
+      // Hovering an image shows a "Click to resize" pill — the resize affordance was
+      // invisible before (nothing suggested images were clickable).
+      wireImageResizeBadge(ed);
       selectionHandler = () => { if (document.activeElement === ed) refresh(); };
       document.addEventListener('selectionchange', selectionHandler);
     } else {
@@ -1062,11 +1066,21 @@ function openEditor(existing) {
     buildBody(format, content);
   }));
 
-  // Trigger validation (required + duplicate detection).
+  // Trigger validation (required + duplicate detection). Triggers are canonically
+  // lowercase with no spaces (they're typed inline; the engine matches contiguous
+  // keystrokes) — normalise live so what the user sees is what gets saved.
   const triggerInput = $('#e-trigger');
   const triggerErr = $('#e-trigger-err');
   function checkTrigger() {
-    const t = triggerInput.value.trim();
+    const raw = triggerInput.value;
+    const normalized = raw.replace(/\s+/g, '').toLowerCase();
+    if (raw !== normalized) {
+      const pos = triggerInput.selectionStart;
+      triggerInput.value = normalized;
+      const drop = raw.length - normalized.length;
+      triggerInput.setSelectionRange(Math.max(0, pos - drop), Math.max(0, pos - drop));
+    }
+    const t = normalized;
     const conflict = t && state.snippets.find((s) => s.id !== existing?.id && s.trigger === t);
     triggerErr.textContent = conflict ? 'Another snippet already uses this trigger.' : '';
     return !conflict;
@@ -1074,6 +1088,7 @@ function openEditor(existing) {
   triggerInput.addEventListener('input', checkTrigger);
 
   async function save() {
+    checkTrigger(); // normalise even if the user never typed after paste/prefill
     const trigger = triggerInput.value.trim();
     const replacement = readBody();
     const bodyErr = $('#e-body-err');
@@ -1240,11 +1255,42 @@ async function insertImageFile(file, getEditor, onChange) {
     const dataUrl = await downscaleImageToDataUrl(file);
     const ed = getEditor();
     ed.focus();
-    document.execCommand('insertHTML', false, `<img src="${dataUrl}" alt="">`);
+    const marker = `img-${Date.now()}`;
+    document.execCommand('insertHTML', false, `<img src="${dataUrl}" alt="" data-new="${marker}">`);
     onChange?.();
+    // Open the size popover right away — the moment of insertion is when the user is
+    // thinking about size, and it teaches that images are click-to-resize.
+    const img = ed.querySelector(`img[data-new="${marker}"]`);
+    if (img) {
+      img.removeAttribute('data-new'); // keep saved HTML clean
+      const openPop = () => openImageSizePopover(img, onChange);
+      if (img.complete) openPop();
+      else img.addEventListener('load', openPop, { once: true });
+    }
   } catch (e) {
     setStatus(`Could not insert image: ${e.message || e}`, 'err');
   }
+}
+
+/// Floating "Click to resize" pill over the hovered editor image. Lives OUTSIDE the
+/// contenteditable (appended to its offset parent) so it can never leak into saved HTML.
+function wireImageResizeBadge(ed) {
+  let badge = null;
+  const hide = () => { badge?.remove(); badge = null; };
+  ed.addEventListener('mouseover', (e) => {
+    const img = e.target.closest('img');
+    if (!img || !ed.contains(img)) { hide(); return; }
+    if (!badge) {
+      badge = el('span', { className: 'img-resize-badge', textContent: 'Click to resize' });
+      ed.parentElement.appendChild(badge);
+    }
+    const edBox = ed.parentElement.getBoundingClientRect();
+    const box = img.getBoundingClientRect();
+    badge.style.left = `${box.right - edBox.left - badge.offsetWidth - 6}px`;
+    badge.style.top = `${box.bottom - edBox.top - 24}px`;
+  });
+  ed.addEventListener('mouseleave', hide);
+  ed.addEventListener('click', hide);
 }
 
 /// Resize an inline snippet image: a popover with a width slider + presets. Width is stored

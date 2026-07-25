@@ -504,6 +504,21 @@
 .rich-editor table { border-collapse: collapse; }
 .rich-editor td, .rich-editor th { border: 1px solid var(--border-strong); padding: 3px 8px; }
 
+/* Inline images are resizable (click → size popover) — make that discoverable:
+   pointer cursor, accent outline on hover, and a floating "Click to resize" pill
+   (positioned by JS; kept OUTSIDE the contenteditable so it never enters saved HTML). */
+.rich-editor img { cursor: pointer; max-width: 100%; }
+.rich-editor img:hover { outline: 2px solid rgba(217, 165, 74, 0.55); outline-offset: 1px; border-radius: 2px; }
+#e-body-wrap { position: relative; } /* anchor for the absolute resize badge */
+.img-resize-badge {
+  position: absolute; z-index: 30;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(20, 22, 26, 0.88); color: #d9a54a;
+  border: 1px solid rgba(217, 165, 74, 0.35);
+  font: 11px/1.4 -apple-system, sans-serif;
+  pointer-events: none; white-space: nowrap;
+}
+
 .adv { margin-top: 4px; }
 .adv summary {
   cursor: pointer;

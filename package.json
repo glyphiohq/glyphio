@@ -1,7 +1,7 @@
 {
   "name": "glyphio",
-  "version": "0.1.0",
-  "description": "Glyphio \u2014 local-first text expansion + screenshot capture with self-hostable team sync",
+  "version": "0.2.0",
+  "description": "Glyphio — local-first text expansion + screenshot capture with self-hostable team sync",
   "private": true,
   "scripts": {
     "tauri": "tauri",
@@ -10,10 +10,9 @@
     "sign": "bash scripts/dev-sign.sh",
     "predev": "bash scripts/dev-sign.sh",
     "dev": "tauri dev",
-    "prebuild": "bash scripts/dev-sign.sh",
-    "build": "tauri build && bash scripts/sign-bundle.sh && bash scripts/package-dmg.sh",
-    "sign:bundle": "bash scripts/sign-bundle.sh",
-    "package": "bash scripts/package-dmg.sh"
+    "build": "bash scripts/release.sh",
+    "release": "bash scripts/release.sh",
+    "sign:bundle": "bash scripts/sign-bundle.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

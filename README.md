@@ -14,8 +14,9 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   **popup** snippets (the trigger opens a cheatsheet window — images welcome), and
   **command** snippets (run a shell command, paste its output — strictly local-only,
   never synced).
-- **Capture** — global hotkeys for screen / frontmost-window / picker / region / scrolling
-  capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
+- **Capture** — global hotkeys for screen / frontmost-window / browser-page (web content
+  only, no browser chrome — via Accessibility, no extension needed) / picker / region /
+  scrolling capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
@@ -33,7 +34,7 @@ Prereqs: Rust stable, Node 18+, macOS Command Line Tools (full Xcode not require
 ```bash
 npm install
 npm run engine       # build + sign the espanso-fork engine sidecar
-npm run dev          # run the app (or: npm run build → .app + .dmg)
+npm run dev          # run the app (or: npm run release → dist/Glyphio_<version>_<arch>.dmg)
 ```
 
 First run prompts for two macOS permissions (Accessibility for expansion, Screen Recording

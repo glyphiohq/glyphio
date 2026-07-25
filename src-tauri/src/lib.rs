@@ -218,6 +218,20 @@ pub fn run() {
                     api.prevent_close();
                 }
             }
+            // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already
+            // running fires Reopen — surface the settings window frontmost, like clicking
+            // a Dock icon would for a regular app.
+            tauri::RunEvent::Reopen { .. } => {
+                let _ = windows::open(app_handle, "settings");
+            }
+            // The settings window is opened during setup, but an accessory app can lose
+            // the initial focus race (macOS hands focus back to the previously active app
+            // while we're still launching). Re-assert once launch completes.
+            tauri::RunEvent::Ready => {
+                if let Some(win) = app_handle.get_webview_window("settings") {
+                    let _ = win.set_focus();
+                }
+            }
             // Belt-and-suspenders: should every window still end up closed, keep the process
             // alive on a window-driven exit. Only an explicit quit (tray) carries a code.
             tauri::RunEvent::ExitRequested { code, api, .. } => {

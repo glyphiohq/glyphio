@@ -31,11 +31,14 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let url = format!("editor/index.html?history={id}");
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("Glyphio — Capture")
         .inner_size(1100.0, 820.0)
         .min_inner_size(640.0, 480.0)
         .build()?;
+    // Accessory apps aren't active when a window is built, so a fresh window would appear
+    // BEHIND the frontmost app. set_focus activates us (activateIgnoringOtherApps).
+    win.set_focus()?;
     Ok(())
 }
 
@@ -53,11 +56,14 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let spec = spec(name).ok_or_else(|| anyhow::anyhow!("unknown window: {name}"))?;
-    WebviewWindowBuilder::new(app, name, WebviewUrl::App(spec.url.into()))
+    let win = WebviewWindowBuilder::new(app, name, WebviewUrl::App(spec.url.into()))
         .title(spec.title)
         .inner_size(spec.width, spec.height)
         .min_inner_size(640.0, 480.0)
         .build()?;
+    // See open_capture: without this, new windows of an accessory app open behind the
+    // frontmost app instead of on top.
+    win.set_focus()?;
     Ok(())
 }
 

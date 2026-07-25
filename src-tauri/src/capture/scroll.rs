@@ -76,10 +76,12 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     std::thread::sleep(std::time::Duration::from_millis(120));
 
     let mut frames: Vec<RgbaImage> = Vec::new();
+    let mut capture_dpr = 1.0;
     let mut scroll_px_points = (h * SCROLL_FRACTION).round();
     let result = (|| -> anyhow::Result<()> {
         loop {
-            let (frame, _) = super::backend::capture_rect_image(x, y, w, h)?;
+            let (frame, frame_dpr) = super::backend::capture_rect_image(x, y, w, h)?;
+            capture_dpr = frame_dpr;
             if let Some(prev) = frames.last() {
                 if frames_identical(prev, &frame) {
                     break; // nothing moved — bottom (or an end of the scroller) reached
@@ -101,7 +103,9 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     result?;
 
     let first = frames.first().ok_or_else(|| anyhow!("no frames captured"))?;
-    let dpr = first.width() as f64 / w; // pixels per point, from the capture itself
+    // Pixels per point from the capture itself (the rect may have been clamped to a
+    // display, so first.width()/w would be wrong for oversized selections).
+    let dpr = capture_dpr;
     scroll_px_points *= dpr; // expected overlap works in pixels below
     let expected_overlap = first.height() as i64 - scroll_px_points as i64;
     let stitched = stitch(frames, expected_overlap);
@@ -116,6 +120,11 @@ fn cursor_position() -> Option<CGPoint> {
 
 fn warp_cursor(p: CGPoint) {
     let _ = CGDisplay::warp_mouse_cursor_position(p);
+}
+
+/// Diagnostics-only alias for [`post_scroll`] (used by `capture::diag`).
+pub fn post_scroll_for_diag(delta: i32) -> anyhow::Result<()> {
+    post_scroll(delta)
 }
 
 /// Post a pixel-unit scroll (negative = content moves up / scrolls down).

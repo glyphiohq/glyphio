@@ -261,8 +261,10 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
             get_num(&bounds, "Width").unwrap_or(0.0),
             get_num(&bounds, "Height").unwrap_or(0.0),
         );
-        if w < 80.0 || h < 80.0 {
-            continue; // panels/popovers
+        if w < 200.0 || h < 150.0 {
+            // Panels, popovers, and chrome slivers — e.g. Safari's toolbar strip is its
+            // own full-width ~80pt CGWindow on modern macOS and must not win here.
+            continue;
         }
         let title = dict
             .find(CFString::from_static_string("kCGWindowName"))

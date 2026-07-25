@@ -3,6 +3,7 @@
 
 mod ax;
 mod backend;
+pub mod diag;
 pub mod scroll;
 
 use anyhow::anyhow;
@@ -77,13 +78,17 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
     finish(app, shot, mode)
 }
 
-/// Blocking body of the two frontmost-page modes. `pageOnly` requires a web area (that's
-/// the point of the mode); `scrollingPage` prefers it — no browser chrome repeating in the
-/// stitched frames — and falls back to window bounds minus title bar for non-browsers.
+/// Blocking body of the two frontmost-page modes. `pageOnly` requires a visible web area
+/// (that's the point of the mode); `scrollingPage` prefers it — no browser chrome repeating
+/// in the stitched frames — and falls back to the window frame for non-browsers.
+///
+/// Geometry comes from the AX tree when possible: CGWindowList ordering is unreliable on
+/// modern macOS (Safari's toolbar strip is its own window), and `AXWebArea` alone reports
+/// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
 fn capture_page(mode: &str) -> anyhow::Result<Shot> {
     let win = backend::frontmost_window_bounds()?;
-    let web_area = if scroll::app_accessibility_trusted() {
-        ax::web_area_bounds(win.pid)
+    let geometry = if scroll::app_accessibility_trusted() {
+        ax::page_geometry(win.pid)
     } else {
         None
     };
@@ -95,7 +100,7 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
                  page's position from the browser."
             );
         }
-        let (x, y, w, h) = web_area.ok_or_else(|| {
+        let (x, y, w, h) = geometry.and_then(|g| g.web_visible).ok_or_else(|| {
             anyhow!(
                 "No web page found in the frontmost window — Browser Page capture works \
                  when a browser (Safari, Chrome, Edge, Arc…) is in front."
@@ -106,8 +111,12 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
         return Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title });
     }
     // scrollingPage — the Accessibility error, if the grant is missing, comes from
-    // scroll::capture itself.
-    let (x, y, w, h) = web_area.unwrap_or((win.x, win.y, win.w, win.h));
+    // scroll::capture itself. Fallbacks: viewport → AX window frame → CGWindow rect
+    // (title bar already inset away by frontmost_window_bounds).
+    let (x, y, w, h) = match &geometry {
+        Some(g) => g.web_visible.unwrap_or(g.window),
+        None => (win.x, win.y, win.w, win.h),
+    };
     scroll::capture(x, y, w, h).map(|mut s| {
         s.title = win.title;
         s

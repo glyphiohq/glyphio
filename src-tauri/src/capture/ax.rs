@@ -36,9 +36,20 @@ extern "C" {
     fn AXValueGetValue(value: AXValueRef, value_type: u32, out: *mut std::ffi::c_void) -> bool;
 }
 
-/// Global bounds (points, top-left origin) of the web content area of `pid`'s focused
-/// window, or `None` when the app exposes no web area (not a browser, AX denied, …).
-pub(super) fn web_area_bounds(pid: i32) -> Option<(f64, f64, f64, f64)> {
+/// What the AX tree knows about `pid`'s focused window.
+pub(super) struct PageGeometry {
+    /// The focused window's frame (points, global top-left) — the authoritative window
+    /// rect. CGWindowList can return sliver windows (Safari's toolbar strip is its own
+    /// window on modern macOS); AX always describes the real focused window.
+    pub window: (f64, f64, f64, f64),
+    /// The VISIBLE part of the web content area, if the window hosts one. `AXWebArea`
+    /// reports the full document extent (tens of thousands of points on a long page),
+    /// so the raw bounds are intersected with the window frame to get the viewport.
+    pub web_visible: Option<(f64, f64, f64, f64)>,
+}
+
+/// Read [`PageGeometry`] for `pid`'s focused window, or `None` when AX yields nothing.
+pub(super) fn page_geometry(pid: i32) -> Option<PageGeometry> {
     if pid <= 0 {
         return None;
     }
@@ -60,16 +71,39 @@ pub(super) fn web_area_bounds(pid: i32) -> Option<(f64, f64, f64, f64)> {
     }
 
     // The freshly opted-in tree may need a beat to materialise — one retry covers it.
+    let mut geometry: Option<PageGeometry> = None;
     for attempt in 0..2 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
-        let window = copy_attr(&app, "AXFocusedWindow").or_else(|| copy_attr(&app, "AXMainWindow"));
-        if let Some(found) = window.and_then(find_web_area) {
-            return bounds(&found);
+        let Some(window) =
+            copy_attr(&app, "AXFocusedWindow").or_else(|| copy_attr(&app, "AXMainWindow"))
+        else {
+            continue;
+        };
+        let Some(frame) = bounds(&window) else { continue };
+        let web_visible = find_web_area(window)
+            .as_ref()
+            .and_then(bounds)
+            .and_then(|web| intersect(web, frame));
+        geometry = Some(PageGeometry { window: frame, web_visible });
+        if geometry.as_ref().is_some_and(|g| g.web_visible.is_some()) {
+            break; // found the page; no need for the Chromium retry
         }
     }
-    None
+    geometry
+}
+
+/// Intersection of two rects, `None` when it is too small to be a useful capture.
+fn intersect(
+    a: (f64, f64, f64, f64),
+    b: (f64, f64, f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    let x = a.0.max(b.0);
+    let y = a.1.max(b.1);
+    let w = (a.0 + a.2).min(b.0 + b.2) - x;
+    let h = (a.1 + a.3).min(b.1 + b.3) - y;
+    (w >= 40.0 && h >= 40.0).then_some((x, y, w, h))
 }
 
 /// Breadth-first search for the first `AXWebArea` role. Depth/node caps keep pathological

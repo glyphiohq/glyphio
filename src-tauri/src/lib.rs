@@ -2,7 +2,7 @@
 //! settings, the tray, and global hotkeys into one shell.
 
 mod bridge;
-mod capture;
+pub mod capture;
 mod commands;
 mod engine;
 mod history;
@@ -237,19 +237,43 @@ pub fn run() {
 }
 
 fn env_logger_init() {
-    // Lightweight stderr logging; no external log crate needed beyond `log`.
-    struct SimpleLogger;
+    // Stderr + ~/Library/Logs/Glyphio/glyphio.log. A Finder-launched app's stderr goes
+    // nowhere, which made capture failures undiagnosable — the file is the record.
+    struct SimpleLogger {
+        file: Option<std::sync::Mutex<std::fs::File>>,
+    }
     impl log::Log for SimpleLogger {
         fn enabled(&self, _: &log::Metadata) -> bool {
             true
         }
         fn log(&self, record: &log::Record) {
-            if self.enabled(record.metadata()) {
-                eprintln!("[{}] {}", record.level(), record.args());
+            let line = format!(
+                "{} [{}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            );
+            eprintln!("{line}");
+            if let Some(f) = &self.file {
+                use std::io::Write;
+                if let Ok(mut f) = f.lock() {
+                    let _ = writeln!(f, "{line}");
+                }
             }
         }
         fn flush(&self) {}
     }
-    static LOGGER: SimpleLogger = SimpleLogger;
-    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+    let file = dirs::home_dir()
+        .map(|h| h.join("Library/Logs/Glyphio"))
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("glyphio.log"))
+                .ok()
+        })
+        .map(std::sync::Mutex::new);
+    let logger = Box::leak(Box::new(SimpleLogger { file }));
+    let _ = log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Info));
 }

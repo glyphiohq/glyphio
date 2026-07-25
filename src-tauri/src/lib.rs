@@ -175,6 +175,7 @@ pub fn run() {
             commands::form_submit,
             commands::form_cancel,
             commands::accessibility_status,
+            commands::secure_input_status,
             commands::open_accessibility_settings,
             commands::restart_engine,
             commands::screen_recording_status,

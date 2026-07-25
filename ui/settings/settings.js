@@ -142,6 +142,12 @@ function renderShell() {
         <button class="ghost" id="sr-open">Open settings</button>
       </div>
     </div>
+    <div class="ax-banner" id="si-banner">
+      <div class="ax-text">
+        <strong>Expansion paused — <span id="si-holder">another app</span> is holding macOS Secure Input.</strong>
+        <p>While an app captures keystrokes securely (password fields, the lock screen), no expander can see what you type — triggers resume the moment it lets go. If this persists and no password field is open, the hold is stale: lock the screen (Ctrl+Cmd+Q) and unlock, or quit the app shown above.</p>
+      </div>
+    </div>
     <div class="body">
       <aside class="sidebar" id="sidebar"></aside>
       <main class="main" id="main"></main>
@@ -185,11 +191,22 @@ function stopAxPolling() {
   if (axPollTimer) { clearInterval(axPollTimer); axPollTimer = null; }
 }
 
+// Secure Input: while ANY app holds it (password fields, a stale lock-screen grab), no
+// expander on the system can see keystrokes — typed triggers pause. Show who holds it.
+function applySecureInput(holder) {
+  const banner = document.getElementById('si-banner');
+  if (!banner) return;
+  banner.classList.toggle('show', Boolean(holder));
+  if (holder) document.getElementById('si-holder').textContent = holder;
+}
+
 async function wireAccessibility() {
   const granted = await invoke('accessibility_status');
   applyAx(granted);
   if (!granted) startAxPolling();
   await listen('accessibility-status', (e) => applyAx(Boolean(e.payload)));
+  applySecureInput(await invoke('secure_input_status'));
+  await listen('secure-input-status', (e) => applySecureInput(e.payload));
   // Returning from System Settings re-focuses the window — re-check then.
   window.addEventListener('focus', recheckAx);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) recheckAx(); });

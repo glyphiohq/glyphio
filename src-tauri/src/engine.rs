@@ -25,6 +25,11 @@ pub struct Supervisor {
     /// `None` until the daemon reports; the UI shows a "grant Accessibility" banner while false.
     accessibility_ok: Arc<AtomicBool>,
     accessibility_reported: Arc<AtomicBool>,
+    /// App currently holding macOS Secure Input (parsed from worker logs), `None` when free.
+    /// While ANY app holds it, no event tap on the system sees keystrokes — typed triggers
+    /// silently do nothing while hotkeys/captures still work, which users read as "expansion
+    /// is broken". Tracked so the UI can say so instead of looking broken.
+    secure_input_holder: Arc<Mutex<Option<String>>>,
     /// Set while we are deliberately stopping (exit/restart) so the exit watcher doesn't respawn.
     stopping: Arc<AtomicBool>,
     respawns: Arc<AtomicU32>,
@@ -42,6 +47,11 @@ impl Supervisor {
     /// Whether the daemon last reported Accessibility as granted (false until reported).
     pub fn accessibility_ok(&self) -> bool {
         self.accessibility_ok.load(Ordering::SeqCst)
+    }
+
+    /// The app currently holding macOS Secure Input, if any (expansion is paused while held).
+    pub fn secure_input_holder(&self) -> Option<String> {
+        self.secure_input_holder.lock().unwrap().clone()
     }
 
     /// Spawn the engine daemon sidecar (idempotent — no-op if already running).
@@ -70,6 +80,7 @@ impl Supervisor {
         let app_ev = app.clone();
         let ax_ok = self.accessibility_ok.clone();
         let ax_reported = self.accessibility_reported.clone();
+        let secure_holder = self.secure_input_holder.clone();
         let child_slot = self.child.clone();
         let stopping = self.stopping.clone();
         let respawns = self.respawns.clone();
@@ -111,6 +122,25 @@ impl Supervisor {
                     ax_reported.store(true, Ordering::SeqCst);
                     let _ = app_ev.emit("accessibility-status", granted);
                 }
+                // Parse Secure Input transitions. While held, typed triggers can't work
+                // (no event tap on the system sees keystrokes) — surface WHO holds it so
+                // the settings banner + tray can explain the pause instead of looking broken.
+                if line.contains("secure input has been acquired") {
+                    let holder = line
+                        .split("caused by '")
+                        .nth(1)
+                        .and_then(|r| r.split('\'').next())
+                        .unwrap_or("another app")
+                        .trim_end_matches(".app")
+                        .to_string();
+                    *secure_holder.lock().unwrap() = Some(holder.clone());
+                    let _ = app_ev.emit("secure-input-status", Some(holder.clone()));
+                    update_tray_tooltip(&app_ev, Some(&holder));
+                } else if line.contains("secure input has been disabled") {
+                    *secure_holder.lock().unwrap() = None;
+                    let _ = app_ev.emit("secure-input-status", Option::<String>::None);
+                    update_tray_tooltip(&app_ev, None);
+                }
                 if is_err {
                     log::warn!("[engine] {line}");
                 } else {
@@ -144,6 +174,18 @@ impl Supervisor {
         self.accessibility_reported.store(false, Ordering::SeqCst);
         self.respawns.store(0, Ordering::SeqCst); // manual restart resets the crash-loop budget
         self.start(app, paths)
+    }
+}
+
+/// Reflect Secure Input state in the menu-bar tooltip — the one Glyphio surface that's
+/// always reachable while the user wonders why typing a trigger did nothing.
+fn update_tray_tooltip(app: &AppHandle, holder: Option<&str>) {
+    if let Some(tray) = app.tray_by_id("glyphio-tray") {
+        let tip = match holder {
+            Some(h) => format!("Glyphio — expansion paused: {h} holds macOS Secure Input"),
+            None => "Glyphio".to_string(),
+        };
+        let _ = tray.set_tooltip(Some(tip));
     }
 }
 

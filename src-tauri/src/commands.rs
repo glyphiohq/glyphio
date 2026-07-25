@@ -441,6 +441,13 @@ pub fn accessibility_status(state: State<AppState>) -> bool {
     state.supervisor.accessibility_ok()
 }
 
+/// The app currently holding macOS Secure Input (`None` when free). While held, typed
+/// triggers cannot expand — the settings banner uses this to explain the pause.
+#[tauri::command]
+pub fn secure_input_status(state: State<AppState>) -> Option<String> {
+    state.supervisor.secure_input_holder()
+}
+
 /// Open System Settings at Privacy & Security › Accessibility.
 #[tauri::command]
 pub fn open_accessibility_settings(app: AppHandle) -> CmdResult<()> {

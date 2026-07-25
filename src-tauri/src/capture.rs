@@ -1,9 +1,11 @@
 //! Capture orchestration: grab pixels via the native backend, encode PNG, stash the result, and
 //! open the editor window. The editor pulls the payload via the `take_pending_capture` command.
 
+mod ax;
 mod backend;
 pub mod scroll;
 
+use anyhow::anyhow;
 use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -40,41 +42,96 @@ pub struct PendingCapture {
 }
 
 /// Entry point for a capture. `mode` is `visible` | `snip` | `fullWindow` (interactive picker)
-/// | `frontWindow` (frontmost window, no picker — e.g. just the browser window) | `scrolling`
-/// (drag a region) | `scrollingPage` (whole frontmost window, auto-targeted).
+/// | `frontWindow` (frontmost window, no picker — e.g. just the browser window) | `pageOnly`
+/// (just the web content of the frontmost browser window, chrome excluded) | `scrolling`
+/// (drag a region) | `scrollingPage` (whole frontmost page, auto-targeted).
 pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
     if mode == "scrolling" {
         return crate::windows::open_scroll_overlay(app);
     }
-    if mode == "scrollingPage" {
-        // Long-running (scroll + settle per frame) — never block the main thread.
-        let (x, y, w, h, title) = backend::frontmost_window_bounds()?;
+    if mode == "pageOnly" || mode == "scrollingPage" {
+        // Both walk the AX tree (possible Chromium opt-in retry) and, for scrollingPage,
+        // scroll + settle per frame — never block the main thread.
+        let mode = mode.to_string();
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                scroll::capture(x, y, w, h).map(|mut s| {
-                    s.title = title;
-                    s
-                })
-            })
-            .await;
+            let m = mode.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || capture_page(&m)).await;
             match result {
                 Ok(Ok(shot)) => {
                     let app3 = app2.clone();
+                    let mode2 = mode.clone();
                     let _ = app2.run_on_main_thread(move || {
-                        if let Err(e) = finish(&app3, shot, "scrollingPage") {
-                            log::error!("scrolling page capture failed to finish: {e}");
+                        if let Err(e) = finish(&app3, shot, &mode2) {
+                            report_failure(&app3, "page capture", &e);
                         }
                     });
                 }
-                Ok(Err(e)) => log::error!("scrolling page capture failed: {e}"),
-                Err(e) => log::error!("scrolling page capture task failed: {e}"),
+                Ok(Err(e)) => report_failure(&app2, "page capture", &e),
+                Err(e) => log::error!("page capture task failed: {e}"),
             }
         });
         return Ok(());
     }
     let shot = backend::capture(app, mode)?;
     finish(app, shot, mode)
+}
+
+/// Blocking body of the two frontmost-page modes. `pageOnly` requires a web area (that's
+/// the point of the mode); `scrollingPage` prefers it — no browser chrome repeating in the
+/// stitched frames — and falls back to window bounds minus title bar for non-browsers.
+fn capture_page(mode: &str) -> anyhow::Result<Shot> {
+    let win = backend::frontmost_window_bounds()?;
+    let web_area = if scroll::app_accessibility_trusted() {
+        ax::web_area_bounds(win.pid)
+    } else {
+        None
+    };
+    if mode == "pageOnly" {
+        if !scroll::app_accessibility_trusted() {
+            anyhow::bail!(
+                "Browser page capture needs Accessibility permission for Glyphio \
+                 (System Settings › Privacy & Security › Accessibility) — it reads the \
+                 page's position from the browser."
+            );
+        }
+        let (x, y, w, h) = web_area.ok_or_else(|| {
+            anyhow!(
+                "No web page found in the frontmost window — Browser Page capture works \
+                 when a browser (Safari, Chrome, Edge, Arc…) is in front."
+            )
+        })?;
+        let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
+        let (width, height) = img.dimensions();
+        return Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title });
+    }
+    // scrollingPage — the Accessibility error, if the grant is missing, comes from
+    // scroll::capture itself.
+    let (x, y, w, h) = web_area.unwrap_or((win.x, win.y, win.w, win.h));
+    scroll::capture(x, y, w, h).map(|mut s| {
+        s.title = win.title;
+        s
+    })
+}
+
+/// Log a capture failure AND put it in front of the user — captures fire from global
+/// shortcuts and the tray, where a silent log line reads as "nothing happened".
+pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    log::error!("{context} failed: {e}");
+    app.dialog()
+        .message(format!("{e:#}"))
+        .title("Glyphio — capture failed")
+        .kind(MessageDialogKind::Error)
+        .show(|_| {});
+}
+
+/// [`trigger`] + user-visible error reporting; the fire-and-forget entry point used by the
+/// tray menu and global shortcuts.
+pub fn trigger_or_report(app: &AppHandle, mode: &str) {
+    if let Err(e) = trigger(app, mode) {
+        report_failure(app, &format!("capture ({mode})"), &e);
+    }
 }
 
 /// Shared tail of every capture path: encode, stash for the editor, open it.

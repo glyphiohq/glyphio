@@ -10,9 +10,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let cap_snip = MenuItem::with_id(app, "cap_snip", "Capture Region (Snip)", true, None::<&str>)?;
     let cap_full = MenuItem::with_id(app, "cap_full", "Capture Full Window", true, None::<&str>)?;
     let cap_front = MenuItem::with_id(app, "cap_front", "Capture Frontmost Window", true, None::<&str>)?;
+    let cap_page = MenuItem::with_id(app, "cap_page", "Capture Browser Page", true, None::<&str>)?;
     let cap_scroll = MenuItem::with_id(app, "cap_scroll", "Capture Scrolling Area", true, None::<&str>)?;
     let cap_scroll_page = MenuItem::with_id(app, "cap_scroll_page", "Capture Scrolling Page", true, None::<&str>)?;
-    let capture_menu = Submenu::with_items(app, "Capture", true, &[&cap_visible, &cap_snip, &cap_full, &cap_front, &cap_scroll, &cap_scroll_page])?;
+    let capture_menu = Submenu::with_items(app, "Capture", true, &[&cap_visible, &cap_snip, &cap_full, &cap_front, &cap_page, &cap_scroll, &cap_scroll_page])?;
 
     let search = MenuItem::with_id(app, "search", "Search Snippets…", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
@@ -41,12 +42,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let id = event.id().as_ref().to_string();
             let inner = app.clone();
             let _ = app.run_on_main_thread(move || match id.as_str() {
-                "cap_visible" => { let _ = crate::capture::trigger(&inner, "visible"); }
-                "cap_snip" => { let _ = crate::capture::trigger(&inner, "snip"); }
-                "cap_scroll" => { let _ = crate::capture::trigger(&inner, "scrolling"); }
-                "cap_scroll_page" => { let _ = crate::capture::trigger(&inner, "scrollingPage"); }
-                "cap_full" => { let _ = crate::capture::trigger(&inner, "fullWindow"); }
-                "cap_front" => { let _ = crate::capture::trigger(&inner, "frontWindow"); }
+                "cap_visible" => crate::capture::trigger_or_report(&inner, "visible"),
+                "cap_snip" => crate::capture::trigger_or_report(&inner, "snip"),
+                "cap_scroll" => crate::capture::trigger_or_report(&inner, "scrolling"),
+                "cap_scroll_page" => crate::capture::trigger_or_report(&inner, "scrollingPage"),
+                "cap_full" => crate::capture::trigger_or_report(&inner, "fullWindow"),
+                "cap_front" => crate::capture::trigger_or_report(&inner, "frontWindow"),
+                "cap_page" => crate::capture::trigger_or_report(&inner, "pageOnly"),
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
                 "search" => { let _ = crate::windows::toggle_palette(&inner); }

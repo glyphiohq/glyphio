@@ -47,6 +47,8 @@ pub struct Settings {
     pub shortcut_capture_snip: String,
     pub shortcut_capture_full: String,
     pub shortcut_capture_front_window: String,
+    /// Just the web content of the frontmost browser window (chrome excluded, via AX).
+    pub shortcut_capture_page: String,
     pub shortcut_capture_scroll: String,
     pub shortcut_capture_scroll_page: String,
     pub shortcut_open_history: String,
@@ -85,6 +87,7 @@ impl Default for Settings {
             shortcut_capture_visible: "Alt+Shift+V".into(),
             shortcut_capture_snip: "Alt+Shift+X".into(),
             shortcut_capture_front_window: "Alt+Shift+W".into(), // W = frontmost window
+            shortcut_capture_page: "Alt+Shift+B".into(), // B = browser page (content only)
             shortcut_capture_scroll: "Alt+Shift+L".into(), // L = long/scrolling area
             shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),

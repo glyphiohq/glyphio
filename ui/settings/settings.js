@@ -79,6 +79,7 @@ const SETTINGS_SECTIONS = [
     ['shortcutCaptureVisible', 'text', 'Capture visible area'],
     ['shortcutCaptureSnip', 'text', 'Capture region (snip)'],
     ['shortcutCaptureFrontWindow', 'text', 'Capture frontmost window'],
+    ['shortcutCapturePage', 'text', 'Capture browser page (content only)'],
     ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
     ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
     ['shortcutOpenHistory', 'text', 'Open history'],

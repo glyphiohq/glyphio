@@ -16,9 +16,6 @@ use core_graphics::display::{CGDisplay, CGPoint};
 use core_graphics::event::{CGEvent, CGEventTapLocation, ScrollEventUnit};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use image::RgbaImage;
-// SCK ships its own CoreGraphics value types (apple-cf), distinct from the core-graphics crate's.
-use screencapturekit::cg::{CGPoint as ScPoint, CGRect as ScRect, CGSize as ScSize};
-use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
 
 use super::Shot;
 
@@ -72,10 +69,6 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     if w < 40.0 || h < 40.0 {
         anyhow::bail!("selection too small");
     }
-    let rect = ScRect {
-        origin: ScPoint { x, y },
-        size: ScSize { width: w, height: h },
-    };
 
     // Park the cursor mid-region so wheel events reach the right scroller; restore after.
     let original = cursor_position();
@@ -86,7 +79,7 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     let mut scroll_px_points = (h * SCROLL_FRACTION).round();
     let result = (|| -> anyhow::Result<()> {
         loop {
-            let frame = capture_rect(rect)?;
+            let (frame, _) = super::backend::capture_rect_image(x, y, w, h)?;
             if let Some(prev) = frames.last() {
                 if frames_identical(prev, &frame) {
                     break; // nothing moved — bottom (or an end of the scroller) reached
@@ -114,14 +107,6 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     let stitched = stitch(frames, expected_overlap);
     let (width, height) = stitched.dimensions();
     Ok(Shot { rgba: stitched.into_raw(), width, height, dpr, title: String::new() })
-}
-
-fn capture_rect(rect: ScRect) -> anyhow::Result<RgbaImage> {
-    let image = SCScreenshotManager::capture_image_in_rect(rect)
-        .map_err(|e| anyhow!("capture failed: {e:?} — is Screen Recording granted?"))?;
-    let (w, h) = (image.width() as u32, image.height() as u32);
-    let rgba = image.rgba_data().map_err(|e| anyhow!("reading pixels failed: {e:?}"))?;
-    RgbaImage::from_raw(w, h, rgba).ok_or_else(|| anyhow!("frame buffer size mismatch"))
 }
 
 fn cursor_position() -> Option<CGPoint> {

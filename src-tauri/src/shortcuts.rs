@@ -20,6 +20,7 @@ pub fn register(app: &AppHandle) -> anyhow::Result<()> {
         &s.shortcut_capture_snip,
         &s.shortcut_capture_full,
         &s.shortcut_capture_front_window,
+        &s.shortcut_capture_page,
         &s.shortcut_capture_scroll,
         &s.shortcut_capture_scroll_page,
         &s.shortcut_open_history,
@@ -59,6 +60,8 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
         dispatch_capture(app, "fullWindow");
     } else if matches(shortcut, &s.shortcut_capture_front_window) {
         dispatch_capture(app, "frontWindow");
+    } else if matches(shortcut, &s.shortcut_capture_page) {
+        dispatch_capture(app, "pageOnly");
     } else if matches(shortcut, &s.shortcut_capture_scroll) {
         dispatch_capture(app, "scrolling");
     } else if matches(shortcut, &s.shortcut_capture_scroll_page) {
@@ -81,8 +84,6 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
 fn dispatch_capture(app: AppHandle, mode: &'static str) {
     let inner = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Err(e) = crate::capture::trigger(&inner, mode) {
-            log::error!("capture ({mode}) failed: {e}");
-        }
+        crate::capture::trigger_or_report(&inner, mode);
     });
 }

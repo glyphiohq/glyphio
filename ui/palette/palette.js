@@ -19,6 +19,7 @@ const CAPTURES = [
   { mode: 'snip', label: 'Capture Region (Snip)', keys: 'capture screenshot region snip selection crop area' },
   { mode: 'fullWindow', label: 'Capture Full Window', keys: 'capture screenshot full window picker choose' },
   { mode: 'frontWindow', label: 'Capture Frontmost Window', keys: 'capture screenshot frontmost front active window' },
+  { mode: 'pageOnly', label: 'Capture Browser Page', keys: 'capture screenshot browser page content only web chrome' },
   { mode: 'scrolling', label: 'Capture Scrolling Area', keys: 'capture screenshot scrolling scroll area long stitch' },
   { mode: 'scrollingPage', label: 'Capture Scrolling Page', keys: 'capture screenshot scrolling scroll page full long stitch' },
 ].map((c) => ({ type: 'capture', ...c }));

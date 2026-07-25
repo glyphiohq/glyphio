@@ -7,7 +7,11 @@ TRIPLE="$(rustc -Vv | sed -n 's/host: //p')"
 OUT="$REPO_ROOT/src-tauri/binaries/glyphio-ocr-$TRIPLE"
 
 echo "[build-ocr] compiling Vision OCR helper → $OUT"
-swiftc -O -o "$OUT" "$REPO_ROOT/scripts/ocr.swift" \
+# -target pins the deployment target. Without it swiftc embeds the BUILD machine's macOS
+# as the binary's minimum (minos), and the sidecar silently refuses to run for anyone on
+# an older macOS — this shipped once as minos 26.0. Keep in sync with
+# bundle.macOS.minimumSystemVersion in tauri.conf.json (enforced by scripts/release.sh).
+swiftc -O -target arm64-apple-macos14.0 -o "$OUT" "$REPO_ROOT/scripts/ocr.swift" \
   -framework Vision -framework CoreImage -framework Foundation
 codesign --force --sign "Glyphio Dev" --identifier "glyphio-ocr" "$OUT" 2>/dev/null \
   || echo "[build-ocr] note: dev identity missing — run scripts/dev-sign.sh first"

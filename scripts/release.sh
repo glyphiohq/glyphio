@@ -70,6 +70,7 @@ rm -rf "$BUNDLE"/dmg "$BUNDLE"/share 2>/dev/null || true
 # ---- 3. build: signing identity, engine + OCR sidecars, app -----------------------
 bash scripts/dev-sign.sh
 bash scripts/build-engine.sh --release
+bash scripts/build-ocr.sh
 npx tauri build
 
 # ---- 4. sign with the stable identity (Tauri falls back to ad-hoc; see sign-bundle.sh)
@@ -84,6 +85,20 @@ DMG="dist/Glyphio_${VERSION}_${ARCH}.dmg"
 # The bundled app must carry the version we intend to ship.
 BUILT_V=$(defaults read "$REPO_ROOT/$APP/Contents/Info.plist" CFBundleShortVersionString)
 [[ "$BUILT_V" == "$VERSION" ]] || fail "built app reports $BUILT_V, expected $VERSION"
+
+# Every bundled executable must run on the app's declared minimum macOS. A binary built
+# without an explicit deployment target inherits the BUILD machine's OS as its minimum
+# (glyphio-ocr once shipped requiring macOS 26) — catch that before it reaches users.
+MIN_OS=$(node -p "require('./src-tauri/tauri.conf.json').bundle.macOS.minimumSystemVersion")
+for bin in "$APP"/Contents/MacOS/*; do
+  [[ -f "$bin" && -x "$bin" ]] || continue
+  MINOS=$(otool -l "$bin" | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/{f=1} f && /minos|version /{print $2; exit}')
+  [[ -n "$MINOS" ]] || fail "could not read minimum OS of $(basename "$bin")"
+  HIGHER=$(printf '%s\n%s\n' "$MIN_OS" "$MINOS" | sort -V | tail -1)
+  [[ "$HIGHER" == "$MIN_OS" ]] \
+    || fail "$(basename "$bin") requires macOS $MINOS but the app declares $MIN_OS — rebuild it with a pinned deployment target"
+done
+log "all bundled binaries run on macOS $MIN_OS+"
 
 codesign -d -r- "$APP" 2>&1 | grep -q "certificate leaf" \
   || fail "app is not identity-signed — refusing to package"

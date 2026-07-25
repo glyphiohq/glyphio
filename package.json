@@ -1,6 +1,6 @@
 {
   "name": "glyphio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Glyphio — local-first text expansion + screenshot capture with self-hostable team sync",
   "private": true,
   "scripts": {

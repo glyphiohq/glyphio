@@ -5,7 +5,7 @@
 
 import { icon } from '../shared/icons.js';
 import { resolveSettings } from '../config.js';
-import { compositeBanner } from '../shared/banner.js';
+import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
@@ -66,7 +66,8 @@ const SETTINGS_SECTIONS = [
     ['showTimestamp', 'toggle', 'Show timestamp'],
     ['showUrl', 'toggle', 'Show window / app title'],
     ['timestampFormat', 'select', 'Timestamp format', ['device-locale', 'iso-8601', 'utc-human']],
-    ['timezone', 'text', 'Timezone'], ['locale', 'text', 'Locale'],
+    ['timezone', 'select', 'Timezone', timezoneOptions],
+    ['locale', 'select', 'Locale', localeOptions],
     ['bannerBg', 'color', 'Background'], ['bannerFg', 'color', 'Text'],
     ['bannerMuted', 'color', 'Muted text'],
   ]},
@@ -2100,13 +2101,104 @@ function renderField(key, type, label, opts) {
   field.append(name);
   let input;
   if (type === 'toggle') { input = el('input', { type: 'checkbox' }); input.checked = Boolean(state.settings[key]); }
-  else if (type === 'select') { input = el('select'); for (const o of opts) input.append(el('option', { value: o, textContent: o })); input.value = state.settings[key]; }
+  else if (type === 'select') { input = renderSelect(key, opts); }
   else if (type === 'color') { input = el('input', { type: 'color', className: 'color' }); input.value = state.settings[key] || '#000000'; }
   else if (type === 'number') { input = el('input', { type: 'number', min: '1' }); input.value = state.settings[key]; }
   else { input = el('input', { type: 'text' }); input.value = state.settings[key] ?? ''; }
   input.dataset.key = key; input.dataset.type = type;
   field.append(input);
   return field;
+}
+
+/**
+ * A `<select>` for `key`. `opts` is either a list of plain values or a function returning
+ * `{ value, label }` entries, optionally wrapped in `{ group, items }` for `<optgroup>`s.
+ * A stored value the list doesn't offer is kept and shown first rather than silently
+ * rewritten — except that an unusable one says so, since it is why a timestamp went missing.
+ */
+function renderSelect(key, opts) {
+  const spec = typeof opts === 'function' ? opts() : opts.map((o) => ({ value: o, label: o }));
+  const select = el('select');
+  const current = state.settings[key] ?? '';
+  let offered = false;
+  const add = (parent, o) => {
+    parent.append(el('option', { value: o.value, textContent: o.label }));
+    if (o.value === current) offered = true;
+  };
+  for (const entry of spec) {
+    if (entry.group) {
+      const group = el('optgroup', { label: entry.group });
+      for (const item of entry.items) add(group, item);
+      select.append(group);
+    } else add(select, entry);
+  }
+  if (!offered && current !== '') {
+    const usable = key === 'timezone' ? isSupportedTimezone(current)
+      : key === 'locale' ? isSupportedLocale(current) : true;
+    select.prepend(el('option', {
+      value: current,
+      textContent: usable ? current : `${current} — not recognised, using device default`,
+    }));
+  }
+  select.value = current;
+  return select;
+}
+
+/**
+ * Every IANA zone this Mac knows, grouped by region. Typing one by hand was a trap: `Intl`
+ * rejects anything that isn't an exact zone name, and a rejected zone took the whole
+ * timestamp strip with it.
+ */
+function timezoneOptions() {
+  const zones = typeof Intl.supportedValuesOf === 'function'
+    ? Intl.supportedValuesOf('timeZone') : [];
+  const groups = new Map();
+  for (const zone of zones) {
+    if (!zone.includes('/')) continue; // UTC and legacy aliases — pinned above instead
+    const [region, ...rest] = zone.split('/');
+    if (!groups.has(region)) groups.set(region, []);
+    groups.get(region).push({ value: zone, label: rest.join(' / ').replace(/_/g, ' ') });
+  }
+  return [
+    { value: 'device', label: `Device default (${deviceTimezone()})` },
+    { value: 'UTC', label: 'UTC' },
+    ...[...groups.entries()].map(([region, items]) => ({ group: region.replace(/_/g, ' '), items })),
+  ];
+}
+
+function deviceTimezone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'device'; }
+  catch { return 'device'; }
+}
+
+/**
+ * Locales worth offering, named in their own language. There is no way to enumerate what
+ * `Intl` supports, so this is a list — anything already stored survives (see `renderSelect`).
+ */
+const LOCALE_TAGS = [
+  'en-US', 'en-GB', 'en-AU', 'en-CA', 'en-IN', 'fr-FR', 'fr-CA', 'de-DE', 'de-CH', 'es-ES',
+  'es-MX', 'pt-BR', 'pt-PT', 'it-IT', 'nl-NL', 'sv-SE', 'nb-NO', 'da-DK', 'fi-FI', 'is-IS',
+  'pl-PL', 'cs-CZ', 'sk-SK', 'hu-HU', 'ro-RO', 'el-GR', 'tr-TR', 'ru-RU', 'uk-UA', 'he-IL',
+  'ar-SA', 'fa-IR', 'hi-IN', 'bn-IN', 'ta-IN', 'th-TH', 'vi-VN', 'id-ID', 'ms-MY', 'ja-JP',
+  'ko-KR', 'zh-CN', 'zh-TW', 'zh-HK',
+];
+
+function localeOptions() {
+  const label = (tag) => {
+    try {
+      const name = new Intl.DisplayNames([tag], { type: 'language' }).of(tag);
+      return name && name !== tag ? `${name} (${tag})` : tag;
+    } catch { return tag; }
+  };
+  return [
+    { value: 'device', label: `Device default (${deviceLocale()})` },
+    ...LOCALE_TAGS.filter(isSupportedLocale).map((tag) => ({ value: tag, label: label(tag) })),
+  ];
+}
+
+function deviceLocale() {
+  try { return new Intl.DateTimeFormat().resolvedOptions().locale || 'device'; }
+  catch { return 'device'; }
 }
 
 async function saveSettings() {

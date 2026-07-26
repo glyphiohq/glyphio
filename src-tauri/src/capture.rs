@@ -13,6 +13,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::AppState;
 
+/// Undo any accessibility opt-in still outstanding on a browser we captured from — called on
+/// app exit, since the cooldown thread that normally does it dies with us.
+pub fn restore_browser_accessibility() {
+    ax::restore_web_accessibility();
+}
+
 /// (origin, size) in points of the display under the cursor — used to place the
 /// scrolling-capture selection overlay.
 pub fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
@@ -106,8 +112,13 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
 /// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
 fn capture_page(mode: &str) -> anyhow::Result<Shot> {
     let win = backend::frontmost_window_bounds()?;
+    // A browser that builds its accessibility tree on demand takes ~2s to publish it (see
+    // `ax`), paid once per browser thanks to the grace period there. Both modes wait: for
+    // `pageOnly` there is nothing else to capture, and for `scrollingPage` the fallback —
+    // the whole window — repeats the browser's toolbar in every stitched frame.
+    const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(3000);
     let geometry = if scroll::app_accessibility_trusted() {
-        ax::page_geometry(win.pid)
+        ax::page_geometry(win.pid, PAGE_TREE_BUDGET)
     } else {
         None
     };
@@ -121,8 +132,10 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
         }
         let (x, y, w, h) = geometry.and_then(|g| g.web_visible).ok_or_else(|| {
             anyhow!(
-                "No web page found in the frontmost window — Browser Page capture works \
-                 when a browser (Safari, Chrome, Edge, Arc…) is in front."
+                "No web page found in the frontmost window (“{}”) — Browser Page capture \
+                 works when a browser (Safari, Chrome, Edge, Arc…) is in front, with a page \
+                 loaded rather than a settings or downloads tab.",
+                win.title
             )
         })?;
         let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;

@@ -2,12 +2,13 @@
 //! Prints every intermediate step of what `scrollingPage` does so failures can be
 //! localised without the app's UI in the way.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Run the scrollingPage front-half step by step; with `capture` also grab pixels and
 /// run a short 3-frame scroll loop, saving PNGs next to the report for inspection.
 pub fn page_probe(capture: bool) {
     println!("accessibility trusted: {}", super::scroll::app_accessibility_trusted());
+    println!("frontmost app pid: {:?}", super::backend::frontmost_app_pid());
 
     let t = Instant::now();
     let win = match super::backend::frontmost_window_bounds() {
@@ -23,7 +24,7 @@ pub fn page_probe(capture: bool) {
     );
 
     let t = Instant::now();
-    match super::ax::page_geometry(win.pid) {
+    match super::ax::page_geometry(win.pid, Duration::from_millis(3000)) {
         Some(g) => {
             let (wx, wy, ww, wh) = g.window;
             println!("ax window frame: ({wx}, {wy}) {ww}x{wh} [{:?}]", t.elapsed());

@@ -261,6 +261,7 @@ pub fn run() {
                     api.prevent_exit();
                 } else {
                     windows::save_all_geometry(app_handle);
+                    capture::restore_browser_accessibility();
                     app_handle.state::<AppState>().supervisor.stop();
                 }
             }
@@ -268,6 +269,7 @@ pub fn run() {
             // here, else the daemon/worker are orphaned and block the next launch.
             tauri::RunEvent::Exit => {
                 windows::save_all_geometry(app_handle);
+                capture::restore_browser_accessibility();
                 app_handle.state::<AppState>().supervisor.stop();
             }
             _ => {}

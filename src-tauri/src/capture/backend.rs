@@ -17,7 +17,7 @@ use core_graphics::event::CGEvent;
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use screencapturekit::cg::{CGPoint as ScPoint, CGRect as ScRect, CGSize as ScSize};
 use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
-use screencapturekit::shareable_content::SCShareableContent;
+use screencapturekit::shareable_content::{SCDisplay, SCShareableContent, SCWindow};
 use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
 use tauri::AppHandle;
@@ -90,9 +90,10 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
         .or_else(|| displays.first())
         .ok_or_else(|| anyhow!("no display found"))?;
 
+    let windows = content.windows();
     let filter = SCContentFilter::create()
         .with_display(display)
-        .with_excluding_windows(&[])
+        .with_excluding_windows(&our_windows(&windows))
         .build();
     // SCDisplay dimensions are in points; request pixel dimensions or Retina captures come out
     // downscaled (blurry) at 1x. Cursor excluded, matching the system screenshot default.
@@ -126,8 +127,14 @@ fn capture_front_window() -> anyhow::Result<Shot> {
 /// Deliberately built on `SCContentFilter` + `SCStreamConfiguration.sourceRect` — the same
 /// machinery as display capture — and NOT on `SCScreenshotManager.captureImage(in:)`: that
 /// convenience composites a virtual-desktop rect and, on multi-display setups, fills whatever
-/// it fails to map with black (the "scrolling capture comes out black" bug). The rect is
-/// clamped to the display it overlaps most; a filter can't span displays.
+/// it fails to map with black (the "scrolling capture comes out black" bug).
+///
+/// A content filter can only describe one display, so a rect straddling two monitors — a
+/// window dragged across the seam, which is ordinary on a multi-monitor desk — is captured
+/// per display and composited here. The result covers the part of the rect that is actually
+/// on some display; anything hanging off the edge of the desktop is trimmed rather than
+/// padded. Mixed-DPI arrangements resolve to the sharpest scale involved, upscaling the
+/// coarser piece so the seam lines up.
 pub(super) fn capture_rect_image(
     x: f64,
     y: f64,
@@ -138,41 +145,86 @@ pub(super) fn capture_rect_image(
         anyhow!("screen capture unavailable — grant Screen Recording permission in System Settings > Privacy & Security, then retry ({e:?})")
     })?;
     let displays = content.displays();
+    let windows = content.windows();
+    let ours = our_windows(&windows);
 
-    let overlap_area = |id: u32| -> f64 {
-        let b = CGDisplay::new(id).bounds();
-        let ow = (x + w).min(b.origin.x + b.size.width) - x.max(b.origin.x);
-        let oh = (y + h).min(b.origin.y + b.size.height) - y.max(b.origin.y);
-        if ow > 0.0 && oh > 0.0 { ow * oh } else { 0.0 }
-    };
-    let display = displays
+    // (display, intersection with the requested rect), sharpest display first so the output
+    // scale is settled before anything is captured.
+    let mut pieces: Vec<(&SCDisplay, (f64, f64, f64, f64))> = displays
         .iter()
-        .max_by(|a, b| {
-            overlap_area(a.display_id())
-                .total_cmp(&overlap_area(b.display_id()))
+        .filter_map(|d| {
+            let b = CGDisplay::new(d.display_id()).bounds();
+            let bounds = (b.origin.x, b.origin.y, b.size.width, b.size.height);
+            intersect((x, y, w, h), bounds).map(|r| (d, r))
         })
-        .filter(|d| overlap_area(d.display_id()) > 0.0)
-        .ok_or_else(|| anyhow!("selection is outside every display"))?;
-
-    let b = CGDisplay::new(display.display_id()).bounds();
-    let cx = x.max(b.origin.x);
-    let cy = y.max(b.origin.y);
-    let cw = (x + w).min(b.origin.x + b.size.width) - cx;
-    let ch = (y + h).min(b.origin.y + b.size.height) - cy;
-    if cw < 1.0 || ch < 1.0 {
+        .collect();
+    if pieces.is_empty() {
         anyhow::bail!("selection is outside every display");
     }
+    pieces.sort_by(|a, b| {
+        backing_scale(b.0.display_id()).total_cmp(&backing_scale(a.0.display_id()))
+    });
+    let scale = backing_scale(pieces[0].0.display_id());
 
-    let scale = backing_scale(display.display_id());
+    if pieces.len() == 1 {
+        let (d, (cx, cy, cw, ch)) = pieces[0];
+        let img = capture_display_rect(d, &ours, cx, cy, cw, ch, scale)?;
+        let pw = img.width();
+        return Ok((img, pw as f64 / cw));
+    }
+
+    // Union of the covered pieces: the rect minus whatever falls off the desktop.
+    let (ux, uy) = (
+        pieces.iter().map(|p| p.1 .0).fold(f64::MAX, f64::min),
+        pieces.iter().map(|p| p.1 .1).fold(f64::MAX, f64::min),
+    );
+    let (ux2, uy2) = (
+        pieces.iter().map(|p| p.1 .0 + p.1 .2).fold(f64::MIN, f64::max),
+        pieces.iter().map(|p| p.1 .1 + p.1 .3).fold(f64::MIN, f64::max),
+    );
+    let mut out = image::RgbaImage::new(
+        ((ux2 - ux) * scale).round().max(1.0) as u32,
+        ((uy2 - uy) * scale).round().max(1.0) as u32,
+    );
+    let spanned = pieces.len();
+    for (d, (cx, cy, cw, ch)) in pieces {
+        let piece = capture_display_rect(d, &ours, cx, cy, cw, ch, scale)?;
+        image::imageops::overlay(
+            &mut out,
+            &piece,
+            ((cx - ux) * scale).round() as i64,
+            ((cy - uy) * scale).round() as i64,
+        );
+    }
+    log::info!(
+        "capture rect spanned {spanned} displays -> {}x{} @{scale}x",
+        out.width(),
+        out.height()
+    );
+    Ok((out, scale))
+}
+
+/// One display's share of a rect, rendered at `scale` pixels per point.
+fn capture_display_rect(
+    display: &SCDisplay,
+    exclude: &[&SCWindow],
+    cx: f64,
+    cy: f64,
+    cw: f64,
+    ch: f64,
+    scale: f64,
+) -> anyhow::Result<image::RgbaImage> {
+    let b = CGDisplay::new(display.display_id()).bounds();
     let filter = SCContentFilter::create()
         .with_display(display)
-        .with_excluding_windows(&[])
+        .with_excluding_windows(exclude)
         .build();
     // sourceRect is in the display's own top-left-origin point space; width/height request
-    // pixel output so Retina captures aren't downscaled.
+    // pixel output so Retina captures aren't downscaled — and, when displays disagree about
+    // scale, pull the coarser one up to the output scale instead of stitching a size mismatch.
     let config = SCStreamConfiguration::new()
-        .with_width((cw * scale).round() as u32)
-        .with_height((ch * scale).round() as u32)
+        .with_width((cw * scale).round().max(1.0) as u32)
+        .with_height((ch * scale).round().max(1.0) as u32)
         .with_source_rect(ScRect {
             origin: ScPoint { x: cx - b.origin.x, y: cy - b.origin.y },
             size: ScSize { width: cw, height: ch },
@@ -184,9 +236,28 @@ pub(super) fn capture_rect_image(
     let rgba = image
         .rgba_data()
         .map_err(|e| anyhow!("reading captured pixels failed: {e:?}"))?;
-    let img = image::RgbaImage::from_raw(pw, ph, rgba)
-        .ok_or_else(|| anyhow!("capture buffer size mismatch"))?;
-    Ok((img, pw as f64 / cw))
+    image::RgbaImage::from_raw(pw, ph, rgba).ok_or_else(|| anyhow!("capture buffer size mismatch"))
+}
+
+/// Glyphio's own windows, to be left out of the shot. An editor window from the previous
+/// capture, or the palette, sitting over the target is not part of what the user is
+/// photographing — and worse, in a scrolling capture it swallows the scroll events aimed at
+/// the page underneath, so the "capture" is one frame of Glyphio's own UI.
+fn our_windows(windows: &[SCWindow]) -> Vec<&SCWindow> {
+    let us = std::process::id() as i32;
+    windows
+        .iter()
+        .filter(|w| w.owning_application().is_some_and(|app| app.process_id() == us))
+        .collect()
+}
+
+/// Overlap of two rects `(x, y, w, h)`, or `None` when they don't meaningfully meet.
+fn intersect(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
+    let x = a.0.max(b.0);
+    let y = a.1.max(b.1);
+    let w = (a.0 + a.2).min(b.0 + b.2) - x;
+    let h = (a.1 + a.3).min(b.1 + b.3) - y;
+    (w >= 1.0 && h >= 1.0).then_some((x, y, w, h))
 }
 
 /// Frontmost normal window not owned by Glyphio — the target of "scrolling page", "front
@@ -209,7 +280,84 @@ pub(super) fn frontmost_window_bounds() -> anyhow::Result<FrontWindow> {
     frontmost_window_bounds_with_inset(TITLE_BAR_PT)
 }
 
+/// Which app holds keyboard focus is asked of macOS itself, and which of its windows is asked
+/// of the accessibility API — that is the question the user is really asking, and it has one
+/// answer however many displays the windows are spread over. Reading the window list in
+/// z-order is only a stand-in: it flattens every visible display into one front-to-back
+/// ordering, so a window last touched on another monitor can outrank the one being looked at.
+///
+/// The catch is that accessibility describes windows on *other Spaces* just as happily as the
+/// one on screen, and captures are pixels: aiming at a rect whose window is on another desktop
+/// would photograph whatever happens to be sitting at those coordinates instead. So the
+/// answer only stands if the window list — which is on-screen only — confirms the window is
+/// where AX says it is.
 fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<FrontWindow> {
+    let onscreen = on_screen_windows();
+    let focused = frontmost_app_pid()
+        .filter(|pid| *pid != std::process::id() as i32)
+        .and_then(|pid| super::ax::focused_window(pid).map(|(frame, title)| (pid, frame, title)));
+
+    if let Some((pid, frame, ax_title)) = focused {
+        if let Some(listed) = onscreen.iter().find(|w| w.pid == pid && w.is_at(frame)) {
+            // AX has the better title for most apps but none for some, so take whichever is
+            // non-empty, preferring AX: `kCGWindowName` comes back empty for full-screen
+            // browser windows, which is how captures ended up labelled just "Safari".
+            let title = if ax_title.trim().is_empty() { listed.title.clone() } else { ax_title };
+            let (x, y, w, h) = frame;
+            return Ok(FrontWindow { x, y: y + title_bar_inset, w, h: h - title_bar_inset, title, pid });
+        }
+    }
+    let first = onscreen.into_iter().next().ok_or_else(|| anyhow!("no capturable window found"))?;
+    Ok(FrontWindow {
+        x: first.x,
+        y: first.y + title_bar_inset,
+        w: first.w,
+        h: first.h - title_bar_inset,
+        title: first.title,
+        pid: first.pid,
+    })
+}
+
+/// A visible, normal-sized window belonging to someone other than us.
+struct ListedWindow {
+    pid: i32,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    title: String,
+}
+
+impl ListedWindow {
+    /// Whether this is the window an accessibility frame describes. Tolerant by a couple of
+    /// points: the two APIs round independently.
+    fn is_at(&self, (x, y, w, h): (f64, f64, f64, f64)) -> bool {
+        const SLACK: f64 = 2.0;
+        (self.x - x).abs() <= SLACK
+            && (self.y - y).abs() <= SLACK
+            && (self.w - w).abs() <= SLACK
+            && (self.h - h).abs() <= SLACK
+    }
+}
+
+/// The active application, as macOS itself tracks it. `NSWorkspace` is the only source that
+/// answers this correctly on a multi-display desk; the system-wide accessibility element's
+/// `AXFocusedApplication` returns `kAXErrorCannotComplete` on current macOS even for a
+/// trusted process, so it is only a backstop.
+pub(super) fn frontmost_app_pid() -> Option<i32> {
+    let pid = objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|app| app.processIdentifier());
+    match pid {
+        Some(pid) if pid > 0 => Some(pid),
+        _ => super::ax::focused_app_pid(),
+    }
+}
+
+/// Every normal, non-Glyphio window currently on screen, front to back. "On screen" is the
+/// point: windows on other Spaces are absent, which is what makes this the check that a
+/// window is really in front of the user rather than merely focused.
+fn on_screen_windows() -> Vec<ListedWindow> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::dictionary::CFDictionary;
     use core_foundation::number::CFNumber;
@@ -218,11 +366,13 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
         copy_window_info, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
     };
 
-    let list = copy_window_info(
+    let mut out = Vec::new();
+    let Some(list) = copy_window_info(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         0, // kCGNullWindowID
-    )
-    .ok_or_else(|| anyhow!("could not list windows — is Screen Recording granted?"))?;
+    ) else {
+        return out; // no Screen Recording grant; the capture itself will say so
+    };
 
     let get_num = |d: &CFDictionary<CFString, CFType>, k: &str| -> Option<f64> {
         d.find(CFString::new(k))
@@ -249,10 +399,12 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
         if owner.to_lowercase().contains("glyphio") {
             continue;
         }
-        let bounds = dict
+        let Some(bounds) = dict
             .find(CFString::from_static_string("kCGWindowBounds"))
             .and_then(|v| v.downcast::<CFDictionary>())
-            .ok_or_else(|| anyhow!("window has no bounds"))?;
+        else {
+            continue;
+        };
         let bounds: CFDictionary<CFString, CFType> =
             unsafe { CFDictionary::wrap_under_get_rule(bounds.as_concrete_TypeRef() as _) };
         let (x, y, w, h) = (
@@ -277,16 +429,9 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
             .and_then(|v| v.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())
             .unwrap_or(0) as i32;
-        return Ok(FrontWindow {
-            x,
-            y: y + title_bar_inset,
-            w,
-            h: h - title_bar_inset,
-            title,
-            pid,
-        });
+        out.push(ListedWindow { pid, x, y, w, h, title });
     }
-    anyhow::bail!("no capturable window found")
+    out
 }
 
 /// (origin, size) in points of the display under the cursor (top-left origin, global coords).
@@ -309,6 +454,41 @@ pub(super) fn display_bounds_containing_point(x: f64, y: f64) -> Option<((f64, f
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::intersect;
+
+    /// The three-monitors-side-by-side arrangement this was written for: displays at
+    /// x = -1920, 0 and 1920, and a window dragged across the seam between two of them.
+    #[test]
+    fn a_window_across_the_seam_resolves_to_one_piece_per_display() {
+        let left = (-1920.0, 0.0, 1920.0, 1080.0);
+        let middle = (0.0, 0.0, 1920.0, 1080.0);
+        let right = (1920.0, 0.0, 1920.0, 1080.0);
+        let window = (-300.0, 100.0, 900.0, 700.0); // 300pt on the left display, 600 on the middle
+
+        assert_eq!(intersect(window, left), Some((-300.0, 100.0, 300.0, 700.0)));
+        assert_eq!(intersect(window, middle), Some((0.0, 100.0, 600.0, 700.0)));
+        assert_eq!(intersect(window, right), None);
+
+        // The pieces tile the window exactly — no overlap, no gap, so the composite lines up.
+        let pieces = [intersect(window, left).unwrap(), intersect(window, middle).unwrap()];
+        assert_eq!(pieces[0].0 + pieces[0].2, pieces[1].0);
+        assert_eq!(pieces.iter().map(|p| p.2).sum::<f64>(), window.2);
+    }
+
+    #[test]
+    fn a_window_hanging_off_the_desktop_is_trimmed_not_padded() {
+        let display = (0.0, 0.0, 1920.0, 1080.0);
+        // Half off the left edge of a single-display desktop.
+        assert_eq!(intersect((-400.0, 50.0, 800.0, 600.0), display), Some((0.0, 50.0, 400.0, 600.0)));
+        // Entirely off it.
+        assert_eq!(intersect((-900.0, 50.0, 800.0, 600.0), display), None);
+        // Edge-to-edge contact is not an overlap worth capturing.
+        assert_eq!(intersect((1920.0, 0.0, 400.0, 400.0), display), None);
+    }
 }
 
 /// The `CGDirectDisplayID` of the display containing the current cursor position.

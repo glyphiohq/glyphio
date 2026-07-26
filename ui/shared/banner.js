@@ -44,16 +44,49 @@ export function computeBannerCssHeight(settings, meta, note) {
   return h;
 }
 
+/**
+ * Is this something `Intl` will actually accept? A timezone or locale it rejects throws out
+ * of the formatter, and that used to take the whole banner down with it — one typo in the
+ * timezone box and captures came out with no timestamp, no title, nothing. Settings offers a
+ * list rather than a text box now, but a value can still arrive from an older install or a
+ * hand-edited settings.json, so nothing here is trusted.
+ */
+const intlSupport = new Map();
+function accepts(key, build) {
+  if (intlSupport.has(key)) return intlSupport.get(key);
+  let ok = true;
+  try { build(); } catch { ok = false; }
+  intlSupport.set(key, ok);
+  return ok;
+}
+
+export function isSupportedTimezone(tz) {
+  if (!tz || tz === 'device') return true;
+  return accepts(`tz:${tz}`, () => new Intl.DateTimeFormat('en-GB', { timeZone: tz }).format(new Date()));
+}
+
+export function isSupportedLocale(locale) {
+  if (!locale || locale === 'device') return true;
+  return accepts(`loc:${locale}`, () => new Intl.DateTimeFormat(locale).format(new Date()));
+}
+
+/** The locale/timezone to actually format with — `undefined` means "whatever the Mac uses". */
+function intlPrefs(settings) {
+  const locale = settings.locale && settings.locale !== 'device' && isSupportedLocale(settings.locale)
+    ? settings.locale : undefined;
+  const timeZone = settings.timezone && settings.timezone !== 'device' && isSupportedTimezone(settings.timezone)
+    ? settings.timezone : undefined;
+  return { locale, timeZone };
+}
+
 export function formatTimestamp(iso, settings) {
   const d = new Date(iso);
-  const locale = settings.locale === 'device' ? undefined : settings.locale;
-  const tz = settings.timezone === 'device' ? undefined : settings.timezone;
+  if (Number.isNaN(d.getTime())) return '';
+  const { locale, timeZone: tz } = intlPrefs(settings);
 
   switch (settings.timestampFormat) {
     case 'iso-8601':
-      if (settings.timezone === 'device') {
-        return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
-      }
+      if (!tz) return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
       return formatIsoInTz(d, tz);
     case 'utc-human':
       return new Intl.DateTimeFormat('en-GB', {
@@ -75,8 +108,7 @@ export function formatTimestamp(iso, settings) {
  */
 function timestampVariants(iso, settings) {
   const d = new Date(iso);
-  const locale = settings.locale === 'device' ? undefined : settings.locale;
-  const tz = settings.timezone === 'device' ? undefined : settings.timezone;
+  const { locale, timeZone: tz } = intlPrefs(settings);
   const full = formatTimestamp(iso, settings);
   const fmt = (opts, loc = locale) => {
     try {
@@ -223,7 +255,13 @@ export function compositeBanner(target, content, { meta, settings, note = '', en
   if (bannerPxH > 0) {
     ctx.fillStyle = settings.bannerBg;
     ctx.fillRect(0, 0, target.width, bannerPxH);
-    drawBannerLines(ctx, target.width, scale, settings, meta, note);
+    // Nothing about formatting text is worth losing a capture over: whatever happens up
+    // here, the image below still gets drawn.
+    try {
+      drawBannerLines(ctx, target.width, scale, settings, meta, note);
+    } catch (e) {
+      console.error('banner text could not be drawn', e);
+    }
   }
   ctx.drawImage(content, 0, bannerPxH);
   return bannerPxH;

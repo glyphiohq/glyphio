@@ -51,8 +51,11 @@ pub struct Shot {
     pub height: u32,
     /// Backing-scale factor (2.0 on Retina) so the banner/editor can size text correctly.
     pub dpr: f64,
-    /// Window/app title (banner "url" field natively) — empty when capturing a whole display.
+    /// Window/app title — empty when capturing a whole display or a picked region.
     pub title: String,
+    /// What the browser said about the page, for the modes that target one window. Empty
+    /// unless the user has asked for one of those banner lines.
+    pub browser: ax::BrowserMeta,
 }
 
 #[derive(Clone, Serialize)]
@@ -64,7 +67,18 @@ pub struct PendingCapture {
     pub dpr: f64,
     pub mode: String,
     pub title: String,
+    pub page_title: String,
+    pub page_url: String,
+    pub profile: String,
     pub captured_at: String,
+    /// Straight to the clipboard and history, no editor — the window running this page is
+    /// invisible and closes itself when it's done.
+    pub silent: bool,
+}
+
+/// Whether any banner line needs the browser asked about the page.
+pub(crate) fn wants_browser_details(app: &AppHandle) -> bool {
+    app.state::<AppState>().settings.lock().unwrap().wants_browser_details()
 }
 
 /// Entry point for a capture. `mode` is `visible` | `snip` | `fullWindow` (interactive picker)
@@ -80,9 +94,10 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
         // scroll + settle per frame — never block the main thread.
         let mode = mode.to_string();
         let app2 = app.clone();
+        let details = wants_browser_details(app);
         tauri::async_runtime::spawn(async move {
             let m = mode.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || capture_page(&m)).await;
+            let result = tauri::async_runtime::spawn_blocking(move || capture_page(&m, details)).await;
             match result {
                 Ok(Ok(shot)) => {
                     let app3 = app2.clone();
@@ -110,7 +125,7 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
 /// Geometry comes from the AX tree when possible: CGWindowList ordering is unreliable on
 /// modern macOS (Safari's toolbar strip is its own window), and `AXWebArea` alone reports
 /// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
-fn capture_page(mode: &str) -> anyhow::Result<Shot> {
+fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> {
     let win = backend::frontmost_window_bounds()?;
     // A browser that builds its accessibility tree on demand takes ~2s to publish it (see
     // `ax`), paid once per browser thanks to the grace period there. Both modes wait: for
@@ -122,6 +137,9 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
     } else {
         None
     };
+    // Read after `page_geometry`, which has just opted a Chromium browser in if it needed to:
+    // by now the page will answer, and this costs a single tree walk.
+    let browser = if with_browser_details { win.browser_meta() } else { Default::default() };
     if mode == "pageOnly" {
         if !scroll::app_accessibility_trusted() {
             anyhow::bail!(
@@ -140,7 +158,7 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
         })?;
         let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
         let (width, height) = img.dimensions();
-        return Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title });
+        return Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title, browser });
     }
     // scrollingPage — the Accessibility error, if the grant is missing, comes from
     // scroll::capture itself. Fallbacks: viewport → AX window frame → CGWindow rect
@@ -151,6 +169,7 @@ fn capture_page(mode: &str) -> anyhow::Result<Shot> {
     };
     scroll::capture(x, y, w, h).map(|mut s| {
         s.title = win.title;
+        s.browser = browser;
         s
     })
 }
@@ -176,12 +195,18 @@ pub fn trigger_or_report(app: &AppHandle, mode: &str) {
 }
 
 /// Shared tail of every capture path: encode, stash for the editor, open it.
+///
+/// "Open it" is where silent mode parts company — the same page does the work in a window
+/// that is never shown, so the banner, the clipboard write and the history row are produced
+/// by exactly one implementation either way, and a silent capture is still a capture you can
+/// open and annotate afterwards.
 pub fn finish(app: &AppHandle, shot: Shot, mode: &str) -> anyhow::Result<()> {
     let png = encode_png(&shot)?;
     let data_url = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
     );
+    let silent = app.state::<AppState>().settings.lock().unwrap().silent_capture;
     let pending = PendingCapture {
         png_data_url: data_url,
         width: shot.width,
@@ -189,11 +214,18 @@ pub fn finish(app: &AppHandle, shot: Shot, mode: &str) -> anyhow::Result<()> {
         dpr: shot.dpr,
         mode: mode.to_string(),
         title: shot.title,
+        page_title: shot.browser.page_title,
+        page_url: shot.browser.url,
+        profile: shot.browser.profile,
         captured_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        silent,
     };
     *app.state::<AppState>().pending_capture.lock().unwrap() = Some(pending);
-    crate::windows::open(app, "editor")?;
-    Ok(())
+    if silent {
+        crate::windows::run_silent_capture(app)
+    } else {
+        crate::windows::open(app, "editor")
+    }
 }
 
 fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {

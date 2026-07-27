@@ -110,7 +110,14 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
     let expected_overlap = first.height() as i64 - scroll_px_points as i64;
     let stitched = stitch(frames, expected_overlap);
     let (width, height) = stitched.dimensions();
-    Ok(Shot { rgba: stitched.into_raw(), width, height, dpr, title: String::new() })
+    Ok(Shot {
+        rgba: stitched.into_raw(),
+        width,
+        height,
+        dpr,
+        title: String::new(),
+        browser: Default::default(),
+    })
 }
 
 fn cursor_position() -> Option<CGPoint> {

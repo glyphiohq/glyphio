@@ -25,11 +25,11 @@ use uuid::Uuid;
 
 use super::Shot;
 
-pub fn capture(_app: &AppHandle, mode: &str) -> anyhow::Result<Shot> {
+pub fn capture(app: &AppHandle, mode: &str) -> anyhow::Result<Shot> {
     match mode {
         "fullWindow" => screencapture_interactive(&["-i", "-W"]),
         "snip" => screencapture_interactive(&["-i"]),
-        "frontWindow" => capture_front_window(),
+        "frontWindow" => capture_front_window(super::wants_browser_details(app)),
         _ => capture_display_under_cursor(), // "visible"
     }
 }
@@ -72,7 +72,14 @@ fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
         .map_err(|e| anyhow!("decoding capture failed: {e}"))?
         .to_rgba8();
     let (width, height) = img.dimensions();
-    Ok(Shot { rgba: img.into_raw(), width, height, dpr: cursor_display_scale(), title: String::new() })
+    Ok(Shot {
+        rgba: img.into_raw(),
+        width,
+        height,
+        dpr: cursor_display_scale(),
+        title: String::new(),
+        browser: Default::default(),
+    })
 }
 
 /// SCK capture of whichever display currently contains the mouse cursor (multi-monitor aware).
@@ -108,17 +115,18 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
     let rgba = image
         .rgba_data()
         .map_err(|e| anyhow!("reading captured pixels failed: {e:?}"))?;
-    Ok(Shot { rgba, width, height, dpr, title: String::new() })
+    Ok(Shot { rgba, width, height, dpr, title: String::new(), browser: Default::default() })
 }
 
 /// Non-interactive capture of the frontmost window (whole window, chrome included) — one
 /// keystroke, no picker. The motivating case: grab just the browser window instead of the
 /// entire screen.
-fn capture_front_window() -> anyhow::Result<Shot> {
+fn capture_front_window(with_browser_details: bool) -> anyhow::Result<Shot> {
     let win = frontmost_window_bounds_with_inset(0.0)?;
+    let browser = if with_browser_details { win.browser_meta() } else { Default::default() };
     let (img, dpr) = capture_rect_image(win.x, win.y, win.w, win.h)?;
     let (width, height) = img.dimensions();
-    Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title })
+    Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title, browser })
 }
 
 /// Capture an arbitrary global rect (points, top-left origin of the main display) and return
@@ -270,6 +278,17 @@ pub(super) struct FrontWindow {
     pub title: String,
     /// Owning process — lets the AX layer find the window's web content area.
     pub pid: i32,
+    /// The owning application's name as macOS presents it ("Google Chrome"). Browsers build
+    /// their window title around it, which is how the page title and profile come apart.
+    pub app_name: String,
+}
+
+impl FrontWindow {
+    /// What the browser says about the page in this window — empty for anything that isn't
+    /// showing one. See [`super::ax::browser_meta`]: nothing is switched on to find out.
+    pub fn browser_meta(&self) -> super::ax::BrowserMeta {
+        super::ax::browser_meta(self.pid, &self.app_name)
+    }
 }
 
 /// Bounds (points, global top-left), title, and pid of the frontmost window. Scrolling capture
@@ -293,18 +312,28 @@ pub(super) fn frontmost_window_bounds() -> anyhow::Result<FrontWindow> {
 /// where AX says it is.
 fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<FrontWindow> {
     let onscreen = on_screen_windows();
-    let focused = frontmost_app_pid()
-        .filter(|pid| *pid != std::process::id() as i32)
-        .and_then(|pid| super::ax::focused_window(pid).map(|(frame, title)| (pid, frame, title)));
+    let focused = frontmost_app()
+        .filter(|(pid, _)| *pid != std::process::id() as i32)
+        .and_then(|(pid, name)| {
+            super::ax::focused_window(pid).map(|(frame, title)| (pid, name, frame, title))
+        });
 
-    if let Some((pid, frame, ax_title)) = focused {
+    if let Some((pid, app_name, frame, ax_title)) = focused {
         if let Some(listed) = onscreen.iter().find(|w| w.pid == pid && w.is_at(frame)) {
             // AX has the better title for most apps but none for some, so take whichever is
             // non-empty, preferring AX: `kCGWindowName` comes back empty for full-screen
             // browser windows, which is how captures ended up labelled just "Safari".
             let title = if ax_title.trim().is_empty() { listed.title.clone() } else { ax_title };
             let (x, y, w, h) = frame;
-            return Ok(FrontWindow { x, y: y + title_bar_inset, w, h: h - title_bar_inset, title, pid });
+            return Ok(FrontWindow {
+                x,
+                y: y + title_bar_inset,
+                w,
+                h: h - title_bar_inset,
+                title,
+                pid,
+                app_name,
+            });
         }
     }
     let first = onscreen.into_iter().next().ok_or_else(|| anyhow!("no capturable window found"))?;
@@ -315,6 +344,7 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
         h: first.h - title_bar_inset,
         title: first.title,
         pid: first.pid,
+        app_name: first.owner,
     })
 }
 
@@ -326,6 +356,9 @@ struct ListedWindow {
     w: f64,
     h: f64,
     title: String,
+    /// The owning application's name, which is not the window title even when the window
+    /// list falls back to it.
+    owner: String,
 }
 
 impl ListedWindow {
@@ -340,18 +373,20 @@ impl ListedWindow {
     }
 }
 
-/// The active application, as macOS itself tracks it. `NSWorkspace` is the only source that
-/// answers this correctly on a multi-display desk; the system-wide accessibility element's
-/// `AXFocusedApplication` returns `kAXErrorCannotComplete` on current macOS even for a
-/// trusted process, so it is only a backstop.
-pub(super) fn frontmost_app_pid() -> Option<i32> {
-    let pid = objc2_app_kit::NSWorkspace::sharedWorkspace()
-        .frontmostApplication()
-        .map(|app| app.processIdentifier());
-    match pid {
-        Some(pid) if pid > 0 => Some(pid),
-        _ => super::ax::focused_app_pid(),
+/// The active application — its pid and the name macOS shows for it. `NSWorkspace` is the
+/// only source that answers this correctly on a multi-display desk; the system-wide
+/// accessibility element's `AXFocusedApplication` returns `kAXErrorCannotComplete` on current
+/// macOS even for a trusted process, so it is only a backstop (and knows no name).
+pub(super) fn frontmost_app() -> Option<(i32, String)> {
+    let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication();
+    if let Some(app) = front {
+        let pid = app.processIdentifier();
+        if pid > 0 {
+            let name = app.localizedName().map(|n| n.to_string()).unwrap_or_default();
+            return Some((pid, name));
+        }
     }
+    super::ax::focused_app_pid().map(|pid| (pid, String::new()))
 }
 
 /// Every normal, non-Glyphio window currently on screen, front to back. "On screen" is the
@@ -423,13 +458,13 @@ fn on_screen_windows() -> Vec<ListedWindow> {
             .and_then(|v| v.downcast::<CFString>())
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or(owner);
+            .unwrap_or_else(|| owner.clone());
         let pid = dict
             .find(CFString::from_static_string("kCGWindowOwnerPID"))
             .and_then(|v| v.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())
             .unwrap_or(0) as i32;
-        out.push(ListedWindow { pid, x, y, w, h, title });
+        out.push(ListedWindow { pid, x, y, w, h, title, owner });
     }
     out
 }

@@ -18,7 +18,7 @@ const state = {
   groups: [],
   settings: null,
   selected: 'all', // 'all' | 'ungrouped' | 'settings' | <groupId>
-  settingsTab: 'general',
+  settingsTab: 'capture',
   search: '',
   groupSearch: '',        // sidebar group filter
   syncStatus: null,
@@ -48,7 +48,7 @@ const KIND_HINTS = {
   command: 'Pastes the output of a shell command. Runs on this device only and never syncs.',
 };
 
-const SETTINGS_SECTIONS = [
+const CAPTURE_SECTIONS = [
   { title: 'Capture modes', fields: [
     ['enableVisibleCapture', 'toggle', 'Visible-area (current screen)'],
     ['enableSnipCapture', 'toggle', 'Region / snip (picker)'],
@@ -56,28 +56,39 @@ const SETTINGS_SECTIONS = [
     ['enableFrontWindowCapture', 'toggle', 'Frontmost window (no picker — e.g. just the browser)'],
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
-  { title: 'Edit tools', fields: [
-    ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
-    ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
+  { title: 'After a capture', hint: `Silent captures still land in history — open one from
+    <strong>Capture history</strong> to annotate it after the fact.`, fields: [
+    ['silentCapture', 'toggle', 'Capture silently — copy to the clipboard, no editor window'],
+    ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
+    ['historyEnabled', 'toggle', 'Save captures to history'],
+    ['historyMaxCount', 'number', 'Max captures kept'],
+    ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
   ]},
   // The strip composited above a capture. Called "timestamp" throughout the UI — that's what
   // it is and what people look for; the stored keys keep their original names.
-  { title: 'Timestamp', fields: [
+  { title: 'Timestamp strip', fields: [
     ['showTimestamp', 'toggle', 'Show timestamp'],
-    ['showUrl', 'toggle', 'Show window / app title'],
     ['timestampFormat', 'select', 'Timestamp format', ['device-locale', 'iso-8601', 'utc-human']],
     ['timezone', 'select', 'Timezone', timezoneOptions],
     ['locale', 'select', 'Locale', localeOptions],
     ['bannerBg', 'color', 'Background'], ['bannerFg', 'color', 'Text'],
     ['bannerMuted', 'color', 'Muted text'],
   ]},
-  { title: 'History & downloads', fields: [
-    ['historyEnabled', 'toggle', 'Save captures to history'],
-    ['historyMaxCount', 'number', 'Max captures kept'],
-    ['autoCopyOnOpen', 'toggle', 'Auto-copy on capture'],
-    ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
+  { title: 'Details on the capture', hint: `What else the strip says about what you captured.
+    The page details come from the browser and are recorded for the modes that target one
+    window — <em>frontmost window</em>, <em>browser page</em> and <em>scrolling page</em>; a
+    picked region has no single window to ask. They are off by default: a URL or a profile
+    name baked into a screenshot travels with it wherever you paste it.`, fields: [
+    ['showWindowTitle', 'toggle', 'Window / app title'],
+    ['showPageTitle', 'toggle', 'Page title'],
+    ['showPageUrl', 'toggle', 'Page address (URL)'],
+    ['showBrowserProfile', 'toggle', 'Browser profile'],
   ]},
-  { title: 'Global hotkeys (e.g. Alt+Shift+S)', fields: [
+  { title: 'Edit tools', fields: [
+    ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
+    ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
+  ]},
+  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', fields: [
     ['shortcutCaptureFull', 'text', 'Capture full window'],
     ['shortcutCaptureVisible', 'text', 'Capture visible area'],
     ['shortcutCaptureSnip', 'text', 'Capture region (snip)'],
@@ -85,7 +96,12 @@ const SETTINGS_SECTIONS = [
     ['shortcutCapturePage', 'text', 'Capture browser page (content only)'],
     ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
     ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
-    ['shortcutOpenHistory', 'text', 'Open history'],
+    ['shortcutOpenHistory', 'text', 'Open capture history'],
+  ]},
+];
+
+const SNIPPET_SECTIONS = [
+  { title: 'Hotkeys', fields: [
     ['shortcutOpenPalette', 'text', 'Snippet search (Spotlight-style)'],
   ]},
 ];
@@ -481,6 +497,18 @@ async function renderHistory(main) {
   for (const item of items) grid.appendChild(historyCard(item, () => renderHistory(main)));
 }
 
+/// What a stored capture tells its banner. Rows saved before the browser fields existed have
+/// only the window title, under its original `url` name.
+function bannerMeta(item) {
+  return {
+    capturedAt: item.capturedAt,
+    windowTitle: item.title || item.url || '',
+    pageTitle: item.pageTitle || '',
+    pageUrl: item.pageUrl || '',
+    profile: item.profile || '',
+  };
+}
+
 // Exportable PNG for a history row. New-format rows store content-only pixels, so the
 // banner (timestamp from the original capturedAt + title + note) is composited here when
 // enabled; legacy rows already contain it.
@@ -491,7 +519,7 @@ async function exportDataUrl(item) {
   const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
   const cvs = document.createElement('canvas');
   compositeBanner(cvs, bmp, {
-    meta: { capturedAt: item.capturedAt, url: item.url || '', targetFrameUrl: '', dpr: item.dpr || 1 },
+    meta: { ...bannerMeta(item), dpr: item.dpr || 1 },
     settings,
     note: item.note || '',
     enabled: true,
@@ -514,7 +542,7 @@ async function bannerizeThumb(item, img) {
   const ratio = item.imageWidthPx ? thumb.naturalWidth / item.imageWidthPx : 1;
   const cvs = document.createElement('canvas');
   compositeBanner(cvs, thumb, {
-    meta: { capturedAt: item.capturedAt, url: item.url || '', targetFrameUrl: '', dpr: (item.dpr || 1) * ratio },
+    meta: { ...bannerMeta(item), dpr: (item.dpr || 1) * ratio },
     settings,
     note: item.note || '',
     enabled: true,
@@ -1984,7 +2012,7 @@ async function wireSync() {
 }
 
 const SETTINGS_TABS = [
-  ['general', 'General'],
+  ['capture', 'Capture'],
   ['snippets', 'Snippets'],
   ['sync', 'Sync'],
   ['permissions', 'Permissions'],
@@ -2008,15 +2036,17 @@ function renderSettings(main) {
     case 'sync': renderSyncSection(form); break;
     case 'permissions': renderPermissionsTab(form); break;
     case 'about': renderAboutTab(form); break;
-    default: renderGeneralTab(form);
+    default: renderSections(form, CAPTURE_SECTIONS);
   }
 }
 
-function renderGeneralTab(form) {
-  for (const sec of SETTINGS_SECTIONS) {
+/// Render setting sections plus the Save button they share. Every input carries its key, so
+/// `saveSettings` collects whatever is on screen.
+function renderSections(form, sections) {
+  for (const sec of sections) {
     const div = document.createElement('div');
     div.className = 'form-section';
-    div.innerHTML = `<h3>${sec.title}</h3>`;
+    div.innerHTML = `<h3>${sec.title}</h3>${sec.hint ? `<p class="adv-hint">${sec.hint}</p>` : ''}`;
     for (const [key, type, label, opts] of sec.fields) div.append(renderField(key, type, label, opts));
     form.append(div);
   }
@@ -2043,6 +2073,7 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
+  renderSections(form, SNIPPET_SECTIONS);
 }
 
 function renderPermissionsTab(form) {

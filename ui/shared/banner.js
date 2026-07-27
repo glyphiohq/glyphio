@@ -5,43 +5,59 @@
 
 import { config } from '../config.js';
 
-function showFrameUrlLine(settings, meta) {
-  return settings.showTargetFrameUrl
-    && meta.targetFrameUrl
-    && meta.targetFrameUrl !== meta.url;
+/**
+ * The banner's lines, top to bottom, for one capture. Everything downstream — the height the
+ * strip needs, what gets drawn, whether there is a strip at all — reads this one list, so a
+ * line can never be measured and not drawn (or the reverse).
+ *
+ * `meta` carries what the capture knows about itself:
+ *   windowTitle  the window/app title, for any capture
+ *   pageTitle    the page's own title, from the browser
+ *   pageUrl      the address, from the browser
+ *   profile      the browser profile the window belongs to
+ * Everything but the timestamp is opt-in, and a line whose value is missing — a snipped
+ * region has no window, a text editor has no URL — is simply not there. Reserving space for
+ * it would leave an empty band under the timestamp.
+ */
+function bannerLines(settings, meta, note) {
+  const lines = [];
+  const value = (key) => (meta[key] || '').trim();
+  const windowTitle = value('windowTitle');
+  const pageTitle = value('pageTitle');
+
+  if (settings.showTimestamp) lines.push({ role: 'timestamp' });
+  if (settings.showPageTitle && pageTitle) lines.push({ role: 'muted', text: pageTitle });
+  // A browser's window title is the page's title with the browser's name (and profile) after
+  // it. With the page title already on its own line, repeating it says the same thing twice.
+  const titleIsRedundant = settings.showPageTitle && pageTitle && windowTitle.startsWith(pageTitle);
+  if (settings.showWindowTitle && windowTitle && !titleIsRedundant) {
+    lines.push({ role: 'muted', text: windowTitle });
+  }
+  if (settings.showPageUrl && value('pageUrl')) lines.push({ role: 'muted', text: value('pageUrl') });
+  if (settings.showBrowserProfile && value('profile')) {
+    lines.push({ role: 'muted', text: `Profile: ${value('profile')}` });
+  }
+  if (note) lines.push({ role: 'note', text: note });
+  return lines;
 }
 
-// A capture with no window title (a snipped region is the common one) has nothing to put on
-// the URL line — reserving it would leave an empty band under the timestamp.
-function showUrlLine(settings, meta) {
-  return Boolean(settings.showUrl && (meta.url || '').trim());
+/** CSS px of a line's text, by role. */
+function lineHeight(role) {
+  const b = config.banner;
+  if (role === 'timestamp') return b.timestampFontPx;
+  return role === 'note' ? b.noteFontPx : b.urlFontPx;
 }
 
 export function hasAnyBannerContent(settings, meta, note) {
-  return Boolean(settings.showTimestamp || showUrlLine(settings, meta) || showFrameUrlLine(settings, meta) || note);
+  return bannerLines(settings, meta, note).length > 0;
 }
 
 export function computeBannerCssHeight(settings, meta, note) {
-  if (!hasAnyBannerContent(settings, meta, note)) return 0;
+  const lines = bannerLines(settings, meta, note);
+  if (!lines.length) return 0;
   const b = config.banner;
-  const url = showUrlLine(settings, meta);
-  const frame = showFrameUrlLine(settings, meta);
-  let h = b.paddingPx;
-  if (settings.showTimestamp) h += b.timestampFontPx;
-  if (url) {
-    if (settings.showTimestamp) h += b.lineGapPx;
-    h += b.urlFontPx;
-  }
-  if (frame) {
-    if (settings.showTimestamp || url) h += b.lineGapPx;
-    h += b.urlFontPx;
-  }
-  if (note) {
-    if (settings.showTimestamp || url || frame) h += b.lineGapPx;
-    h += b.noteFontPx;
-  }
-  h += b.paddingPx;
-  return h;
+  const text = lines.reduce((h, line) => h + lineHeight(line.role), 0);
+  return b.paddingPx * 2 + text + b.lineGapPx * (lines.length - 1);
 }
 
 /**
@@ -179,69 +195,38 @@ function truncateToWidth(ctx, text, maxW) {
 function drawBannerLines(ctx, canvasWidth, scale, settings, meta, note) {
   const b = config.banner;
   ctx.textBaseline = 'top';
-  let y = b.paddingPx * scale;
-  let prevLineExists = false;
+  const x = b.paddingPx * scale;
+  const avail = canvasWidth - 2 * x;
+  let y = x;
 
-  const avail = canvasWidth - 2 * b.paddingPx * scale;
-
-  if (settings.showTimestamp) {
-    // fitTimestamp picks the variant/size that fits and leaves it set on the context.
-    const text = fitTimestamp(
-      ctx,
-      timestampVariants(meta.capturedAt, settings),
-      avail,
-      b.timestampFontPx * scale,
-      b.fontFamily,
-      scale,
-    );
-    ctx.fillStyle = settings.bannerFg;
-    ctx.fillText(text, b.paddingPx * scale, y);
-    y += b.timestampFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (showUrlLine(settings, meta)) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.urlFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerMuted;
-    ctx.fillText(
-      truncateToWidth(ctx, meta.url || '', canvasWidth - 2 * b.paddingPx * scale),
-      b.paddingPx * scale,
-      y
-    );
-    y += b.urlFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (showFrameUrlLine(settings, meta)) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.urlFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerMuted;
-    ctx.fillText(
-      `↳ ${truncateToWidth(ctx, meta.targetFrameUrl, canvasWidth - 2 * b.paddingPx * scale - 20)}`,
-      b.paddingPx * scale,
-      y
-    );
-    y += b.urlFontPx * scale;
-    prevLineExists = true;
-  }
-
-  if (note) {
-    if (prevLineExists) y += b.lineGapPx * scale;
-    ctx.font = `${b.noteFontPx * scale}px ${b.fontFamily}`;
-    ctx.fillStyle = settings.bannerFg;
-    ctx.fillText(
-      truncateToWidth(ctx, note, canvasWidth - 2 * b.paddingPx * scale),
-      b.paddingPx * scale,
-      y
-    );
+  for (const line of bannerLines(settings, meta, note)) {
+    if (y > x) y += b.lineGapPx * scale;
+    if (line.role === 'timestamp') {
+      // fitTimestamp picks the variant/size that fits and leaves it set on the context.
+      const text = fitTimestamp(
+        ctx,
+        timestampVariants(meta.capturedAt, settings),
+        avail,
+        b.timestampFontPx * scale,
+        b.fontFamily,
+        scale,
+      );
+      ctx.fillStyle = settings.bannerFg;
+      ctx.fillText(text, x, y);
+    } else {
+      ctx.font = `${lineHeight(line.role) * scale}px ${b.fontFamily}`;
+      ctx.fillStyle = line.role === 'note' ? settings.bannerFg : settings.bannerMuted;
+      ctx.fillText(truncateToWidth(ctx, line.text, avail), x, y);
+    }
+    y += lineHeight(line.role) * scale;
   }
 }
 
 /**
  * Composite `content` (a canvas or ImageBitmap) onto `target`, with the banner above it
  * when `enabled` and there is anything to show. Returns the banner height in pixels.
- * `meta` needs { capturedAt, url, targetFrameUrl?, dpr }.
+ * `meta` needs { capturedAt, dpr } plus whichever of the fields in `bannerLines` the
+ * capture knows.
  */
 export function compositeBanner(target, content, { meta, settings, note = '', enabled = true }) {
   const scale = meta.dpr || 1;

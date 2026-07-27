@@ -22,6 +22,14 @@ pub struct CaptureMeta {
     pub captured_at: String,
     pub url: String,   // window/app title natively
     pub title: String,
+    /// What the browser said about the page, when the capture targeted one window and the
+    /// user asked for it. Kept per row so the banner renders the same months later.
+    #[serde(default)]
+    pub page_title: String,
+    #[serde(default)]
+    pub page_url: String,
+    #[serde(default)]
+    pub profile: String,
     pub mode: String,  // "visible" | "snip" | "fullWindow"
     pub image_width_px: i64,
     pub image_height_px: i64,
@@ -46,6 +54,12 @@ pub struct CaptureMeta {
 pub struct NewCapture {
     pub url: String,
     pub title: String,
+    #[serde(default)]
+    pub page_title: String,
+    #[serde(default)]
+    pub page_url: String,
+    #[serde(default)]
+    pub profile: String,
     pub mode: String,
     pub image_width_px: i64,
     pub image_height_px: i64,
@@ -91,7 +105,10 @@ CREATE TABLE IF NOT EXISTS captures (
     size_bytes      INTEGER NOT NULL,
     note            TEXT NOT NULL DEFAULT '',
     banner_enabled  INTEGER NOT NULL DEFAULT 1,
-    banner_baked    INTEGER NOT NULL DEFAULT 0
+    banner_baked    INTEGER NOT NULL DEFAULT 0,
+    page_title      TEXT NOT NULL DEFAULT '',
+    page_url        TEXT NOT NULL DEFAULT '',
+    profile         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_captures_captured_at ON captures(captured_at DESC);
 "#;
@@ -102,10 +119,14 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE captures ADD COLUMN note TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE captures ADD COLUMN banner_enabled INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE captures ADD COLUMN banner_baked INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE captures ADD COLUMN page_title TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE captures ADD COLUMN page_url TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE captures ADD COLUMN profile TEXT NOT NULL DEFAULT ''",
 ];
 
 const COLUMNS: &str = "id, captured_at, url, title, mode, image_width_px, image_height_px, \
-                       dpr, size_bytes, full_path, thumb_path, note, banner_enabled, banner_baked";
+                       dpr, size_bytes, full_path, thumb_path, note, banner_enabled, \
+                       banner_baked, page_title, page_url, profile";
 
 impl HistoryStore {
     pub fn open(paths: &AppPaths) -> anyhow::Result<Self> {
@@ -155,6 +176,9 @@ impl HistoryStore {
             captured_at,
             url: meta.url,
             title: meta.title,
+            page_title: meta.page_title,
+            page_url: meta.page_url,
+            profile: meta.profile,
             mode: meta.mode,
             image_width_px: meta.image_width_px,
             image_height_px: meta.image_height_px,
@@ -171,13 +195,14 @@ impl HistoryStore {
             conn.execute(
                 "INSERT INTO captures (id, captured_at, url, title, mode, image_width_px,
                     image_height_px, dpr, full_path, thumb_path, size_bytes,
-                    note, banner_enabled, banner_baked)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0)",
+                    note, banner_enabled, banner_baked, page_title, page_url, profile)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,?16)",
                 rusqlite::params![
                     row.id, row.captured_at, row.url, row.title, row.mode,
                     row.image_width_px, row.image_height_px, row.dpr,
                     row.full_path, row.thumb_path, row.size_bytes,
                     row.note, row.banner_enabled,
+                    row.page_title, row.page_url, row.profile,
                 ],
             )?;
         }
@@ -312,5 +337,8 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<CaptureMeta> {
         note: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
         banner_enabled: row.get::<_, Option<bool>>(12)?.unwrap_or(true),
         banner_baked: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
+        page_title: row.get::<_, Option<String>>(14)?.unwrap_or_default(),
+        page_url: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
+        profile: row.get::<_, Option<String>>(16)?.unwrap_or_default(),
     })
 }

@@ -101,6 +101,9 @@ fn load_geometry(app: &AppHandle, label: &str) -> Option<Geometry> {
 /// Record a window's current frame. Called while the window still exists (close *request*,
 /// app exit) — after destruction there's nothing left to measure.
 pub fn save_geometry(app: &AppHandle, label: &str) {
+    if label == SILENT_EDITOR {
+        return; // never shown, so its frame is nobody's preference
+    }
     let Some(win) = app.get_webview_window(label) else { return };
     // A full-screen or minimized frame is not what the user wants back on next launch.
     if win.is_fullscreen().unwrap_or(false) || win.is_minimized().unwrap_or(false) {
@@ -264,6 +267,55 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         refocus_shortly(app, name);
     }
     Ok(())
+}
+
+/// The window that runs a silent capture: the editor page, never shown.
+pub const SILENT_EDITOR: &str = "editor-silent";
+
+/// Park the silent-capture worker: the editor page, invisible, with no capture to work on
+/// yet. It sits there until a capture is handed to it by [`run_silent_capture`].
+///
+/// A window rather than a background thread because everything a capture needs after the
+/// pixels — the banner, the PNG encoding, the thumbnail — is canvas work that lives in the
+/// page, and doing it twice in two languages is how the two would drift apart.
+///
+/// It is parked in advance, and kept, because *creating* a window activates the application
+/// even when the window is invisible: with Settings open behind, a silent capture would jump
+/// Glyphio in front of whatever was being captured. Parking moves that one activation to a
+/// moment the user is already looking at Glyphio — launch, or switching the setting on — and
+/// every capture after it only reloads a window that already exists.
+pub fn ensure_silent_editor(app: &AppHandle) -> anyhow::Result<()> {
+    if app.get_webview_window(SILENT_EDITOR).is_some() {
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        app,
+        SILENT_EDITOR,
+        WebviewUrl::App("editor/index.html?silent=1".into()),
+    )
+    .title("Glyphio")
+    .inner_size(900.0, 700.0)
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .build()?;
+    Ok(())
+}
+
+/// Hand the pending capture to the parked worker. Reloading is what starts it: the page pulls
+/// the capture at load, exactly as the visible editor does.
+pub fn run_silent_capture(app: &AppHandle) -> anyhow::Result<()> {
+    match app.get_webview_window(SILENT_EDITOR) {
+        Some(win) => win.eval("window.location.reload()").map_err(Into::into),
+        None => ensure_silent_editor(app),
+    }
+}
+
+/// Send the worker away — silent capture has been switched off.
+pub fn close_silent_editor(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(SILENT_EDITOR) {
+        let _ = win.close();
+    }
 }
 
 /// Open a bridge-driven surface (`popup` | `form`). Always recreated (never focused-in-place):

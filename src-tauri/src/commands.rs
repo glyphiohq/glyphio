@@ -175,9 +175,20 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
     settings.save(&state.paths.settings_json).map_err(err)?;
+    let silent = settings.silent_capture;
     *state.settings.lock().unwrap() = settings;
     // Re-register global hotkeys so shortcut edits take effect immediately.
     crate::shortcuts::register(&app).map_err(err)?;
+    // Park (or dismiss) the silent-capture worker now, while the user is looking at this
+    // window — creating it during a capture would pull Glyphio in front of what they're
+    // capturing. See `windows::ensure_silent_editor`.
+    if silent {
+        if let Err(e) = crate::windows::ensure_silent_editor(&app) {
+            log::warn!("could not park the silent capture worker: {e}");
+        }
+    } else {
+        crate::windows::close_silent_editor(&app);
+    }
     Ok(())
 }
 
@@ -583,6 +594,21 @@ pub fn form_cancel(app: AppHandle, state: State<AppState>, request_id: String) {
 #[tauri::command]
 pub fn take_pending_capture(app: AppHandle) -> Option<crate::capture::PendingCapture> {
     app.state::<AppState>().pending_capture.lock().unwrap().take()
+}
+
+/// A silent capture is finished with. Tell the user something happened — a capture with no
+/// window of its own is otherwise indistinguishable from a hotkey that didn't fire. Failures
+/// get the same dialog as any other capture; there is no editor left open to notice them in.
+///
+/// The worker window stays parked for the next one (see `windows::ensure_silent_editor`).
+#[tauri::command]
+pub fn capture_done_silently(app: AppHandle, error: Option<String>) {
+    match error {
+        Some(message) => {
+            crate::capture::report_failure(&app, "silent capture", &anyhow::anyhow!(message))
+        }
+        None => crate::tray::flash_captured(&app),
+    }
 }
 
 fn strip_data_url(s: &str) -> &str {

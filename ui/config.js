@@ -128,8 +128,8 @@ export const config = {
     timezone: 'device',
     /** 'device' or BCP-47 tag such as 'en-GB'. */
     locale: 'device',
-    /** Render URL line under the timestamp in the banner. */
-    showUrl: true,
+    /** Render the window/app title under the timestamp in the banner. */
+    showWindowTitle: true,
     /** Colours are hex strings. Defaults tuned for legibility on light screens. */
     backgroundColor: '#1f2937',
     foregroundColor: '#ffffff',
@@ -216,8 +216,12 @@ export const userSettingsShape = {
   timestampFormat: config.banner.timestampFormat,
   timezone: config.banner.timezone,
   locale: config.banner.locale,
-  showUrl: config.banner.showUrl,
-  showTargetFrameUrl: false,
+  showWindowTitle: config.banner.showWindowTitle,
+  // What the browser knows about the page. Off by default: a URL or a profile name baked
+  // into a screenshot travels with it wherever it's pasted.
+  showPageTitle: false,
+  showPageUrl: false,
+  showBrowserProfile: false,
   bannerBg: config.banner.backgroundColor,
   bannerFg: config.banner.foregroundColor,
   bannerMuted: config.banner.mutedColor,
@@ -226,6 +230,7 @@ export const userSettingsShape = {
   filenamePrefix: config.download.filenamePrefix,
   // Workflow
   autoCopyOnOpen: true,
+  silentCapture: false,
   // History
   historyEnabled: true,
   // Preview-page keyboard shortcuts

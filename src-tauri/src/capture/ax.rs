@@ -21,6 +21,7 @@ use core_foundation::array::{CFArray, CFArrayGetTypeID, CFArrayRef};
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::url::CFURL;
 use core_graphics::geometry::{CGPoint, CGSize};
 
 type AXUIElementRef = CFTypeRef;
@@ -242,6 +243,122 @@ pub(super) fn focused_window(pid: i32) -> Option<((f64, f64, f64, f64), String)>
     Some((frame, title))
 }
 
+/// What the browser will tell us about the page in its front window. Empty strings mean
+/// "didn't say" — no field is ever guessed.
+#[derive(Debug, Default, Clone)]
+pub struct BrowserMeta {
+    /// The page's own title, without the browser and profile the window title adds.
+    pub page_title: String,
+    pub url: String,
+    /// Chromium's profile name, present in the window title only while more than one profile
+    /// is in use — which is exactly when it's worth showing.
+    pub profile: String,
+}
+
+impl BrowserMeta {
+    pub fn is_empty(&self) -> bool {
+        self.page_title.is_empty() && self.url.is_empty() && self.profile.is_empty()
+    }
+}
+
+/// Ask `pid`'s front window what page it is showing. `app_name` is the application's
+/// localized name ("Google Chrome"), the key to reading its window title.
+///
+/// Deliberately passive: it reads what the app already publishes and never switches an
+/// accessibility tree on. Chromium answers in full without one — the window's `AXDocument`
+/// is the URL and its title carries page and profile — Safari builds its web tree natively,
+/// and the page-capture modes have already opted their browser in by the time they call
+/// here. So no browser is made to work harder because a banner line is switched on, and a
+/// non-browser simply returns nothing.
+pub(super) fn browser_meta(pid: i32, app_name: &str) -> BrowserMeta {
+    let mut meta = BrowserMeta::default();
+    if pid <= 0 {
+        return meta;
+    }
+    let app = unsafe { AXUIElementCreateApplication(pid) };
+    if app.is_null() {
+        return meta;
+    }
+    let app = unsafe { CFType::wrap_under_create_rule(app) };
+    let Some(window) = copy_attr(&app, "AXFocusedWindow").or_else(|| copy_attr(&app, "AXMainWindow"))
+    else {
+        return meta;
+    };
+
+    let window_title = string_attr(&window, "AXTitle").unwrap_or_default();
+    // Chromium publishes the address on the window itself, which is why it answers in full
+    // without its web tree being built. Only an http(s) address means "this is a page":
+    // document apps publish a file path here too — a terminal offers its working directory —
+    // and a screenshot of a terminal has no page for the banner to talk about.
+    let mut page_title = String::new();
+    if let Some(doc) = string_attr(&window, "AXDocument").filter(|d| is_web_address(d)) {
+        meta.url = doc;
+    } else {
+        // Safari has no AXDocument; its web area has the URL, and the page title lands in
+        // AXDescription rather than AXTitle. No web area means no page, and no meta.
+        let Some(web) = find_web_area(window) else { return meta };
+        meta.url = copy_attr(&web, "AXURL")
+            .and_then(|v| v.downcast::<CFURL>())
+            .map(|u| u.get_string().to_string())
+            .unwrap_or_default();
+        page_title = string_attr(&web, "AXTitle")
+            .or_else(|| string_attr(&web, "AXDescription"))
+            .unwrap_or_default();
+    }
+
+    let (from_window, profile) = split_window_title(&window_title, app_name);
+    meta.page_title = if page_title.is_empty() { from_window.to_string() } else { page_title };
+    meta.profile = profile.unwrap_or_default().to_string();
+    meta
+}
+
+/// Is this the address of a web page, as opposed to a file the window happens to be about?
+fn is_web_address(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// Split a window title into the page and, where the browser appends one, the profile.
+///
+/// Chromium writes `"<page> - <browser> - <profile>"`, dropping the profile while only one is
+/// in use; Firefox uses an em dash and no profile; Safari titles are the page alone. The
+/// browser's own segment is matched loosely because the two names need not agree: macOS calls
+/// it "Firefox", its windows say "Mozilla Firefox". Anything that doesn't name the app is
+/// returned untouched — a non-browser window has no page part to find, and inventing one
+/// would put a truncated title on the banner.
+fn split_window_title<'a>(title: &'a str, app_name: &str) -> (&'a str, Option<&'a str>) {
+    const SEPARATORS: [&str; 3] = [" - ", " — ", " – "];
+    let title = title.trim();
+    if app_name.is_empty() {
+        return (title, None);
+    }
+    for sep in SEPARATORS {
+        // The last segment that names the browser wins: a page whose own title mentions the
+        // browser is the page's business, and the suffix comes after it.
+        let app_segment = title.rmatch_indices(sep).find(|(at, _)| {
+            let start = at + sep.len();
+            let end = title[start..].find(sep).map_or(title.len(), |i| start + i);
+            title[start..end].contains(app_name)
+        });
+        let Some((at, _)) = app_segment else { continue };
+        let page = title[..at].trim();
+        let after_app = at + sep.len();
+        let rest = title[after_app..].find(sep).map_or("", |i| title[after_app + i..].trim());
+        let profile = rest.strip_prefix(sep.trim()).map(str::trim).filter(|p| !p.is_empty());
+        if page.is_empty() && profile.is_none() {
+            continue; // the title is just the app name — nothing gained by splitting it
+        }
+        return (page, profile);
+    }
+    (title, None)
+}
+
+fn string_attr(el: &CFType, name: &str) -> Option<String> {
+    copy_attr(el, name)?
+        .downcast::<CFString>()
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
+}
+
 fn set_bool(el: &CFType, name: &str, value: bool) {
     let attr = CFString::new(name);
     let value = if value { CFBoolean::true_value() } else { CFBoolean::false_value() };
@@ -322,6 +439,46 @@ fn children(el: &CFType) -> Vec<CFType> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_window_title;
+
+    /// Real window titles, as read off this desk: Chrome with two profiles signed in, Chrome
+    /// with one, Safari (page title alone), and Firefox's em dash.
+    #[test]
+    fn a_window_title_gives_up_its_page_and_profile() {
+        assert_eq!(
+            split_window_title("New Tab - Google Chrome - Asad (GaTech)", "Google Chrome"),
+            ("New Tab", Some("Asad (GaTech)")),
+        );
+        assert_eq!(
+            split_window_title("OMSCS Resources - Google Chrome", "Google Chrome"),
+            ("OMSCS Resources", None),
+        );
+        assert_eq!(
+            split_window_title("SVG Design Creation", "Safari"),
+            ("SVG Design Creation", None),
+        );
+        assert_eq!(
+            split_window_title("Bugzilla — Mozilla Firefox", "Firefox"),
+            ("Bugzilla", None),
+        );
+    }
+
+    #[test]
+    fn a_title_that_isnt_a_browsers_survives_intact() {
+        // No app name in it: a document window, and a page that merely mentions the browser.
+        assert_eq!(split_window_title("notes.md — Edited", "Zed"), ("notes.md — Edited", None));
+        assert_eq!(
+            split_window_title("How to quit Google Chrome - Google Chrome", "Google Chrome"),
+            ("How to quit Google Chrome", None),
+        );
+        // The window title IS the app name (an empty new window) — nothing to split off.
+        assert_eq!(split_window_title("Google Chrome", "Google Chrome"), ("Google Chrome", None));
+        assert_eq!(split_window_title("Slack | general", ""), ("Slack | general", None));
+    }
 }
 
 fn bounds(el: &CFType) -> Option<(f64, f64, f64, f64)> {

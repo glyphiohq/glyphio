@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 /// run a short 3-frame scroll loop, saving PNGs next to the report for inspection.
 pub fn page_probe(capture: bool) {
     println!("accessibility trusted: {}", super::scroll::app_accessibility_trusted());
-    println!("frontmost app pid: {:?}", super::backend::frontmost_app_pid());
+    println!("frontmost app: {:?}", super::backend::frontmost_app());
 
     let t = Instant::now();
     let win = match super::backend::frontmost_window_bounds() {
@@ -19,9 +19,12 @@ pub fn page_probe(capture: bool) {
         }
     };
     println!(
-        "front window: '{}' pid={} rect=({}, {}) {}x{} [{:?}]",
-        win.title, win.pid, win.x, win.y, win.w, win.h, t.elapsed()
+        "front window: '{}' pid={} app='{}' rect=({}, {}) {}x{} [{:?}]",
+        win.title, win.pid, win.app_name, win.x, win.y, win.w, win.h, t.elapsed()
     );
+
+    let t = Instant::now();
+    println!("browser meta: {:?} [{:?}]", win.browser_meta(), t.elapsed());
 
     let t = Instant::now();
     match super::ax::page_geometry(win.pid, Duration::from_millis(3000)) {

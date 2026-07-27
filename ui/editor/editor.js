@@ -69,6 +69,9 @@ const canvasWrap = document.getElementById('canvas-wrap');
 const urlParams = new URLSearchParams(location.search);
 const historyId = urlParams.get('history') || '';
 const isHistoryMode = Boolean(historyId);
+// Silent capture: this page is running in a window that is never shown. It composites,
+// copies, saves to history and reports back — see `windows::open_silent_editor`.
+const isSilent = urlParams.get('silent') === '1';
 
 // --- State ---------------------------------------------------------------
 
@@ -96,7 +99,12 @@ let ocrModeActive = false;
 let ocrLines = [];          // recognized lines of the current OCR pass ({text,x,y,w,h})
 
 fillIcons();
-init().catch((err) => setStatus(err.message, 'err'));
+init().catch((err) => {
+  // A silent capture has no window to show an error in — hand it back to the app, which
+  // reports it the same way any other failed capture is reported.
+  if (isSilent) reportSilent(err.message || String(err));
+  else setStatus(err.message, 'err');
+});
 
 // Populate every [data-ico] control from the shared icon set. Icon-only buttons (.iconbtn)
 // get the glyph alone; menu items keep their text label with the glyph in front.
@@ -114,8 +122,20 @@ function fillIcons() {
 async function init() {
   settings = await loadSettings();
   renderShortcutHint();
-  await loadPayload();
-  document.title = `${config.name} — ${meta.title || meta.url}`;
+  // The silent worker is parked in this page ahead of time, so on load there is usually no
+  // capture waiting: it sits idle until a capture reloads it. See `ensure_silent_editor`.
+  if (isSilent && !(await loadPayload({ optional: true }))) return;
+  if (!isSilent) await loadPayload();
+  document.title = `${config.name} — ${meta.title || meta.windowTitle}`;
+
+  if (isSilent) {
+    await render({ autoCopy: false });
+    await writeBlobToClipboard(currentBlob);
+    await saveToHistoryOnce();
+    reportSilent(null);
+    releaseCapture();
+    return;
+  }
 
   if (isHistoryMode) {
     savedId = historyId;
@@ -147,7 +167,18 @@ async function loadSettings() {
   return resolveSettings(stored);
 }
 
-async function loadPayload() {
+// Tell the app the silent capture is over; it closes this window and either acknowledges the
+// capture in the menu bar or shows the error. Best-effort: if the call itself fails there is
+// nothing left to try, and the window has a watchdog behind it.
+function reportSilent(error) {
+  invoke('capture_done_silently', { error }).catch((e) => console.error('silent report failed', e));
+}
+
+/**
+ * Load the capture this page is for. Returns false only when `optional` and there is nothing
+ * pending — the parked silent worker's normal state between captures.
+ */
+async function loadPayload({ optional = false } = {}) {
   if (isHistoryMode) {
     const list = await invoke('list_captures');
     const row = list.find((c) => c.id === historyId);
@@ -158,10 +189,12 @@ async function loadPayload() {
     meta = {
       id: row.id,
       capturedAt: row.capturedAt,
-      url: row.url,
+      windowTitle: row.title || row.url,
+      pageTitle: row.pageTitle || '',
+      pageUrl: row.pageUrl || '',
+      profile: row.profile || '',
       title: row.title,
       mode: row.mode,
-      targetFrameUrl: '',
       imageWidthPx: row.imageWidthPx,
       imageHeightPx: row.imageHeightPx,
       dpr: row.dpr || 1,
@@ -173,14 +206,17 @@ async function loadPayload() {
   } else {
     const p = await invoke('take_pending_capture');
     if (!p) {
+      if (optional) return false;
       throw new Error('No pending capture. Trigger a capture from the tray or a hotkey.');
     }
     meta = {
       capturedAt: p.capturedAt,
-      url: p.title,
+      windowTitle: p.title,
+      pageTitle: p.pageTitle || '',
+      pageUrl: p.pageUrl || '',
+      profile: p.profile || '',
       title: p.title,
       mode: p.mode,
-      targetFrameUrl: '',
       imageWidthPx: p.width,
       imageHeightPx: p.height,
       dpr: p.dpr || 1,
@@ -189,7 +225,18 @@ async function loadPayload() {
     await setContentFromBlob(await dataUrlToBlob(p.pngDataUrl));
   }
   const modeLabel = isHistoryMode ? `history · ${meta.mode}` : meta.mode;
-  metaLineEl.textContent = `${modeLabel} · ${meta.imageWidthPx}×${meta.imageHeightPx}px · ${meta.url}`;
+  metaLineEl.textContent =
+    `${modeLabel} · ${meta.imageWidthPx}×${meta.imageHeightPx}px · ${meta.pageUrl || meta.windowTitle}`;
+  return true;
+}
+
+// Drop a finished silent capture. The worker window stays parked for the next one, and a
+// stitched page can be tens of megabytes of canvas — not something to sit on until then.
+function releaseCapture() {
+  contentCanvas = null;
+  contentCtx = null;
+  currentBlob = null;
+  canvas.width = canvas.height = 0;
 }
 
 // Decode a PNG blob into the content canvas (detached; the visible canvas composites it).
@@ -1525,8 +1572,11 @@ async function saveToHistoryOnce() {
     const thumbDataUrl = await makeThumbnailDataUrl(contentBlob, 320);
     const row = await invoke('save_capture', {
       meta: {
-        url: meta.url || '',
+        url: meta.windowTitle || '',
         title: meta.title || '',
+        pageTitle: meta.pageTitle || '',
+        pageUrl: meta.pageUrl || '',
+        profile: meta.profile || '',
         mode: meta.mode || '',
         imageWidthPx: contentCanvas.width,
         imageHeightPx: contentCanvas.height,

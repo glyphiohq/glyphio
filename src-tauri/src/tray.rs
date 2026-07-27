@@ -5,6 +5,26 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
 
+const TRAY_ID: &str = "glyphio-tray";
+
+/// Acknowledge a capture that opened no window: a checkmark beside the menu-bar icon for a
+/// moment. Silent captures need *some* answer — a shortcut that copies to the clipboard and
+/// shows nothing is indistinguishable from one that didn't fire.
+pub fn flash_captured(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
+    let _ = tray.set_title(Some("✓"));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let inner = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(tray) = inner.tray_by_id(TRAY_ID) {
+                let _ = tray.set_title(None::<&str>);
+            }
+        });
+    });
+}
+
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let cap_visible = MenuItem::with_id(app, "cap_visible", "Capture Visible Area", true, None::<&str>)?;
     let cap_snip = MenuItem::with_id(app, "cap_snip", "Capture Region (Snip)", true, None::<&str>)?;
@@ -35,7 +55,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let mut builder = TrayIconBuilder::with_id("glyphio-tray")
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Glyphio")
         .on_menu_event(|app, event| {

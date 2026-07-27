@@ -142,6 +142,14 @@ pub fn run() {
             // Show the settings/snippets window on launch — which also flips us to a regular,
             // Dock-visible app for as long as it's open (see windows::sync_activation_policy).
             windows::open(app.handle(), "settings")?;
+
+            // Park the silent-capture worker while we're launching anyway: creating its
+            // window activates the app, and a capture is the wrong moment for that.
+            if app.state::<AppState>().settings.lock().unwrap().silent_capture {
+                if let Err(e) = windows::ensure_silent_editor(app.handle()) {
+                    log::warn!("could not park the silent capture worker: {e}");
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -176,6 +184,7 @@ pub fn run() {
             commands::open_history_view,
             commands::open_capture,
             commands::take_pending_capture,
+            commands::capture_done_silently,
             commands::take_pending_payload,
             commands::form_submit,
             commands::form_cancel,

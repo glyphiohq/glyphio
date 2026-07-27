@@ -81,13 +81,54 @@ pub(crate) fn wants_browser_details(app: &AppHandle) -> bool {
     app.state::<AppState>().settings.lock().unwrap().wants_browser_details()
 }
 
+/// Where a capture goes once it has been taken.
+///
+/// Every way of starting a capture can say which it wants, so "take this one straight to the
+/// clipboard" is a thing you do, not only a mode you switch the app into: the tray's second
+/// capture menu, ⌘↩ in the palette, and a hotkey of its own per mode. `None` at a call site
+/// means "however the user has it configured".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Delivery {
+    /// Open the editor, where the capture can be annotated before it goes anywhere.
+    Editor,
+    /// Straight to the clipboard and history, no window.
+    Silent,
+}
+
+impl Delivery {
+    /// What was asked for, or the configured default. Public for the scrolling overlay,
+    /// whose capture is finished by a command rather than by [`trigger`].
+    pub fn resolve_for(app: &AppHandle, asked: Option<Delivery>) -> Delivery {
+        Self::resolve(app, asked)
+    }
+
+    fn resolve(app: &AppHandle, asked: Option<Delivery>) -> Delivery {
+        asked.unwrap_or_else(|| {
+            if app.state::<AppState>().settings.lock().unwrap().silent_capture {
+                Delivery::Silent
+            } else {
+                Delivery::Editor
+            }
+        })
+    }
+
+    pub fn is_silent(self) -> bool {
+        self == Delivery::Silent
+    }
+}
+
 /// Entry point for a capture. `mode` is `visible` | `snip` | `fullWindow` (interactive picker)
 /// | `frontWindow` (frontmost window, no picker — e.g. just the browser window) | `pageOnly`
 /// (just the web content of the frontmost browser window, chrome excluded) | `scrolling`
 /// (drag a region) | `scrollingPage` (whole frontmost page, auto-targeted).
-pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
+///
+/// `delivery` is where the result should go; `None` follows the user's setting. It is settled
+/// here, once, so a capture that takes a while can't change its mind halfway through.
+pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyhow::Result<()> {
+    let delivery = Delivery::resolve(app, delivery);
     if mode == "scrolling" {
-        return crate::windows::open_scroll_overlay(app);
+        // The region is dragged first; the overlay carries the decision back with the rect.
+        return crate::windows::open_scroll_overlay(app, delivery);
     }
     if mode == "pageOnly" || mode == "scrollingPage" {
         // Both walk the AX tree (possible Chromium opt-in retry) and, for scrollingPage,
@@ -103,7 +144,7 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
                     let app3 = app2.clone();
                     let mode2 = mode.clone();
                     let _ = app2.run_on_main_thread(move || {
-                        if let Err(e) = finish(&app3, shot, &mode2) {
+                        if let Err(e) = finish(&app3, shot, &mode2, delivery) {
                             report_failure(&app3, "page capture", &e);
                         }
                     });
@@ -115,7 +156,7 @@ pub fn trigger(app: &AppHandle, mode: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let shot = backend::capture(app, mode)?;
-    finish(app, shot, mode)
+    finish(app, shot, mode, delivery)
 }
 
 /// Blocking body of the two frontmost-page modes. `pageOnly` requires a visible web area
@@ -188,8 +229,8 @@ pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
 
 /// [`trigger`] + user-visible error reporting; the fire-and-forget entry point used by the
 /// tray menu and global shortcuts.
-pub fn trigger_or_report(app: &AppHandle, mode: &str) {
-    if let Err(e) = trigger(app, mode) {
+pub fn trigger_or_report(app: &AppHandle, mode: &str, delivery: Option<Delivery>) {
+    if let Err(e) = trigger(app, mode, delivery) {
         report_failure(app, &format!("capture ({mode})"), &e);
     }
 }
@@ -200,13 +241,13 @@ pub fn trigger_or_report(app: &AppHandle, mode: &str) {
 /// that is never shown, so the banner, the clipboard write and the history row are produced
 /// by exactly one implementation either way, and a silent capture is still a capture you can
 /// open and annotate afterwards.
-pub fn finish(app: &AppHandle, shot: Shot, mode: &str) -> anyhow::Result<()> {
+pub fn finish(app: &AppHandle, shot: Shot, mode: &str, delivery: Delivery) -> anyhow::Result<()> {
     let png = encode_png(&shot)?;
     let data_url = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
     );
-    let silent = app.state::<AppState>().settings.lock().unwrap().silent_capture;
+    let silent = delivery.is_silent();
     let pending = PendingCapture {
         png_data_url: data_url,
         width: shot.width,

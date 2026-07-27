@@ -65,6 +65,17 @@ pub struct Settings {
     pub shortcut_open_history: String,
     /// Summons the Spotlight-style snippet search palette.
     pub shortcut_open_palette: String,
+
+    // ---- the same captures, delivered straight to the clipboard ----
+    // Empty by default: nothing is registered until a key is put here, and each one is a
+    // silent twin of the mode above it rather than a mode of its own.
+    pub shortcut_capture_visible_silent: String,
+    pub shortcut_capture_snip_silent: String,
+    pub shortcut_capture_full_silent: String,
+    pub shortcut_capture_front_window_silent: String,
+    pub shortcut_capture_page_silent: String,
+    pub shortcut_capture_scroll_silent: String,
+    pub shortcut_capture_scroll_page_silent: String,
 }
 
 impl Default for Settings {
@@ -107,6 +118,13 @@ impl Default for Settings {
             shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),
             shortcut_open_palette: "Alt+Space".into(),
+            shortcut_capture_visible_silent: String::new(),
+            shortcut_capture_snip_silent: String::new(),
+            shortcut_capture_full_silent: String::new(),
+            shortcut_capture_front_window_silent: String::new(),
+            shortcut_capture_page_silent: String::new(),
+            shortcut_capture_scroll_silent: String::new(),
+            shortcut_capture_scroll_page_silent: String::new(),
         }
     }
 }
@@ -116,6 +134,39 @@ impl Settings {
     /// from the browser unless one of these is on — see `capture::ax::browser_meta`.
     pub fn wants_browser_details(&self) -> bool {
         self.show_page_title || self.show_page_url || self.show_browser_profile
+    }
+
+    /// Whether the silent-capture worker should be parked in advance: the user has either
+    /// made silent the default, or given a mode a straight-to-clipboard key. The tray and the
+    /// palette can still ask for one out of the blue — that just creates the worker then.
+    pub fn wants_silent_worker(&self) -> bool {
+        self.silent_capture
+            || self
+                .capture_shortcuts()
+                .iter()
+                .any(|(acc, _, silent)| *silent && !acc.trim().is_empty())
+    }
+
+    /// Every capture accelerator: the key, the mode it takes, and whether that key delivers
+    /// silently. Both `shortcuts::register` and its handler read this one list, so a key can
+    /// never be registered without something to dispatch it to.
+    pub fn capture_shortcuts(&self) -> [(&str, &'static str, bool); 14] {
+        [
+            (&self.shortcut_capture_visible, "visible", false),
+            (&self.shortcut_capture_snip, "snip", false),
+            (&self.shortcut_capture_full, "fullWindow", false),
+            (&self.shortcut_capture_front_window, "frontWindow", false),
+            (&self.shortcut_capture_page, "pageOnly", false),
+            (&self.shortcut_capture_scroll, "scrolling", false),
+            (&self.shortcut_capture_scroll_page, "scrollingPage", false),
+            (&self.shortcut_capture_visible_silent, "visible", true),
+            (&self.shortcut_capture_snip_silent, "snip", true),
+            (&self.shortcut_capture_full_silent, "fullWindow", true),
+            (&self.shortcut_capture_front_window_silent, "frontWindow", true),
+            (&self.shortcut_capture_page_silent, "pageOnly", true),
+            (&self.shortcut_capture_scroll_silent, "scrolling", true),
+            (&self.shortcut_capture_scroll_page_silent, "scrollingPage", true),
+        ]
     }
 
     pub fn load(path: &Path) -> Self {
@@ -147,6 +198,23 @@ mod tests {
 
         let default: Settings = serde_json::from_str("{}").unwrap();
         assert!(default.show_window_title);
+    }
+
+    /// A silent hotkey is enough to want the worker parked, even with silent capture off as
+    /// the default — otherwise the first press pays for creating its window.
+    #[test]
+    fn a_silent_hotkey_parks_the_worker() {
+        assert!(!Settings::default().wants_silent_worker());
+
+        let with_key: Settings =
+            serde_json::from_str(r#"{"shortcutCaptureSnipSilent": "Alt+Shift+C"}"#).unwrap();
+        assert!(with_key.wants_silent_worker());
+        assert!(!with_key.silent_capture, "the ordinary keys still open the editor");
+
+        // And that key dispatches the same mode, delivered silently.
+        let fired = with_key.capture_shortcuts();
+        let hit = fired.iter().find(|(acc, _, _)| *acc == "Alt+Shift+C").expect("registered");
+        assert_eq!((hit.1, hit.2), ("snip", true));
     }
 
     /// Nothing is read from the browser until a line that needs it is switched on.

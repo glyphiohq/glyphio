@@ -15,17 +15,12 @@ pub fn register(app: &AppHandle) -> anyhow::Result<()> {
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
-    for acc in [
-        &s.shortcut_capture_visible,
-        &s.shortcut_capture_snip,
-        &s.shortcut_capture_full,
-        &s.shortcut_capture_front_window,
-        &s.shortcut_capture_page,
-        &s.shortcut_capture_scroll,
-        &s.shortcut_capture_scroll_page,
-        &s.shortcut_open_history,
-        &s.shortcut_open_palette,
-    ] {
+    let captures = s.capture_shortcuts();
+    for acc in captures
+        .iter()
+        .map(|(acc, _, _)| *acc)
+        .chain([s.shortcut_open_history.as_str(), s.shortcut_open_palette.as_str()])
+    {
         if acc.is_empty() {
             continue;
         }
@@ -52,20 +47,15 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     }
     let s = app.state::<AppState>().settings.lock().unwrap().clone();
     let app = app.clone();
-    if matches(shortcut, &s.shortcut_capture_visible) {
-        dispatch_capture(app, "visible");
-    } else if matches(shortcut, &s.shortcut_capture_snip) {
-        dispatch_capture(app, "snip");
-    } else if matches(shortcut, &s.shortcut_capture_full) {
-        dispatch_capture(app, "fullWindow");
-    } else if matches(shortcut, &s.shortcut_capture_front_window) {
-        dispatch_capture(app, "frontWindow");
-    } else if matches(shortcut, &s.shortcut_capture_page) {
-        dispatch_capture(app, "pageOnly");
-    } else if matches(shortcut, &s.shortcut_capture_scroll) {
-        dispatch_capture(app, "scrolling");
-    } else if matches(shortcut, &s.shortcut_capture_scroll_page) {
-        dispatch_capture(app, "scrollingPage");
+    // A silent twin is only a different delivery for the same mode, so one table answers
+    // both. First match wins: a key configured twice does the thing listed first.
+    let fired = s
+        .capture_shortcuts()
+        .iter()
+        .find(|(acc, _, _)| !acc.is_empty() && matches(shortcut, acc))
+        .map(|(_, mode, silent)| (*mode, *silent));
+    if let Some((mode, silent)) = fired {
+        dispatch_capture(app, mode, silent);
     } else if matches(shortcut, &s.shortcut_open_history) {
         let inner = app.clone();
         let _ = app.run_on_main_thread(move || {
@@ -81,9 +71,10 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     }
 }
 
-fn dispatch_capture(app: AppHandle, mode: &'static str) {
+fn dispatch_capture(app: AppHandle, mode: &'static str, silent: bool) {
     let inner = app.clone();
     let _ = app.run_on_main_thread(move || {
-        crate::capture::trigger_or_report(&inner, mode);
+        let delivery = silent.then_some(crate::capture::Delivery::Silent);
+        crate::capture::trigger_or_report(&inner, mode, delivery);
     });
 }

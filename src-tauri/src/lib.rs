@@ -145,7 +145,7 @@ pub fn run() {
 
             // Park the silent-capture worker while we're launching anyway: creating its
             // window activates the app, and a capture is the wrong moment for that.
-            if app.state::<AppState>().settings.lock().unwrap().silent_capture {
+            if app.state::<AppState>().settings.lock().unwrap().wants_silent_worker() {
                 if let Err(e) = windows::ensure_silent_editor(app.handle()) {
                     log::warn!("could not park the silent capture worker: {e}");
                 }

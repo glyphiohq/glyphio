@@ -175,14 +175,14 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
     settings.save(&state.paths.settings_json).map_err(err)?;
-    let silent = settings.silent_capture;
+    let wants_worker = settings.wants_silent_worker();
     *state.settings.lock().unwrap() = settings;
     // Re-register global hotkeys so shortcut edits take effect immediately.
     crate::shortcuts::register(&app).map_err(err)?;
     // Park (or dismiss) the silent-capture worker now, while the user is looking at this
     // window — creating it during a capture would pull Glyphio in front of what they're
     // capturing. See `windows::ensure_silent_editor`.
-    if silent {
+    if wants_worker {
         if let Err(e) = crate::windows::ensure_silent_editor(&app) {
             log::warn!("could not park the silent capture worker: {e}");
         }
@@ -325,16 +325,30 @@ pub fn clear_captures(state: State<AppState>) -> CmdResult<()> {
 
 /// Trigger a capture (`visible` | `snip` | `fullWindow` | `scrolling`). Runs the native
 /// capture (or opens the scrolling selection overlay), then the editor with the result.
+/// `silent` overrides the configured delivery for this one capture.
 #[tauri::command]
-pub fn trigger_capture(app: AppHandle, mode: String) -> CmdResult<()> {
-    crate::capture::trigger(&app, &mode).map_err(err)
+pub fn trigger_capture(app: AppHandle, mode: String, silent: Option<bool>) -> CmdResult<()> {
+    crate::capture::trigger(&app, &mode, delivery(silent)).map_err(err)
+}
+
+/// A frontend's `silent` flag as a delivery choice; `None` means "as configured".
+fn delivery(silent: Option<bool>) -> Option<crate::capture::Delivery> {
+    use crate::capture::Delivery;
+    silent.map(|s| if s { Delivery::Silent } else { Delivery::Editor })
 }
 
 /// The scrolling-capture overlay reports the selected rect (window-logical px == points,
 /// relative to the overlay). We translate to global coords, dismiss the overlay so it's in
 /// neither the frames nor the scroll path, then run the capture off the main thread.
 #[tauri::command]
-pub async fn scroll_capture_run(app: AppHandle, x: f64, y: f64, w: f64, h: f64) -> CmdResult<()> {
+pub async fn scroll_capture_run(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    silent: Option<bool>,
+) -> CmdResult<()> {
     let (gx, gy) = {
         let win = app
             .get_webview_window("scroll-overlay")
@@ -353,7 +367,8 @@ pub async fn scroll_capture_run(app: AppHandle, x: f64, y: f64, w: f64, h: f64) 
     .await
     .map_err(err)?
     .map_err(err)?;
-    crate::capture::finish(&app, shot, "scrolling").map_err(err)
+    let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
+    crate::capture::finish(&app, shot, "scrolling", delivery).map_err(err)
 }
 
 #[tauri::command]
@@ -442,9 +457,9 @@ pub async fn palette_exec(app: AppHandle, trigger: String) -> CmdResult<()> {
 
 /// Run a capture mode from the palette. Hides the palette and deactivates the app first so
 /// focus (and the "frontmost window") returns to where the user was, then triggers the same
-/// capture pipeline the tray and hotkeys use.
+/// capture pipeline the tray and hotkeys use. `silent` is the palette's ⌘↩.
 #[tauri::command]
-pub async fn palette_capture(app: AppHandle, mode: String) -> CmdResult<()> {
+pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>) -> CmdResult<()> {
     if let Some(win) = app.get_webview_window("palette") {
         let _ = win.hide();
     }
@@ -453,7 +468,7 @@ pub async fn palette_capture(app: AppHandle, mode: String) -> CmdResult<()> {
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let inner = app.clone();
     app.run_on_main_thread(move || {
-        if let Err(e) = crate::capture::trigger(&inner, &mode) {
+        if let Err(e) = crate::capture::trigger(&inner, &mode, delivery(silent)) {
             log::error!("palette capture ({mode}) failed: {e}");
         }
     })

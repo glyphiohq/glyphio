@@ -287,6 +287,21 @@
   color: var(--text-secondary);
 }
 
+/* A capture mode's two hotkeys: one opens the editor, one copies silently. */
+.hotkey-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  max-width: 520px;
+}
+.hotkey-pair input { width: 100%; }
+.hotkey-caption {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 .field-error { margin: 4px 0 0; color: var(--danger); font-size: 11px; }
 .field-error:empty { display: none; }
 

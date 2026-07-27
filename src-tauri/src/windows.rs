@@ -396,16 +396,21 @@ pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
 
 /// Open the transparent scrolling-capture selection overlay, sized to the display under the
 /// cursor. Label `scroll-overlay`; it closes itself via the run/cancel commands.
-pub fn open_scroll_overlay(app: &AppHandle) -> anyhow::Result<()> {
+///
+/// `delivery` rides along in the URL and comes back with the selected rect: the user chose
+/// how this capture should be delivered before they started dragging, and dragging a region
+/// shouldn't quietly change the answer.
+pub fn open_scroll_overlay(app: &AppHandle, delivery: crate::capture::Delivery) -> anyhow::Result<()> {
     if let Some(win) = app.get_webview_window("scroll-overlay") {
         win.close().ok(); // stale one — restart fresh
     }
     let (origin, size) = crate::capture::display_bounds_under_cursor();
-    let win = WebviewWindowBuilder::new(
-        app,
-        "scroll-overlay",
-        WebviewUrl::App("scroll-overlay/index.html".into()),
-    )
+    let url = if delivery.is_silent() {
+        "scroll-overlay/index.html?silent=1"
+    } else {
+        "scroll-overlay/index.html"
+    };
+    let win = WebviewWindowBuilder::new(app, "scroll-overlay", WebviewUrl::App(url.into()))
     .title("Select scrolling region")
     .position(origin.0, origin.1)
     .inner_size(size.0, size.1)

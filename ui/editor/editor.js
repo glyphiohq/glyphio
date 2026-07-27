@@ -1640,7 +1640,8 @@ function buildFilename() {
 
 async function retry() {
   setStatus('Re-capturing…', 'info');
-  await invoke('trigger_capture', { mode: meta.mode });
+  // Re-taking a capture from the editor lands in the editor, whatever the default delivery.
+  await invoke('trigger_capture', { mode: meta.mode, silent: false });
   // The capture flow refreshes the pending payload; reload to pick it up.
   location.reload();
 }

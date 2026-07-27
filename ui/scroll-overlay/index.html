@@ -47,8 +47,10 @@
         dragging = false;
         upd(e.clientX, e.clientY);
         if (!cur || cur.w < 40 || cur.h < 40) { invoke('scroll_capture_cancel'); return; }
-        // Window-logical px == points; Rust adds the overlay's global origin.
-        invoke('scroll_capture_run', { x: cur.x, y: cur.y, w: cur.w, h: cur.h });
+        // Window-logical px == points; Rust adds the overlay's global origin. `silent` was
+        // decided when this overlay was summoned — hand it back with the rect.
+        const silent = new URLSearchParams(location.search).get('silent') === '1';
+        invoke('scroll_capture_run', { x: cur.x, y: cur.y, w: cur.w, h: cur.h, silent });
       });
       addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('scroll_capture_cancel'); });
     </script>

@@ -3,7 +3,8 @@
 // actions in one list. Enter on a snippet hands its trigger to the engine worker, which
 // expands it into the previously focused app exactly as if typed (variables, forms, popups
 // and command snippets all take their normal path); ⌘Enter copies the body. Enter on a
-// capture action runs that screenshot mode.
+// capture action runs that screenshot mode, and ⌘Enter takes it silently — no editor
+// window, straight to the clipboard. ⌘Enter means the same thing on both kinds of row.
 
 import { icon } from '../shared/icons.js';
 
@@ -158,10 +159,12 @@ function markActive() {
   list.children[selected]?.scrollIntoView({ block: 'nearest' });
 }
 
-function activate(item, copy) {
+/// ⌘↩ means "give me the result on the clipboard" for both kinds of row: a snippet's body,
+/// or a capture taken silently — no editor window, straight to the clipboard.
+function activate(item, toClipboard) {
   if (!item) return;
-  if (item.type === 'capture') runCapture(item);
-  else if (copy) copyBody(item);
+  if (item.type === 'capture') runCapture(item, toClipboard);
+  else if (toClipboard) copyBody(item);
   else exec(item);
 }
 
@@ -193,9 +196,9 @@ async function exec(s) {
   }
 }
 
-async function runCapture(c) {
+async function runCapture(c, silent = false) {
   try {
-    await invoke('palette_capture', { mode: c.mode });
+    await invoke('palette_capture', { mode: c.mode, silent });
   } catch (err) {
     console.warn('palette capture failed:', err);
   }

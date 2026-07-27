@@ -56,9 +56,12 @@ const CAPTURE_SECTIONS = [
     ['enableFrontWindowCapture', 'toggle', 'Frontmost window (no picker — e.g. just the browser)'],
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
-  { title: 'After a capture', hint: `Silent captures still land in history — open one from
-    <strong>Capture history</strong> to annotate it after the fact.`, fields: [
-    ['silentCapture', 'toggle', 'Capture silently — copy to the clipboard, no editor window'],
+  { title: 'After a capture', hint: `A silent capture skips the editor and goes straight to
+    the clipboard. You can take one whenever you like — from <em>Capture to Clipboard</em> in
+    the menu bar, with ⌘↩ in the snippet palette, or with a hotkey of its own below — so the
+    setting here is only about what the <em>ordinary</em> capture keys do. Either way it still
+    lands in history: open it from <strong>Capture history</strong> to annotate it later.`, fields: [
+    ['silentCapture', 'toggle', 'Make every capture silent by default'],
     ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
     ['historyEnabled', 'toggle', 'Save captures to history'],
     ['historyMaxCount', 'number', 'Max captures kept'],
@@ -88,14 +91,17 @@ const CAPTURE_SECTIONS = [
     ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
     ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
   ]},
-  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', fields: [
-    ['shortcutCaptureFull', 'text', 'Capture full window'],
-    ['shortcutCaptureVisible', 'text', 'Capture visible area'],
-    ['shortcutCaptureSnip', 'text', 'Capture region (snip)'],
-    ['shortcutCaptureFrontWindow', 'text', 'Capture frontmost window'],
-    ['shortcutCapturePage', 'text', 'Capture browser page (content only)'],
-    ['shortcutCaptureScroll', 'text', 'Capture scrolling area'],
-    ['shortcutCaptureScrollPage', 'text', 'Capture scrolling page (frontmost window)'],
+  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `Each mode can have a second key that
+    takes the same shot <strong>straight to the clipboard</strong>, with no editor window —
+    the same thing as the menu bar's <em>Capture to Clipboard</em>, or ⌘↩ in the snippet
+    palette. Leave it blank if you don't want one.`, fields: [
+    ['shortcutCaptureFull', 'hotkeys', 'Full window', 'shortcutCaptureFullSilent'],
+    ['shortcutCaptureVisible', 'hotkeys', 'Visible area', 'shortcutCaptureVisibleSilent'],
+    ['shortcutCaptureSnip', 'hotkeys', 'Region (snip)', 'shortcutCaptureSnipSilent'],
+    ['shortcutCaptureFrontWindow', 'hotkeys', 'Frontmost window', 'shortcutCaptureFrontWindowSilent'],
+    ['shortcutCapturePage', 'hotkeys', 'Browser page (content only)', 'shortcutCapturePageSilent'],
+    ['shortcutCaptureScroll', 'hotkeys', 'Scrolling area', 'shortcutCaptureScrollSilent'],
+    ['shortcutCaptureScrollPage', 'hotkeys', 'Scrolling page (frontmost window)', 'shortcutCaptureScrollPageSilent'],
     ['shortcutOpenHistory', 'text', 'Open capture history'],
   ]},
 ];
@@ -2130,6 +2136,12 @@ function renderField(key, type, label, opts) {
   const name = document.createElement('label');
   name.className = 'name'; name.textContent = label;
   field.append(name);
+  // A capture mode's two keys, side by side: one opens the editor, one goes straight to the
+  // clipboard. Seeing them together is what makes the second one discoverable at all.
+  if (type === 'hotkeys') {
+    field.append(hotkeyPair(key, opts));
+    return field;
+  }
   let input;
   if (type === 'toggle') { input = el('input', { type: 'checkbox' }); input.checked = Boolean(state.settings[key]); }
   else if (type === 'select') { input = renderSelect(key, opts); }
@@ -2139,6 +2151,22 @@ function renderField(key, type, label, opts) {
   input.dataset.key = key; input.dataset.type = type;
   field.append(input);
   return field;
+}
+
+/** The editor key and the straight-to-clipboard key for one capture mode. */
+function hotkeyPair(key, silentKey) {
+  const wrap = el('div', { className: 'hotkey-pair' });
+  const one = (k, caption, placeholder) => {
+    const box = el('div');
+    const input = el('input', { type: 'text', placeholder });
+    input.value = state.settings[k] ?? '';
+    input.dataset.key = k;
+    input.dataset.type = 'text';
+    box.append(input, el('span', { className: 'hotkey-caption', textContent: caption }));
+    return box;
+  };
+  wrap.append(one(key, 'opens the editor', ''), one(silentKey, 'to the clipboard', 'not set'));
+  return wrap;
 }
 
 /**

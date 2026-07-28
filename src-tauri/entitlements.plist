@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hardened-runtime entitlements, used ONLY when signing with a real Developer ID (notarization
+  requires the hardened runtime, and the hardened runtime blocks things Glyphio needs).
+
+  Not used by the self-signed "Glyphio Dev" builds: an untrusted certificate can't carry these
+  usefully, which is why scripts/sign-bundle.sh applies them conditionally.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- WKWebView compiles JavaScript at runtime. Without these the UI is a blank window. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- The engine and OCR sidecars are separate binaries loaded from the bundle. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Capture shells out to /usr/sbin/screencapture for the native interactive picker. -->
+    <key>com.apple.security.inherit</key>
+    <false/>
+
+    <!-- Reading page identity via the Accessibility API, and posting scroll events for
+         scrolling capture, are both Apple-events-adjacent automation of other apps. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>

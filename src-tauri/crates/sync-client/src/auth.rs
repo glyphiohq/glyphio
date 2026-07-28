@@ -297,7 +297,7 @@ async fn wait_for_callback(listener: TcpListener) -> Result<(String, String)> {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
             continue;
         }
-        let query = path.splitn(2, '?').nth(1).unwrap_or("");
+        let query = path.split_once('?').map(|x| x.1).unwrap_or("");
         let mut code = None;
         let mut state = None;
         let mut error = None;

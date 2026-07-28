@@ -165,6 +165,46 @@ fn present(app: &AppHandle, win: &WebviewWindow) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Let a window follow the user to whichever desktop they're on, instead of dragging them back
+/// to the one it was opened on.
+///
+/// `MoveToActiveSpace` means: when Glyphio is activated, bring this window to the current
+/// Space rather than switching Spaces to reach it. That fixes the ordinary multiple-desktops
+/// case, where an editor left on desktop 1 would otherwise yank you off desktop 2.
+///
+/// # What this deliberately does *not* fix
+///
+/// Capturing while another app is full screen still opens the editor on Glyphio's own Space.
+/// The bit that would change that is `FullScreenAuxiliary`, and it is not worth what it costs:
+/// it is mutually exclusive with `FullScreenPrimary`, which is what gives a window its own
+/// green full-screen button. Buying "the editor appears over full-screen Chrome" with "the
+/// editor can no longer be full-screened" is a bad trade for a window people work in.
+///
+/// Take a silent capture instead (⌘↩ in the palette, or the *Capture to Clipboard* menu) —
+/// it opens no window at all, so the Space question never arises.
+///
+/// Also deliberately not `CanJoinAllSpaces`: that pins a window to *every* Space permanently,
+/// which suits a palette and not a document window.
+#[cfg(target_os = "macos")]
+fn follow_user_across_spaces(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let Ok(ptr) = win.ns_window() else { return };
+    if ptr.is_null() {
+        return;
+    }
+    // Safety: `ns_window` hands back this window's live NSWindow, and we only touch it on the
+    // main thread — every caller is already there (window creation and `present`).
+    unsafe {
+        let ns: &NSWindow = &*(ptr as *const NSWindow);
+        let behavior = ns.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
+        ns.setCollectionBehavior(behavior);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn follow_user_across_spaces(_win: &WebviewWindow) {}
+
 /// Re-assert focus a beat later.
 ///
 /// A capture that used the interactive picker leaves `screencapture` as the frontmost app;
@@ -219,6 +259,7 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
         .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
+    follow_user_across_spaces(&win);
     // A menu-bar agent isn't active when a window is built, so a fresh window would appear
     // BEHIND the frontmost app. Take the regular-app policy first, then set_focus activates
     // us (activateIgnoringOtherApps).
@@ -259,6 +300,7 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
+    follow_user_across_spaces(&win);
     // See open_capture: without this, new windows of a menu-bar agent open behind the
     // frontmost app instead of on top.
     sync_activation_policy(app, None);

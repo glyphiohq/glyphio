@@ -2128,6 +2128,73 @@ async function renderAboutTab(form) {
     GPL-3.0-or-later; sync protocol and reference server Apache-2.0. Your snippets and
     captures stay on this device unless you share a group with a team.</p>`;
   form.append(div);
+  form.append(updatesSection());
+}
+
+/**
+ * Updates. Glyphio checks quietly on launch and says nothing unless there is something to say —
+ * this is where a user comes to ask, and where the answer waits.
+ *
+ * An update is verified against Glyphio's own signing key, which is why this works on an
+ * unsigned build: it does not depend on Apple, only on the key baked into this app.
+ */
+function updatesSection() {
+  const div = el('div', { className: 'form-section' });
+  const status = el('p', { className: 'adv-hint', textContent: 'Checking for updates…' });
+  const action = el('div', { className: 'update-action' });
+  div.append(el('h3', { textContent: 'Updates' }), status, action);
+
+  // The launch check is the only network call an unconfigured Glyphio makes, so it gets a
+  // switch. Turning it off doesn't hide the button below — that one is the user asking.
+  // This tab has no Save button, so the toggle applies as soon as it's flipped.
+  const auto = renderField('checkForUpdates', 'toggle', 'Check for updates on launch');
+  auto.classList.add('update-auto');
+  auto.querySelector('input').addEventListener('change', async (e) => {
+    const next = { ...state.settings, checkForUpdates: e.target.checked };
+    try { await invoke('save_settings', { settings: next }); state.settings = next; }
+    catch (err) { e.target.checked = !e.target.checked; setStatus(String(err), 'err'); }
+  });
+  div.append(auto);
+
+  const show = (result) => {
+    action.replaceChildren();
+    if (!result) { status.textContent = 'Could not reach the update server.'; return; }
+    switch (result.state) {
+      case 'upToDate':
+        status.textContent = `Glyphio ${result.version} is the latest version.`;
+        break;
+      case 'available': {
+        status.innerHTML = `<strong>Version ${escapeHtml(result.version)} is available.</strong>` +
+          (result.notes ? ` ${escapeHtml(result.notes)}` : '');
+        const go = el('button', { className: 'primary', textContent: `Update to ${result.version}` });
+        go.addEventListener('click', async () => {
+          go.disabled = true;
+          go.textContent = 'Downloading…';
+          try {
+            // Restarts into the new version on success, so nothing after this runs.
+            await invoke('install_update');
+          } catch (e) {
+            go.disabled = false;
+            go.textContent = `Update to ${result.version}`;
+            status.textContent = `Update failed: ${e}`;
+          }
+        });
+        action.append(go);
+        break;
+      }
+      case 'managedElsewhere':
+        // Homebrew owns this install; self-updating would leave brew's records wrong.
+        status.innerHTML = `Version ${escapeHtml(result.version)} is available. This copy was ` +
+          `installed with Homebrew, so update it the same way:`;
+        action.append(el('code', { className: 'update-command', textContent: result.command }));
+        break;
+      default:
+        status.textContent = 'Could not check for updates right now.';
+    }
+  };
+
+  invoke('check_for_update').then(show).catch(() => show(null));
+  return div;
 }
 
 function renderField(key, type, label, opts) {

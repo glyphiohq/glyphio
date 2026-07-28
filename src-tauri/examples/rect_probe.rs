@@ -61,8 +61,8 @@ fn main() {
             .with_excluding_windows(&[])
             .build();
         let config = SCStreamConfiguration::new()
-            .with_width(d.width() as u32)
-            .with_height(d.height() as u32);
+            .with_width(d.width())
+            .with_height(d.height());
         match SCScreenshotManager::capture_image(&filter, &config) {
             Ok(img) => {
                 let (w, h) = (img.width() as u32, img.height() as u32);

@@ -67,14 +67,47 @@ BUNDLE="src-tauri/target/release/bundle"
 rm -f  "$BUNDLE"/macos/*.dmg "$BUNDLE"/macos/rw.*.dmg 2>/dev/null || true
 rm -rf "$BUNDLE"/dmg "$BUNDLE"/share 2>/dev/null || true
 
-# ---- 3. build: signing identity, engine + OCR sidecars, app -----------------------
+# ---- 3. decide who signs this build ----------------------------------------------
+# Two different signatures are involved and they answer different questions:
+#
+#   * Apple's  — will Gatekeeper open the app on someone else's Mac?
+#   * minisign — is this update genuinely from us? (see src-tauri/src/updates.rs)
+#
+# The minisign key is ours and always available. Apple's requires a paid Developer ID, so this
+# script uses one if the keychain has one and falls back to the self-signed dev identity if not.
+# Nothing here needs editing the day a Developer ID appears — import it and rebuild.
+DEV_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+         | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
+if [[ -n "$DEV_ID" ]]; then
+  log "signing with $DEV_ID (will notarize)"
+  NOTARIZE=1
+else
+  log "no Developer ID in the keychain — falling back to the self-signed \"Glyphio Dev\" identity"
+  NOTARIZE=0
+fi
+
+# ---- 4. build: signing identity, engine + OCR sidecars, app -----------------------
 bash scripts/dev-sign.sh
 bash scripts/build-engine.sh --release
 bash scripts/build-ocr.sh
+
+# The updater artifact is signed with the project's minisign key, which lives outside the repo.
+UPDATER_KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.glyphio/updater.key}"
+if [[ -f "$UPDATER_KEY" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$UPDATER_KEY"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+else
+  fail "no updater signing key at $UPDATER_KEY — run: npx tauri signer generate -w \"$UPDATER_KEY\""
+fi
+
 npx tauri build
 
-# ---- 4. sign with the stable identity (Tauri falls back to ad-hoc; see sign-bundle.sh)
-bash scripts/sign-bundle.sh
+# ---- 5. sign with a stable identity (Tauri falls back to ad-hoc; see sign-bundle.sh)
+if [[ "$NOTARIZE" == "1" ]]; then
+  bash scripts/sign-bundle.sh "$BUNDLE/macos/Glyphio.app" "$DEV_ID"
+else
+  bash scripts/sign-bundle.sh
+fi
 
 # ---- 5. package the ONLY distributable: dist/Glyphio_<version>_<arch>.dmg ---------
 APP="$BUNDLE/macos/Glyphio.app"
@@ -111,9 +144,59 @@ ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Glyphio $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
 
-# ---- 6. verify + summarise --------------------------------------------------------
+# ---- 6. notarize, if we have an Apple identity to do it with ----------------------
+# Notarization is what stops Gatekeeper refusing a downloaded build. Stapling the ticket to
+# the DMG means it also works on a Mac that is offline the first time it opens Glyphio.
+if [[ "$NOTARIZE" == "1" ]]; then
+  if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+    fail "Developer ID found but APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID are not set (use an app-specific password)"
+  fi
+  log "submitting to Apple for notarization (this takes a few minutes)…"
+  xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+    --team-id "$APPLE_TEAM_ID" --wait || fail "notarization failed"
+  xcrun stapler staple "$DMG" || fail "could not staple the notarization ticket"
+  spctl -a -vv -t install "$DMG" 2>&1 | grep -q "accepted" \
+    || fail "Gatekeeper still rejects the notarized DMG"
+  log "notarized and stapled — Gatekeeper accepts this build"
+else
+  log "NOT notarized: users will need System Settings → Privacy & Security → Open Anyway,"
+  log "               or install via Homebrew (see docs/INSTALL.md)"
+fi
+
+# ---- 7. updater manifest ----------------------------------------------------------
+# `latest.json` is what a running Glyphio fetches to learn a new version exists. It points at
+# the .app.tar.gz Tauri just signed with the project's minisign key; the signature travels in
+# the manifest, so a tampered download fails verification rather than installing.
+UPDATER_TGZ=$(ls "$BUNDLE"/macos/*.app.tar.gz 2>/dev/null | head -1)
+UPDATER_SIG=$(ls "$BUNDLE"/macos/*.app.tar.gz.sig 2>/dev/null | head -1)
+if [[ -n "$UPDATER_TGZ" && -n "$UPDATER_SIG" ]]; then
+  cp "$UPDATER_TGZ" "dist/Glyphio_${VERSION}_${ARCH}.app.tar.gz"
+  TARGET_KEY="darwin-aarch64"
+  [[ "$ARCH" == "x86_64" ]] && TARGET_KEY="darwin-x86_64"
+  node -e '
+    const fs = require("fs");
+    const [version, target, sigPath, url] = process.argv.slice(1);
+    const manifest = {
+      version,
+      notes: `Glyphio ${version}`,
+      pub_date: new Date().toISOString(),
+      platforms: { [target]: { signature: fs.readFileSync(sigPath, "utf8").trim(), url } },
+    };
+    fs.writeFileSync("dist/latest.json", JSON.stringify(manifest, null, 2) + "\n");
+  ' "$VERSION" "$TARGET_KEY" "$UPDATER_SIG" \
+    "https://github.com/glyphiohq/glyphio/releases/download/v${VERSION}/Glyphio_${VERSION}_${ARCH}.app.tar.gz"
+  log "updater manifest: dist/latest.json ($TARGET_KEY)"
+else
+  fail "no updater artifact was produced — check bundle.createUpdaterArtifacts in tauri.conf.json"
+fi
+
+# ---- 8. verify + summarise --------------------------------------------------------
 hdiutil verify "$DMG" >/dev/null
 SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
 log "OK — $DMG ($(du -h "$DMG" | cut -f1 | tr -d ' '))"
 log "    app version : $BUILT_V"
 log "    sha256      : $SHA"
+log "    notarized   : $([[ "$NOTARIZE" == "1" ]] && echo yes || echo 'no (self-signed)')"
+log ""
+log "To publish: upload $DMG, dist/Glyphio_${VERSION}_${ARCH}.app.tar.gz and dist/latest.json"
+log "            to the v${VERSION} GitHub release."

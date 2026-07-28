@@ -1,0 +1,115 @@
+# This is a correctness gate, not a release pipeline.
+#
+# Glyphio's release build signs with a certificate that lives in the maintainer's keychain and
+# is deliberately never exported, so CI cannot produce a shippable artifact and does not try.
+# What it can do is catch the things that are embarrassing to find at release time: code that
+# doesn't compile, tests that don't pass, and a version number that drifted between the three
+# files that have to agree.
+#
+# Releases are cut locally with `npm run release`. See scripts/release.sh.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  app:
+    name: App (macOS)
+    runs-on: macos-14 # matches bundle.macOS.minimumSystemVersion
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `cargo fmt --check`: the codebase uses a wider, hand-kept style than rustfmt's
+      # defaults, and reformatting it wholesale would rewrite every blame line for no
+      # correctness gain. Clippy is the gate that catches real problems.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Three caches, because the espanso fork is a second, much larger workspace and rebuilding
+      # it from scratch on every push is most of the wall-clock time.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            server
+            espanso
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+
+      # Builds the library, not the bundle: `tauri build` would need the signing identity and
+      # the sidecars, neither of which exist here.
+      - name: Build
+        run: cargo build --manifest-path src-tauri/Cargo.toml --lib --release
+
+  server:
+    name: Sync server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: Clippy
+        run: cargo clippy --manifest-path server/Cargo.toml --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path server/Cargo.toml
+
+  release-sanity:
+    name: Release sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # release.sh refuses to build on version drift; checking it here means a mismatched
+      # version is caught on the PR that introduced it, not by the maintainer mid-release.
+      - name: Versions agree across package.json, tauri.conf.json and Cargo.toml
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./package.json').version")
+          tauri=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(perl -ne 'if (/^version = "([^"]+)"/) { print $1; exit }' src-tauri/Cargo.toml)
+          echo "package.json=$pkg tauri.conf.json=$tauri Cargo.toml=$cargo"
+          [ "$pkg" = "$tauri" ] && [ "$pkg" = "$cargo" ] || {
+            echo "::error::version drift between package.json, tauri.conf.json and Cargo.toml"
+            exit 1
+          }
+
+      - name: Shell scripts parse
+        run: for f in scripts/*.sh; do bash -n "$f" || exit 1; done
+
+      # The updater's public key must be present and must not be the placeholder, or shipped
+      # builds silently lose their ability to verify an update.
+      - name: Updater is configured
+        run: |
+          set -euo pipefail
+          key=$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey || ''")
+          [ -n "$key" ] || { echo "::error::no updater pubkey in tauri.conf.json"; exit 1; }
+          node -p "require('./src-tauri/tauri.conf.json').bundle.createUpdaterArtifacts" \
+            | grep -qx true || { echo "::error::createUpdaterArtifacts is not enabled"; exit 1; }
+
+      # The private half must never be in the repo. This is cheap and the failure mode is total.
+      - name: No signing keys committed
+        run: |
+          if git ls-files | grep -Ei '(updater\.key$|\.p12$|\.pem$|private.*key)'; then
+            echo "::error::a private key looks committed"
+            exit 1
+          fi

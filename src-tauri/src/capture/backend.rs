@@ -137,6 +137,9 @@ fn capture_front_window(with_browser_details: bool) -> anyhow::Result<Shot> {
 /// convenience composites a virtual-desktop rect and, on multi-display setups, fills whatever
 /// it fails to map with black (the "scrolling capture comes out black" bug).
 ///
+/// One display and the part of a requested rect that falls on it, as (x, y, w, h).
+type DisplayPiece<'a> = (&'a SCDisplay, (f64, f64, f64, f64));
+
 /// A content filter can only describe one display, so a rect straddling two monitors — a
 /// window dragged across the seam, which is ordinary on a multi-monitor desk — is captured
 /// per display and composited here. The result covers the part of the rect that is actually
@@ -158,7 +161,7 @@ pub(super) fn capture_rect_image(
 
     // (display, intersection with the requested rect), sharpest display first so the output
     // scale is settled before anything is captured.
-    let mut pieces: Vec<(&SCDisplay, (f64, f64, f64, f64))> = displays
+    let mut pieces: Vec<DisplayPiece<'_>> = displays
         .iter()
         .filter_map(|d| {
             let b = CGDisplay::new(d.display_id()).bounds();
@@ -491,6 +494,23 @@ pub(super) fn display_bounds_containing_point(x: f64, y: f64) -> Option<((f64, f
     None
 }
 
+/// The `CGDirectDisplayID` of the display containing the current cursor position.
+fn display_id_under_cursor() -> Option<u32> {
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+    let point = CGEvent::new(source).ok()?.location();
+    for id in CGDisplay::active_displays().ok()? {
+        let b = CGDisplay::new(id).bounds();
+        if point.x >= b.origin.x
+            && point.x < b.origin.x + b.size.width
+            && point.y >= b.origin.y
+            && point.y < b.origin.y + b.size.height
+        {
+            return Some(id);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::intersect;
@@ -524,21 +544,4 @@ mod tests {
         // Edge-to-edge contact is not an overlap worth capturing.
         assert_eq!(intersect((1920.0, 0.0, 400.0, 400.0), display), None);
     }
-}
-
-/// The `CGDirectDisplayID` of the display containing the current cursor position.
-fn display_id_under_cursor() -> Option<u32> {
-    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
-    let point = CGEvent::new(source).ok()?.location();
-    for id in CGDisplay::active_displays().ok()? {
-        let b = CGDisplay::new(id).bounds();
-        if point.x >= b.origin.x
-            && point.x < b.origin.x + b.size.width
-            && point.y >= b.origin.y
-            && point.y < b.origin.y + b.size.height
-        {
-            return Some(id);
-        }
-    }
-    None
 }

@@ -40,7 +40,10 @@ device except content a user *deliberately* shares with a team, over a channel t
 ## Client hardening
 
 - Sync is **off by default**; a fresh build makes no network calls until configured.
-- No telemetry, no auto-update pings, no third-party services.
+- No telemetry and no third-party services. The one call an unconfigured build makes is the
+  launch update check against GitHub Releases, which sends nothing but the request and can be
+  turned off in Settings → About. Updates carry a minisign signature verified against a public
+  key compiled into the app, so a compromised release host cannot ship a payload that installs.
 - Config files carry no secrets; the app refuses `authMode`/URL combinations that would
   downgrade transport security.
 - Snippet HTML is **sanitized before rendering** in any app webview (preview, popup and

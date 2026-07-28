@@ -1,5 +1,22 @@
 //! Capture orchestration: grab pixels via the native backend, encode PNG, stash the result, and
 //! open the editor window. The editor pulls the payload via the `take_pending_capture` command.
+//!
+//! # Where the platform line falls
+//!
+//! Everything in *this* file is portable: choosing a mode, deciding delivery (editor vs
+//! clipboard), encoding, history, and the banner contract. The three modules below are not,
+//! and a Windows port replaces them rather than editing them:
+//!
+//! | module     | macOS today                              | Windows would need          |
+//! |------------|------------------------------------------|-----------------------------|
+//! | `backend`  | ScreenCaptureKit + `/usr/sbin/screencapture` | Windows.Graphics.Capture |
+//! | `ax`       | Accessibility API (`AXDocument` for URLs) | UI Automation               |
+//! | `scroll`   | CGEvent scroll injection                 | `SendInput`                 |
+//!
+//! `scroll` is only half platform-bound — the frame stitching is pure image work and ports
+//! as-is; only `post_scroll` and `warp_cursor` are Quartz. See `docs/WINDOWS.md` for the
+//! full port plan, including the one piece with no Windows equivalent (macOS gives us its
+//! interactive window picker for free; Windows has nothing like it).
 
 mod ax;
 mod backend;

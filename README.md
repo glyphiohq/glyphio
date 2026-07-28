@@ -27,7 +27,23 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
 
 Platforms: macOS (Apple Silicon) today; Windows is on the roadmap.
 
-## Quick start (build from source)
+## Install
+
+```bash
+brew install --cask --no-quarantine glyphiohq/tap/glyphio
+```
+
+Or grab the DMG from [Releases](https://github.com/glyphiohq/glyphio/releases).
+
+Glyphio isn't notarized yet — a Developer ID costs $99/year and this is a donation-funded
+project — so a downloaded DMG needs one trip through System Settings → Privacy & Security →
+**Open Anyway**. The Homebrew line above avoids that entirely. Full details, including
+checksum verification, are in **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+First run prompts for two macOS permissions (Accessibility for expansion, Screen Recording
+for capture) — the in-app banners walk you through both.
+
+## Build from source
 
 Prereqs: Rust stable, Node 18+, macOS Command Line Tools (full Xcode not required).
 
@@ -36,9 +52,6 @@ npm install
 npm run engine       # build + sign the espanso-fork engine sidecar
 npm run dev          # run the app (or: npm run release → dist/Glyphio_<version>_<arch>.dmg)
 ```
-
-First run prompts for two macOS permissions (Accessibility for expansion, Screen Recording
-for capture) — the in-app banners walk you through both.
 
 ## Self-hosting sync
 
@@ -57,8 +70,12 @@ where every credential lives (spoiler: OS keychain and your server's env, never 
 See [docs/SECURITY.md](docs/SECURITY.md): threat model, what syncs vs. what never does,
 secret storage, and how to report vulnerabilities. Highlights: OIDC Authorization Code +
 PKCE with full ID-token validation; tokens only in the OS keychain; TLS enforced; server
-validates identity/team membership on every request; no telemetry, no auto-update pings,
-no third-party calls.
+validates identity/team membership on every request; no telemetry and no third-party calls.
+
+The one network call an unconfigured Glyphio makes is the update check: on launch it asks
+GitHub whether a newer release exists, sending nothing but the request itself. Updates are
+verified against Glyphio's own signing key before installation. Turn it off in
+Settings → About if you'd rather check yourself.
 
 ## Repository layout
 
@@ -68,7 +85,8 @@ src-tauri/        Tauri app + crates: snippet-store, sync-client, sync-proto
 ui/               webview frontend (snippet manager, capture editor, history)
 server/           reference sync backend (Apache-2.0; axum, SQLite/DynamoDB)
 infra/            Terraform for the AWS reference deployment (Apache-2.0)
-docs/             PHASE1.md, PHASE2-PLAN.md, SYNC-PROTOCOL.md, SECURITY.md
+packaging/        Homebrew cask (source of truth for the tap)
+docs/             INSTALL.md, SYNC-PROTOCOL.md, SECURITY.md, PHASE*.md
 SETUP.md          operator / self-hosting guide
 ```
 

@@ -197,8 +197,8 @@ pub async fn sync_sign_in(app: AppHandle) -> CmdResult<()> {
     }
     let opener = app.clone();
     let auth = OidcAuth::sign_in(&cfg, move |url| {
-        use tauri_plugin_shell::ShellExt;
-        if let Err(e) = opener.shell().open(url, None) {
+        use tauri_plugin_opener::OpenerExt;
+        if let Err(e) = opener.opener().open_url(url, None::<&str>) {
             log::error!("could not open browser for sign-in: {e}");
         }
     })
@@ -414,7 +414,6 @@ pub async fn apply_invite(app: AppHandle, url: String) -> CmdResult<()> {
                 // provider, so there is nothing to apply here.
                 return Ok(());
             };
-            drop(state);
             sync_join_team(app.clone(), code).await?;
             return Ok(());
         }

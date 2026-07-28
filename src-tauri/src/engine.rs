@@ -141,10 +141,13 @@ impl Supervisor {
                     let _ = app_ev.emit("secure-input-status", Option::<String>::None);
                     update_tray_tooltip(&app_ev, None);
                 }
+                // Redacted: this is the only text in the log we didn't write ourselves, so it
+                // is the only place a URL could arrive without anyone having decided to log one.
+                let safe = crate::logging::redact(&line);
                 if is_err {
-                    log::warn!("[engine] {line}");
+                    log::warn!("[engine] {safe}");
                 } else {
-                    log::info!("[engine] {line}");
+                    log::info!("[engine] {safe}");
                 }
             }
         });

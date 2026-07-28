@@ -47,6 +47,9 @@ pub struct Settings {
     pub auto_copy_on_open: bool,
     /// Capture straight to the clipboard and history without opening the editor.
     pub silent_capture: bool,
+    /// Ask GitHub on launch whether a newer Glyphio exists. The only network call an
+    /// otherwise-unconfigured app makes, so it is a setting rather than an assumption.
+    pub check_for_updates: bool,
 
     // ---- history ----
     pub history_enabled: bool,
@@ -105,6 +108,7 @@ impl Default for Settings {
             filename_prefix: "glyphio".into(),
             auto_copy_on_open: true,
             silent_capture: false,
+            check_for_updates: true,
             history_enabled: true,
             history_max_count: 50,
             history_max_bytes: 200 * 1024 * 1024, // 200 MB, matching Checkpoint

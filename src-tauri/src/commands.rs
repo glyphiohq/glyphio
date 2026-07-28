@@ -515,11 +515,11 @@ pub fn secure_input_status(state: State<AppState>) -> Option<String> {
 /// Open System Settings at Privacy & Security › Accessibility.
 #[tauri::command]
 pub fn open_accessibility_settings(app: AppHandle) -> CmdResult<()> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell()
-        .open(
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            None,
+            None::<&str>,
         )
         .map_err(err)
 }
@@ -563,11 +563,11 @@ pub fn request_screen_recording() -> bool {
 /// Open System Settings at Privacy & Security › Screen Recording.
 #[tauri::command]
 pub fn open_screen_recording_settings(app: AppHandle) -> CmdResult<()> {
-    use tauri_plugin_shell::ShellExt;
-    app.shell()
-        .open(
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            None,
+            None::<&str>,
         )
         .map_err(err)
 }
@@ -624,6 +624,18 @@ pub fn capture_done_silently(app: AppHandle, error: Option<String>) {
         }
         None => crate::tray::flash_captured(&app),
     }
+}
+
+/// Ask GitHub whether a newer Glyphio exists. Read-only — nothing is downloaded.
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> crate::updates::Status {
+    crate::updates::check(&app).await
+}
+
+/// Install the update the user just agreed to, then relaunch into it.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> CmdResult<()> {
+    crate::updates::install(&app).await.map_err(|e| format!("{e:#}"))
 }
 
 fn strip_data_url(s: &str) -> &str {

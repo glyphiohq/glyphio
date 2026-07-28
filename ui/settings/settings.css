@@ -762,3 +762,13 @@
 }
 .team-group-chip:hover { border-color: rgba(217, 165, 74, 0.4); color: var(--text); }
 .team-group-chip .ico { color: var(--accent); }
+
+/* --- Updates (About tab) --- */
+.update-action { margin-top: 10px; }
+/* Homebrew-managed installs get a command to copy, not a button that would desync brew. */
+.update-command {
+  display: inline-block; padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text);
+  user-select: all;
+}

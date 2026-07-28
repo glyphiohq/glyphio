@@ -441,6 +441,22 @@ fn children(el: &CFType) -> Vec<CFType> {
     out
 }
 
+fn bounds(el: &CFType) -> Option<(f64, f64, f64, f64)> {
+    let pos = copy_attr(el, "AXPosition")?;
+    let size = copy_attr(el, "AXSize")?;
+    let mut p = CGPoint::new(0.0, 0.0);
+    let mut s = CGSize::new(0.0, 0.0);
+    let ok = unsafe {
+        AXValueGetValue(pos.as_CFTypeRef(), AX_VALUE_CGPOINT, &mut p as *mut _ as *mut _)
+            && AXValueGetValue(size.as_CFTypeRef(), AX_VALUE_CGSIZE, &mut s as *mut _ as *mut _)
+    };
+    // Reject degenerate areas (collapsed panes, background tabs mid-layout).
+    if !ok || s.width < 40.0 || s.height < 40.0 {
+        return None;
+    }
+    Some((p.x, p.y, s.width, s.height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::split_window_title;
@@ -479,20 +495,4 @@ mod tests {
         assert_eq!(split_window_title("Google Chrome", "Google Chrome"), ("Google Chrome", None));
         assert_eq!(split_window_title("Slack | general", ""), ("Slack | general", None));
     }
-}
-
-fn bounds(el: &CFType) -> Option<(f64, f64, f64, f64)> {
-    let pos = copy_attr(el, "AXPosition")?;
-    let size = copy_attr(el, "AXSize")?;
-    let mut p = CGPoint::new(0.0, 0.0);
-    let mut s = CGSize::new(0.0, 0.0);
-    let ok = unsafe {
-        AXValueGetValue(pos.as_CFTypeRef(), AX_VALUE_CGPOINT, &mut p as *mut _ as *mut _)
-            && AXValueGetValue(size.as_CFTypeRef(), AX_VALUE_CGSIZE, &mut s as *mut _ as *mut _)
-    };
-    // Reject degenerate areas (collapsed panes, background tabs mid-layout).
-    if !ok || s.width < 40.0 || s.height < 40.0 {
-        return None;
-    }
-    Some((p.x, p.y, s.width, s.height))
 }

@@ -6,11 +6,13 @@ pub mod capture;
 mod commands;
 mod engine;
 mod history;
+mod logging;
 mod paths;
 mod settings;
 mod shortcuts;
 mod sync;
 mod tray;
+mod updates;
 mod windows;
 
 use std::sync::{Arc, Mutex};
@@ -42,7 +44,7 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger_init();
+    logging::init();
 
     let paths = AppPaths::resolve().expect("resolve app paths");
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
@@ -69,10 +71,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(shortcuts::handler)
@@ -150,6 +154,10 @@ pub fn run() {
                     log::warn!("could not park the silent capture worker: {e}");
                 }
             }
+
+            // Look for a newer release, quietly. Nothing is downloaded and no window opens —
+            // the answer waits in Settings → About until the user goes looking for it.
+            updates::check_in_background(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -184,6 +192,8 @@ pub fn run() {
             commands::open_history_view,
             commands::open_capture,
             commands::take_pending_capture,
+            commands::check_for_update,
+            commands::install_update,
             commands::capture_done_silently,
             commands::take_pending_payload,
             commands::form_submit,
@@ -285,44 +295,3 @@ pub fn run() {
         });
 }
 
-fn env_logger_init() {
-    // Stderr + ~/Library/Logs/Glyphio/glyphio.log. A Finder-launched app's stderr goes
-    // nowhere, which made capture failures undiagnosable — the file is the record.
-    struct SimpleLogger {
-        file: Option<std::sync::Mutex<std::fs::File>>,
-    }
-    impl log::Log for SimpleLogger {
-        fn enabled(&self, _: &log::Metadata) -> bool {
-            true
-        }
-        fn log(&self, record: &log::Record) {
-            let line = format!(
-                "{} [{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                record.level(),
-                record.args()
-            );
-            eprintln!("{line}");
-            if let Some(f) = &self.file {
-                use std::io::Write;
-                if let Ok(mut f) = f.lock() {
-                    let _ = writeln!(f, "{line}");
-                }
-            }
-        }
-        fn flush(&self) {}
-    }
-    let file = dirs::home_dir()
-        .map(|h| h.join("Library/Logs/Glyphio"))
-        .and_then(|dir| {
-            std::fs::create_dir_all(&dir).ok()?;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("glyphio.log"))
-                .ok()
-        })
-        .map(std::sync::Mutex::new);
-    let logger = Box::leak(Box::new(SimpleLogger { file }));
-    let _ = log::set_logger(logger).map(|()| log::set_max_level(log::LevelFilter::Info));
-}

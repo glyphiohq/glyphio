@@ -220,7 +220,7 @@ impl SyncEngine {
                 .store
                 .dirty_snippets(team)?
                 .into_iter()
-                .filter(|s| syncable(s))
+                .filter(syncable)
                 .collect();
             let groups = self.store.dirty_groups(team)?;
             if snippets.is_empty() && groups.is_empty() {
@@ -412,7 +412,7 @@ mod tests {
             let mut st = self.state.lock().unwrap();
             let mut ack = sync_proto::PushAck { snippets: vec![], groups: vec![], cursor: 0 };
             for s in &batch.snippets {
-                let wins = st.snippets.get(&s.id).map_or(true, |(_, cur)| {
+                let wins = st.snippets.get(&s.id).is_none_or(|(_, cur)| {
                     sync_proto::lww_wins(&s.updated_at, s.version, &cur.updated_at, cur.version)
                 });
                 if wins {

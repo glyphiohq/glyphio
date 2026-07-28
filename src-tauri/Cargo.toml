@@ -44,7 +44,9 @@ core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"
 # NSWorkspace only, to ask macOS which app is frontmost (the window list can't answer that
 # reliably across displays, and the system-wide accessibility element refuses to).
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder"] }
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-opener = "2.5.4"
 
 [workspace]
 members = ["crates/snippet-store", "crates/sync-proto", "crates/sync-client"]

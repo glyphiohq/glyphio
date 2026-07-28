@@ -114,7 +114,7 @@ pub fn render_matches_yaml(snippets: &[Snippet]) -> Result<String> {
 /// * `exec:<regex>`  — raw regex against the focused app's executable path.
 /// * `title:<regex>` — raw regex against the focused window title.
 /// * anything else   — case-insensitive substring match against the executable path
-///                     (e.g. `Slack` scopes to Slack).
+///   (e.g. `Slack` scopes to Slack).
 pub(crate) fn scope_filter(scope: &str) -> (&'static str, String) {
     if let Some(re) = scope.strip_prefix("exec:") {
         ("filter_exec", re.to_string())

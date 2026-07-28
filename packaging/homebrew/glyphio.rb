@@ -11,7 +11,7 @@
 # rather than a trip through System Settings. See docs/INSTALL.md.
 cask "glyphio" do
   version "1.0.0"
-  sha256 "5b351a304f6d5d6f70b160bc038fa4fd11ec2328ac610982e032565349434f96"
+  sha256 "9a9863ca5005f58817168ac1997fcd0f19601149658be4774049c64aef1782fc"
 
   url "https://github.com/glyphiohq/glyphio/releases/download/v#{version}/Glyphio_#{version}_aarch64.dmg"
   name "Glyphio"

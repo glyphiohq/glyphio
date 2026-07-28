@@ -2,7 +2,7 @@
 //! Prints every intermediate step of what `scrollingPage` does so failures can be
 //! localised without the app's UI in the way.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Run the scrollingPage front-half step by step; with `capture` also grab pixels and
 /// run a short 3-frame scroll loop, saving PNGs next to the report for inspection.
@@ -27,7 +27,7 @@ pub fn page_probe(capture: bool) {
     println!("browser meta: {:?} [{:?}]", win.browser_meta(), t.elapsed());
 
     let t = Instant::now();
-    match super::ax::page_geometry(win.pid, Duration::from_millis(3000)) {
+    match super::ax::page_geometry(win.pid, super::PAGE_TREE_BUDGET) {
         Some(g) => {
             let (wx, wy, ww, wh) = g.window;
             println!("ax window frame: ({wx}, {wy}) {ww}x{wh} [{:?}]", t.elapsed());
@@ -39,7 +39,11 @@ pub fn page_probe(capture: bool) {
                     }
                 }
                 None => {
-                    println!("web viewport: NONE (scrollingPage would use the window frame)");
+                    println!(
+                        "web viewport: NONE (scrollingPage would use the window frame) \
+                         [tree_still_building={}]",
+                        g.tree_still_building
+                    );
                     if capture {
                         probe_captures(wx, wy, ww, wh);
                     }

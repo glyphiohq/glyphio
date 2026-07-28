@@ -33,6 +33,9 @@ const AX_VALUE_CGSIZE: u32 = 2;
 
 /// Gap between tree polls while a lazily-built web tree materialises.
 const POLL_INTERVAL: Duration = Duration::from_millis(120);
+/// Grace for a tree that is already switched on: enough to cover a page mid-navigation,
+/// far short of a cold start.
+const SETTLE: Duration = Duration::from_millis(600);
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -62,6 +65,10 @@ pub(super) struct PageGeometry {
     /// reports the full document extent (tens of thousands of points on a long page),
     /// so the raw bounds are intersected with the window frame to get the viewport.
     pub web_visible: Option<(f64, f64, f64, f64)>,
+    /// This call switched the browser's accessibility tree on and the budget ran out before
+    /// a web area appeared. Means "ask again in a moment", not "that isn't a web page" — the
+    /// two failures look identical from the outside and read very differently to a user.
+    pub tree_still_building: bool,
 }
 
 /// Read [`PageGeometry`] for `pid`'s focused window, or `None` when AX yields nothing.
@@ -87,8 +94,12 @@ pub(super) fn page_geometry(pid: i32, budget: Duration) -> Option<PageGeometry> 
         return geometry;
     }
 
-    enable_web_accessibility(&app, pid);
-    let deadline = Instant::now() + budget;
+    // Only a tree we just switched on is worth waiting seconds for. One that was already on
+    // has published everything it is going to: waiting the full budget on a window that has
+    // no web area — a popup, a settings tab, a browser's own toolbar overlay — would make
+    // "this isn't a page" take as long as the slowest cold start.
+    let building = enable_web_accessibility(&app, pid);
+    let deadline = Instant::now() + if building { budget } else { SETTLE };
     while Instant::now() < deadline {
         std::thread::sleep(POLL_INTERVAL);
         if let Some(g) = read_geometry(&app) {
@@ -98,6 +109,9 @@ pub(super) fn page_geometry(pid: i32, budget: Duration) -> Option<PageGeometry> 
                 break;
             }
         }
+    }
+    if let Some(g) = geometry.as_mut() {
+        g.tree_still_building = building && g.web_visible.is_none();
     }
     geometry
 }
@@ -119,15 +133,17 @@ const COOL_TICK: Duration = Duration::from_secs(5);
 /// leaving behind. So every app we switch on is remembered and switched back off once the
 /// captures stop ([`cool_down`]), and an app where it was already on — a screen reader is
 /// running — is left strictly alone, permanently.
-fn enable_web_accessibility(app: &CFType, pid: i32) {
+///
+/// Reports whether this call is what switched the tree on, i.e. whether there is a build to
+/// wait for. A tree that was already up needs no wait at all.
+fn enable_web_accessibility(app: &CFType, pid: i32) -> bool {
     set_bool(app, "AXManualAccessibility", true); // Electron's opt-in; unsupported elsewhere
     let ours = keep_warm(pid);
-    if !ours
-        && copy_attr(app, "AXEnhancedUserInterface")
-            .and_then(|v| v.downcast::<CFBoolean>())
-            .is_some_and(|b| b.into())
-    {
-        return; // somebody else's assistive session — not ours to turn off later
+    let already_on = copy_attr(app, "AXEnhancedUserInterface")
+        .and_then(|v| v.downcast::<CFBoolean>())
+        .is_some_and(|b| b.into());
+    if !ours && already_on {
+        return false; // somebody else's assistive session — not ours to turn off later
     }
     set_bool(app, "AXEnhancedUserInterface", true);
     warmed(|w| {
@@ -136,6 +152,7 @@ fn enable_web_accessibility(app: &CFType, pid: i32) {
     if !COOLING.swap(true, Ordering::SeqCst) {
         std::thread::spawn(cool_down);
     }
+    !already_on
 }
 
 /// Extend `pid`'s grace period if it is one of ours; reports whether it was.
@@ -205,7 +222,7 @@ fn read_geometry(app: &CFType) -> Option<PageGeometry> {
         .as_ref()
         .and_then(bounds)
         .and_then(|web| intersect(web, frame));
-    Some(PageGeometry { window: frame, web_visible })
+    Some(PageGeometry { window: frame, web_visible, tree_still_building: false })
 }
 
 /// The pid of the application holding keyboard focus. Unlike walking the window list this is

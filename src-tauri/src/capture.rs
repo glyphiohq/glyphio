@@ -176,6 +176,16 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
     finish(app, shot, mode, delivery)
 }
 
+/// How long to wait for a browser that builds its accessibility tree on demand.
+///
+/// Measured cold on an idle Mac (Chrome 3 windows, full screen): 2.0–2.2s from the opt-in to
+/// the web area appearing. The previous 3s left ~0.8s of headroom, which a loaded machine
+/// eats — and the failure is a hard error telling the user their page isn't a page. The wait
+/// is only ever paid on the first capture per browser per grace period, and only while the
+/// tree is genuinely being built (see `ax::page_geometry`), so the ceiling is cheap to raise
+/// and expensive to keep tight.
+const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(8000);
+
 /// Blocking body of the two frontmost-page modes. `pageOnly` requires a visible web area
 /// (that's the point of the mode); `scrollingPage` prefers it — no browser chrome repeating
 /// in the stitched frames — and falls back to the window frame for non-browsers.
@@ -185,11 +195,6 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
 /// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
 fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> {
     let win = backend::frontmost_window_bounds()?;
-    // A browser that builds its accessibility tree on demand takes ~2s to publish it (see
-    // `ax`), paid once per browser thanks to the grace period there. Both modes wait: for
-    // `pageOnly` there is nothing else to capture, and for `scrollingPage` the fallback —
-    // the whole window — repeats the browser's toolbar in every stitched frame.
-    const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(3000);
     let geometry = if scroll::app_accessibility_trusted() {
         ax::page_geometry(win.pid, PAGE_TREE_BUDGET)
     } else {
@@ -206,13 +211,23 @@ fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> 
                  page's position from the browser."
             );
         }
-        let (x, y, w, h) = geometry.and_then(|g| g.web_visible).ok_or_else(|| {
-            anyhow!(
-                "No web page found in the frontmost window (“{}”) — Browser Page capture \
-                 works when a browser (Safari, Chrome, Edge, Arc…) is in front, with a page \
-                 loaded rather than a settings or downloads tab.",
-                win.title
-            )
+        let (x, y, w, h) = geometry.as_ref().and_then(|g| g.web_visible).ok_or_else(|| {
+            if geometry.as_ref().is_some_and(|g| g.tree_still_building) {
+                // Not the user's fault and not a lasting problem: the opt-in this attempt
+                // just made is what the next one will find already done.
+                anyhow!(
+                    "{} was still publishing the page to macOS when the capture fired — \
+                     Glyphio had to ask it to, which it only has to do once. Try again.",
+                    if win.app_name.is_empty() { "The browser" } else { &win.app_name }
+                )
+            } else {
+                anyhow!(
+                    "No web page found in the frontmost window (“{}”) — Browser Page capture \
+                     works when a browser (Safari, Chrome, Edge, Arc…) is in front, with a page \
+                     loaded rather than a settings or downloads tab.",
+                    win.title
+                )
+            }
         })?;
         let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
         let (width, height) = img.dimensions();

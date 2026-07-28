@@ -990,9 +990,10 @@ function openEditor(existing) {
         </div>
         <div class="mfield" id="e-fields-row" style="display:none">
           <label>Form fields</label>
-          <p class="adv-hint">Reference a field in the content as <code>{{name}}</code>. No fields? Each <code>{{placeholder}}</code> in the content becomes a text input automatically.</p>
+          <p class="adv-hint">Reference a field in the content as <code>{{name}}</code> — double braces, and the <em>name</em>, not the label. Names take letters, digits, <code>_</code>, <code>.</code> and <code>-</code>; no spaces. No fields? Each <code>{{placeholder}}</code> in the content becomes a text input automatically.</p>
           <div id="e-fields"></div>
           <button type="button" class="secondary sm" id="e-field-add">Add field</button>
+          <p class="field-error" id="e-fields-err"></p>
         </div>
         <div class="mfield content-field">
           <div class="content-head">
@@ -1154,7 +1155,7 @@ function openEditor(existing) {
     formFields.forEach((f, i) => {
       const row = el('div', { className: 'field-row' });
       row.innerHTML = `
-        <input type="text" data-k="name" placeholder="name" spellcheck="false" />
+        <input type="text" data-k="name" placeholder="firstname" spellcheck="false" />
         <input type="text" data-k="label" placeholder="Label (optional)" />
         <select data-k="type">
           <option value="text">Text</option>
@@ -1169,6 +1170,17 @@ function openEditor(existing) {
       const optInput = row.querySelector('[data-k="options"]');
       optInput.value = Array.isArray(f.options) ? f.options.join(', ') : '';
       optInput.style.display = (f.type === 'select') ? '' : 'none';
+      // Refuse the characters a {{placeholder}} can't contain rather than accept them and
+      // fail at expansion time. Attached first so the handler below reads the cleaned value.
+      const nameInput = row.querySelector('[data-k="name"]');
+      nameInput.addEventListener('input', () => {
+        const typed = nameInput.value;
+        const legal = typed.replace(/[^\w.-]/g, '');
+        if (legal === typed) return;
+        const caret = (nameInput.selectionStart ?? legal.length) - (typed.length - legal.length);
+        nameInput.value = legal;
+        nameInput.setSelectionRange(caret, caret);
+      });
       row.querySelectorAll('[data-k]').forEach((input) => input.addEventListener('input', () => {
         f.name = row.querySelector('[data-k="name"]').value.trim();
         f.label = row.querySelector('[data-k="label"]').value.trim();
@@ -1243,7 +1255,9 @@ function openEditor(existing) {
     const replacement = readBody();
     const bodyErr = $('#e-body-err');
     const varsErr = $('#e-vars-err');
+    const fieldsErr = $('#e-fields-err');
     triggerErr.textContent = ''; bodyErr.textContent = ''; varsErr.textContent = '';
+    fieldsErr.textContent = '';
     let ok = true;
     if (!trigger) { triggerErr.textContent = 'Trigger is required.'; ok = false; }
     else if (!checkTrigger()) { ok = false; }
@@ -1259,6 +1273,12 @@ function openEditor(existing) {
         catch { varsErr.textContent = 'Variables must be valid JSON.'; $('#e-adv').open = true; ok = false; }
       }
     } else if (kind === 'form') {
+      const problems = formFieldProblems(formFields, replacement);
+      if (problems.length) {
+        fieldsErr.textContent = problems[0];
+        if (problems.length > 1) fieldsErr.textContent += ` (+${problems.length - 1} more)`;
+        ok = false;
+      }
       const cleaned = formFields
         .filter((f) => f.name)
         .map((f) => ({
@@ -1299,6 +1319,51 @@ function openEditor(existing) {
   });
   triggerInput.focus();
   checkTrigger();
+}
+
+// What a form field's name may contain — the same characters `form.js` will substitute for.
+// Anything else (a space, most often) can never match a {{placeholder}}, so the form would
+// collect the value and then quietly drop it.
+const FIELD_NAME_RE = /^[\w.-]+$/;
+
+/// Everything wrong with a form snippet's fields, in the order worth fixing.
+///
+/// A form whose fields are never referenced is not a subtle problem — it collects input and
+/// pastes the template untouched — but it fails at expansion time, in a window that has
+/// already closed, so nothing points at the cause. These are the checks that would have.
+function formFieldProblems(fields, body) {
+    const text = String(body || '');
+    const problems = [];
+    const named = fields.filter((f) => f.name);
+
+    for (const f of named) {
+        if (!FIELD_NAME_RE.test(f.name)) {
+            problems.push(
+                `Field name “${f.name}” can't be used: names take letters, digits, _ . and - ` +
+                `(no spaces). Try “${f.name.replace(/[^\w.-]+/g, '')}”.`,
+            );
+        }
+    }
+    if (problems.length) return problems; // fix the names before judging the content
+
+    const used = new Set(
+        [...text.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)].map((m) => m[1]),
+    );
+    const missing = named.filter((f) => !used.has(f.name));
+    for (const f of missing) {
+        // The single-brace slip is worth calling out by name: it looks right, and the label
+        // is the obvious thing to reach for even though the name is what substitutes.
+        const singles = [f.name, f.label].filter(Boolean)
+            .filter((s) => text.includes(`{${s}}`));
+        problems.push(
+            singles.length
+                ? `Content has “{${singles[0]}}” — placeholders need double braces. ` +
+                  `Write “{{${f.name}}}”.`
+                : `Field “${f.name}” isn't used in the content — add “{{${f.name}}}”, ` +
+                  `or remove the field.`,
+        );
+    }
+    return problems;
 }
 
 // Rich-text toolbar. Returns a `refresh()` that syncs button active-states to the current selection.

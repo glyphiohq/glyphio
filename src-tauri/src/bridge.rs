@@ -112,7 +112,7 @@ async fn process(app: &AppHandle, op: &str, snippet_id: &str) -> serde_json::Val
                     "format": snippet.format,
                 },
             });
-            open_with_payload(app, "popup", payload);
+            open_with_payload(app, "popup", payload).await;
             json!({ "ok": true, "text": "" })
         }
         "form" => {
@@ -133,7 +133,7 @@ async fn process(app: &AppHandle, op: &str, snippet_id: &str) -> serde_json::Val
                     "variables": snippet.variables,
                 },
             });
-            open_with_payload(app, "form", payload);
+            open_with_payload(app, "form", payload).await;
 
             match tokio::time::timeout(FORM_TIMEOUT, rx).await {
                 Ok(Ok(FormReply::Submitted(text))) => json!({ "ok": true, "text": text }),
@@ -153,10 +153,23 @@ async fn process(app: &AppHandle, op: &str, snippet_id: &str) -> serde_json::Val
 
 /// Stash the payload for the surface, then (re)open its window on the main thread. An
 /// already-open window is recreated so it always shows the fresh payload.
-fn open_with_payload(app: &AppHandle, surface: &'static str, payload: serde_json::Value) {
+///
+/// Recreating means the old one has to be *gone*, not merely asked to go: `close()` posts a
+/// request to the event loop, and building a webview whose label is still taken fails
+/// outright — which is how a second form trigger used to do nothing at all.
+async fn open_with_payload(app: &AppHandle, surface: &'static str, payload: serde_json::Value) {
     {
         let state = app.state::<AppState>();
         state.pending_payloads.lock().unwrap().insert(surface.to_string(), payload);
+    }
+    if let Some(win) = app.get_webview_window(surface) {
+        let _ = win.close();
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            if app.get_webview_window(surface).is_none() {
+                break;
+            }
+        }
     }
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {

@@ -589,12 +589,24 @@ pub fn take_pending_payload(state: State<AppState>, label: String) -> Option<ser
 }
 
 /// The form window submits its filled body — completes the engine's blocked expansion.
+///
+/// Order matters, and it is the opposite of the obvious one. Resolving unblocks the engine,
+/// which injects into whatever is frontmost within milliseconds — so the form window has to
+/// be gone, and Glyphio deactivated, *before* the answer goes back. Answer first and the
+/// expansion lands in the form that asked for it, which looks exactly like nothing happening.
+/// Same reasoning and the same beat as [`palette_exec`].
 #[tauri::command]
-pub fn form_submit(app: AppHandle, state: State<AppState>, request_id: String, text: String) {
-    state.bridge.resolve(&request_id, crate::bridge::FormReply::Submitted(text));
+pub async fn form_submit(app: AppHandle, request_id: String, text: String) {
     if let Some(win) = app.get_webview_window("form") {
         let _ = win.close();
     }
+    // Not just the window: another open Glyphio window would take key focus instead.
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    app.state::<AppState>()
+        .bridge
+        .resolve(&request_id, crate::bridge::FormReply::Submitted(text));
 }
 
 /// The form window was cancelled (Esc / closed) — the expansion aborts cleanly.

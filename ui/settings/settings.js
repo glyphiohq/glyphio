@@ -56,11 +56,9 @@ const CAPTURE_SECTIONS = [
     ['enableFrontWindowCapture', 'toggle', 'Frontmost window (no picker — e.g. just the browser)'],
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
-  { title: 'After a capture', hint: `A silent capture skips the editor and goes straight to
-    the clipboard. You can take one whenever you like — <kbd>⌘↩</kbd> on any row of the
-    palette's <em>Capture</em> list, or a hotkey of its own below — so the setting here is only
-    about what the <em>ordinary</em> capture keys do. Either way it still lands in history:
-    open it from <strong>History</strong> to annotate it later.`, fields: [
+  { title: 'After a capture', hint: `A silent capture skips the editor and goes straight to the
+    clipboard — <kbd>⌘↩</kbd> in the palette does one on demand. Either way it lands in
+    History.`, fields: [
     ['silentCapture', 'toggle', 'Make every capture silent by default'],
     ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
     ['historyEnabled', 'toggle', 'Save captures to history'],
@@ -77,11 +75,8 @@ const CAPTURE_SECTIONS = [
     ['bannerBg', 'color', 'Background'], ['bannerFg', 'color', 'Text'],
     ['bannerMuted', 'color', 'Muted text'],
   ]},
-  { title: 'Details on the capture', hint: `What else the strip says about what you captured.
-    The page details come from the browser and are recorded for the modes that target one
-    window — <em>frontmost window</em>, <em>browser page</em> and <em>scrolling page</em>; a
-    picked region has no single window to ask. They are off by default: a URL or a profile
-    name baked into a screenshot travels with it wherever you paste it.`, fields: [
+  { title: 'Details on the capture', hint: `Off by default — a URL baked into a screenshot
+    travels with it. Only the modes that target one window can record them.`, fields: [
     ['showWindowTitle', 'toggle', 'Window / app title'],
     ['showPageTitle', 'toggle', 'Page title'],
     ['showPageUrl', 'toggle', 'Page address (URL)'],
@@ -91,10 +86,8 @@ const CAPTURE_SECTIONS = [
     ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
     ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
   ]},
-  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `Each mode can have a second key that
-    takes the same shot <strong>straight to the clipboard</strong>, with no editor window —
-    the same thing as <kbd>⌘↩</kbd> on that mode's row in the palette. Leave it blank if you
-    don't want one.`, fields: [
+  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `The second key takes the same shot
+    straight to the clipboard. Leave it blank if you don't want one.`, fields: [
     ['shortcutCaptureFull', 'hotkeys', 'Full window', 'shortcutCaptureFullSilent'],
     ['shortcutCaptureVisible', 'hotkeys', 'Visible area', 'shortcutCaptureVisibleSilent'],
     ['shortcutCaptureSnip', 'hotkeys', 'Region (snip)', 'shortcutCaptureSnipSilent'],
@@ -113,19 +106,15 @@ const SNIPPET_SECTIONS = [
 ];
 
 const CLIPBOARD_SECTIONS = [
-  { title: 'Clipboard history', hint: `Everything you copy, kept on this device so you can
-    paste it again later. <strong>Content a password manager marks as concealed is never
-    recorded</strong>, and neither is anything marked transient — that marking is the
-    convention clipboard tools use, and Glyphio honours it. Nothing here is ever synced or
-    sent anywhere: there is no code that could.`, fields: [
+  { title: 'Clipboard history', hint: `Kept on this device, never synced. Content a password
+    manager marks as concealed is never recorded.`, fields: [
     ['clipboardHistory', 'toggle', 'Remember what I copy'],
     ['clipboardMaxItems', 'number', 'Entries kept'],
     ['clipboardMaxMb', 'number', 'Megabytes of copied images kept'],
     ['shortcutOpenClipboard', 'text', 'Open clipboard history'],
   ]},
-  { title: 'Never record from these apps', hint: `One app name per line, matched loosely —
-    <code>bank</code> catches “Banking”. Password managers already mark their own content and
-    don't need listing.`, fields: [
+  { title: 'Never record from these apps', hint: `One name per line, matched loosely —
+    <code>bank</code> catches “Banking”.`, fields: [
     ['clipboardIgnoreApps', 'lines', 'Ignored apps'],
   ]},
 ];
@@ -378,8 +367,7 @@ async function shareGroup(id) {
   }
   const { modal, close } = openModal(`
     <h3>Share “${escapeHtml(g?.name || '')}”</h3>
-    <p class="adv-hint">The group and its snippets sync with the selected team. Members see them
-    per their role; access can be restricted per member from the admin dashboard.</p>
+    <p class="adv-hint">Members see it per their role.</p>
     <input type="search" id="ts-search" placeholder="Search your teams…" autocomplete="off" />
     <ul class="team-pick" id="ts-list"></ul>
     <div class="modal-actions">
@@ -821,8 +809,8 @@ async function confirmInvite(url) {
       <div><span class="invite-k">Server</span><code>${escapeHtml(info.server)}</code></div>
       <div><span class="invite-k">Sign-in</span>${info.authMode === 'oidc' ? 'Single sign-on (SSO)' : 'API token' + (info.hasToken ? ' (included in the invite)' : '')}</div>
     </div>
-    <p class="adv-hint">Only accept invites from your own team. Personal snippets and captures
-    never leave this device either way.</p>
+    <p class="adv-hint">Only accept invites you expect. Personal snippets and captures never
+    leave this device either way.</p>
     <div class="modal-actions"><div class="spacer"></div>
       <button class="secondary" data-no>Cancel</button>
       <button class="primary" data-yes>Join</button>
@@ -1177,7 +1165,7 @@ function openEditor(existing) {
         </div>
         <div class="mfield" id="e-fields-row" style="display:none">
           <label>Form fields</label>
-          <p class="adv-hint">Reference a field in the content as <code>{{name}}</code> — double braces, and the <em>name</em>, not the label. Names take letters, digits, <code>_</code>, <code>.</code> and <code>-</code>; no spaces. No fields? Each <code>{{placeholder}}</code> in the content becomes a text input automatically.</p>
+          <p class="adv-hint">Reference a field as <code>{{name}}</code> — double braces, the name not the label. No spaces in names. With no fields, each <code>{{placeholder}}</code> becomes a text input.</p>
           <div id="e-fields"></div>
           <button type="button" class="secondary sm" id="e-field-add">Add field</button>
           <p class="field-error" id="e-fields-err"></p>
@@ -2026,8 +2014,8 @@ function renderSyncSection(form) {
 
   div.innerHTML = `
     <h3>Team sync</h3>
-    <p class="adv-hint">Syncs <strong>team-shared</strong> snippet groups through your configured
-    backend. Personal snippets and capture history never leave this device.</p>
+    <p class="adv-hint">Team-shared groups only. Personal snippets, captures and clipboard never
+    leave this device.</p>
     ${body}`;
 
   const toggleOidc = () => div.querySelectorAll('.sc-oidc').forEach((el) => {
@@ -2136,8 +2124,7 @@ function renderJoinTeam(st, soleContent) {
   return `
     <div class="join-team${soleContent ? ' join-team-empty' : ''}">
       ${soleContent
-        ? `<p class="adv-hint">You're signed in but not in any team yet. Paste an invite from your
-           admin to join one — you can be in as many teams as you're invited to.</p>`
+        ? `<p class="adv-hint">Signed in, but not in a team yet — paste an invite to join one.</p>`
         : ''}
       <div class="join-row">
         <input type="text" id="join-code" placeholder="Paste an invite link or code…" autocomplete="off" spellcheck="false" />
@@ -2302,7 +2289,10 @@ function renderSettings(main) {
 
 /// Render setting sections plus the Save button they share. Every input carries its key, so
 /// `saveSettings` collects whatever is on screen.
-function renderSections(form, sections) {
+/// `tail` is an extra section to place after the generated ones. It exists so **Save settings
+/// stays the last thing on the page**: anything rendered below that button looks like
+/// something the button doesn't cover, and it butts straight up against it besides.
+function renderSections(form, sections, tail) {
   for (const sec of sections) {
     const div = document.createElement('div');
     div.className = 'form-section';
@@ -2310,6 +2300,7 @@ function renderSections(form, sections) {
     for (const [key, type, label, opts] of sec.fields) div.append(renderField(key, type, label, opts));
     form.append(div);
   }
+  if (tail) form.append(tail);
   const save = document.createElement('button');
   save.className = 'primary'; save.textContent = 'Save settings';
   save.addEventListener('click', saveSettings);
@@ -2321,10 +2312,8 @@ function renderSnippetsTab(form) {
   div.className = 'form-section';
   div.innerHTML = `
     <h3>Portability</h3>
-    <p class="adv-hint">Exports are portable Glyphio JSON — content only, no team or sync state.
-    Imports also accept <code>matches:</code>-style YAML from other expanders. You pick the group they land in;
-    snippets you already have are skipped, and a trigger that arrives with different content is shown side by side
-    so you can replace it or keep yours.${state.syncStatus?.identity?.policy?.exportTeamGroups && state.syncStatus.identity.policy.exportTeamGroups !== 'open'
+    <p class="adv-hint">Portable Glyphio JSON, content only. Imports also accept
+    <code>matches:</code>-style YAML. Duplicates are skipped; conflicting triggers are shown for you to choose.${state.syncStatus?.identity?.policy?.exportTeamGroups && state.syncStatus.identity.policy.exportTeamGroups !== 'open'
       ? ' <strong>Note:</strong> your organization restricts exporting team-shared groups.' : ''}</p>
     <div class="sync-actions">
       <button class="secondary" id="tab-export">Export all snippets…</button>
@@ -2337,13 +2326,11 @@ function renderSnippetsTab(form) {
 }
 
 function renderClipboardTab(form) {
-  renderSections(form, CLIPBOARD_SECTIONS);
   const div = document.createElement('div');
   div.className = 'form-section';
   div.innerHTML = `
     <h3>Forget everything</h3>
-    <p class="adv-hint">Deletes every stored entry and every copied image, pinned ones
-    included. There is no undo, and nothing to recover from — that's the point.</p>
+    <p class="adv-hint">Every entry and copied image, pinned included. Cannot be undone.</p>
     <div class="sync-actions"><button class="secondary" id="clip-clear">Clear clipboard history</button></div>`;
   div.querySelector('#clip-clear').addEventListener('click', async () => {
     const ok = await confirmDialog(
@@ -2354,7 +2341,7 @@ function renderClipboardTab(form) {
     try { await invoke('clear_clips'); setStatus('Clipboard history cleared.', 'ok'); }
     catch (e) { setStatus(String(e), 'err'); }
   });
-  form.append(div);
+  renderSections(form, CLIPBOARD_SECTIONS, div);
 }
 
 function renderPermissionsTab(form) {
@@ -2397,8 +2384,8 @@ async function renderAboutTab(form) {
   try { version = await window.__TAURI__.app.getVersion(); } catch { /* capability absent */ }
   div.innerHTML = `
     <h3>About Glyphio</h3>
-    <p class="adv-hint">Local-first text expansion and screenshot capture with self-hostable,
-    role-based team sync. ${version ? `Version <code>${escapeHtml(version)}</code>.` : ''}</p>
+    <p class="adv-hint">Local-first text expansion, screenshot capture and clipboard history.
+    ${version ? `Version <code>${escapeHtml(version)}</code>.` : ''}</p>
     <p class="adv-hint">App licensed
     GPL-3.0-or-later; sync protocol and reference server Apache-2.0. Your snippets and
     captures stay on this device unless you share a group with a team.</p>`;

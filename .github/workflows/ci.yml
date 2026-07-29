@@ -28,12 +28,15 @@ jobs:
     name: App (macOS)
     # NOT the same number as bundle.macOS.minimumSystemVersion, which is 14.0. That is the
     # oldest macOS the app *runs* on and comes from the deployment target; this is the SDK the
-    # build needs to *compile* against, and the two are free to differ. They have to here:
-    # screencapturekit pulls apple-metal, whose Swift bridge uses MTLLogState and
-    # MTLResidencySet — symbols that don't exist before the macOS 15 SDK. On macos-14 its build
-    # script fails with "cannot find type 'MTLLogState' in scope" before any of our code is
-    # even checked. Building on a newer SDK does not raise the runtime floor.
-    runs-on: macos-15
+    # build needs to *compile* against, and the two are free to differ. Building on a newer SDK
+    # does not raise the runtime floor — release.sh still checks every bundled binary against it.
+    #
+    # It has to be 26 because screencapturekit depends on apple-metal (mandatory, >=0.6 <0.9),
+    # whose Swift bridge references MTLSamplerReductionMode — API_AVAILABLE(macos(26.0)). On
+    # older runners its build script fails with "cannot find 'MTLSamplerReductionMode' in scope"
+    # before a line of Glyphio is checked. So macOS 26's SDK is Glyphio's real build requirement
+    # today, whatever it runs on; see the prereqs in README.md.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
 

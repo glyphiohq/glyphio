@@ -54,7 +54,10 @@ for capture) — the in-app banners walk you through both.
 
 ## Build from source
 
-Prereqs: Rust stable, Node 18+, macOS Command Line Tools (full Xcode not required).
+Prereqs: Rust stable, Node 18+, and the **macOS 26 SDK** (Command Line Tools are enough;
+full Xcode is not). The SDK floor comes from a transitive dependency — `screencapturekit`
+requires `apple-metal`, which references Metal symbols introduced in macOS 26. The app
+itself still *runs* on macOS 14 and later.
 
 ```bash
 npm install

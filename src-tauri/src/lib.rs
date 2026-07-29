@@ -212,7 +212,6 @@ pub fn run() {
             commands::clip_set_pinned,
             commands::delete_clip,
             commands::clear_clips,
-            commands::clip_image_data_url,
             commands::form_submit,
             commands::form_cancel,
             commands::accessibility_status,

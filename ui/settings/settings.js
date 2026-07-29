@@ -322,7 +322,7 @@ function renderSidebar() {
     </div>
     ${renderTeamNav(item)}
     <div class="nav-group nav-bottom">
-      <button class="nav-item ${state.selected === 'history' ? 'active' : ''}" data-nav="history"><span class="nav-label">Capture history</span></button>
+      <button class="nav-item ${state.selected === 'history' ? 'active' : ''}" data-nav="history"><span class="nav-label">History</span></button>
       ${item('settings', 'Settings', null)}
     </div>
   `;
@@ -496,29 +496,189 @@ function currentGroupId() {
 
 // --- Capture history (in-window view, replaces the old separate window) --------
 
+/// History is one timeline of everything this device kept for you: screenshots you took and
+/// things you copied. They were always the same act — "hold on to this" — and keeping them in
+/// two places meant knowing in advance which list a thing had gone into.
+///
+/// The three views split it the way people actually look for something: everything, the
+/// things that are words, the things that are pictures. A screenshot and a copied image are
+/// both pictures, so `image` holds both.
+const HISTORY_VIEWS = [
+  ['all', 'All'],
+  ['text', 'Text'],
+  ['image', 'Images'],
+];
+
 async function renderHistory(main) {
+  state.historyView = state.historyView || 'all';
+  state.historyQuery = state.historyQuery || '';
+  const tabs = HISTORY_VIEWS.map(([id, label]) =>
+    `<button type="button" class="seg-opt ${state.historyView === id ? 'active' : ''}" data-hview="${id}">${label}</button>`).join('');
   main.innerHTML = `
     <div class="main-head">
-      <h2 class="main-title" style="margin:0">Capture history</h2>
+      <h2 class="main-title" style="margin:0">History</h2>
+      <div class="seg settings-tabs" id="hist-views">${tabs}</div>
+      <input type="search" id="hist-q" class="hist-search" placeholder="Search history…"
+             autocomplete="off" spellcheck="false">
       <div class="spacer"></div>
       <span class="hist-stats" id="hist-stats"></span>
       <button class="danger" id="hist-clear">Clear all</button>
     </div>
     <ul class="hist-grid" id="hist-grid"></ul>
-    <div class="empty" id="hist-empty" hidden>No captures yet — press ⌥⇧X to snip or ⌥⇧L for a scrolling capture.</div>`;
+    <div class="empty" id="hist-empty" hidden></div>`;
+
+  main.querySelectorAll('[data-hview]').forEach((b) => b.addEventListener('click', () => {
+    state.historyView = b.dataset.hview;
+    renderHistory(main);
+  }));
+  const search = main.querySelector('#hist-q');
+  search.value = state.historyQuery;
+  search.addEventListener('input', () => {
+    state.historyQuery = search.value;
+    draw();
+  });
+
+  const [captures, clips] = await Promise.all([
+    invoke('list_captures').catch(() => []),
+    invoke('list_clips').catch(() => []),
+  ]);
+  // One timeline, newest first. Each entry carries where it came from so the card renderer
+  // and the delete button both know what they are dealing with.
+  const all = [
+    ...captures.map((c) => ({ source: 'capture', kind: 'image', at: c.capturedAt, item: c })),
+    ...clips.map((c) => ({ source: 'clip', kind: c.kind, at: c.copiedAt, item: c })),
+  ].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+  const grid = main.querySelector('#hist-grid');
+  const stats = main.querySelector('#hist-stats');
+  const empty = main.querySelector('#hist-empty');
+  let shown = [];
+
+  function draw() {
+    const q = state.historyQuery.trim().toLowerCase();
+    shown = all.filter((e) => {
+      if (state.historyView !== 'all' && e.kind !== state.historyView) return false;
+      if (!q) return true;
+      const hay = e.source === 'capture'
+        ? `${e.item.title || ''} ${e.item.url || ''} ${e.item.pageTitle || ''} ${e.item.note || ''}`
+        : `${e.item.preview || ''} ${e.item.sourceApp || ''}`;
+      return hay.toLowerCase().includes(q);
+    });
+    grid.textContent = '';
+    for (const entry of shown) {
+      grid.appendChild(
+        entry.source === 'capture'
+          ? historyCard(entry.item, () => renderHistory(main))
+          : clipCard(entry.item, () => renderHistory(main)),
+      );
+    }
+    const bytes = shown.reduce((sum, e) => sum + (e.item.sizeBytes || 0), 0);
+    stats.textContent = `${shown.length} of ${all.length} · ${(bytes / 1048576).toFixed(1)} MB`;
+    empty.hidden = shown.length > 0;
+    empty.textContent = all.length
+      ? 'Nothing here matches that.'
+      : 'Nothing yet — press ⌥⇧X to snip, or copy something.';
+    const clear = main.querySelector('#hist-clear');
+    clear.textContent = shown.length === all.length ? 'Clear all' : `Delete these ${shown.length}`;
+    clear.disabled = shown.length === 0;
+  }
+
   main.querySelector('#hist-clear').addEventListener('click', async () => {
-    if (!(await confirmDialog('Delete every capture in history?', { confirmLabel: 'Clear all', danger: true }))) return;
-    await invoke('clear_captures');
+    // Deletes exactly what is on screen. One rule whatever the view and the search say, so
+    // the button can never take more than it appears to offer.
+    const whole = shown.length === all.length;
+    const ok = await confirmDialog(
+      whole
+        ? 'Delete every capture and every clipboard entry, pinned ones included?'
+        : `Delete the ${shown.length} shown ${shown.length === 1 ? 'entry' : 'entries'}?`,
+      { confirmLabel: whole ? 'Clear all' : 'Delete', danger: true },
+    );
+    if (!ok) return;
+    for (const e of shown) {
+      try {
+        await invoke(e.source === 'capture' ? 'delete_capture' : 'delete_clip', { id: e.item.id });
+      } catch (err) { setStatus(String(err), 'err'); }
+    }
     renderHistory(main);
   });
-  const items = await invoke('list_captures');
-  const grid = main.querySelector('#hist-grid');
-  const totalBytes = items.reduce((sum, it) => sum + (it.sizeBytes || 0), 0);
-  const st = state.settings || {};
-  main.querySelector('#hist-stats').textContent =
-    `${items.length}${st.historyMaxCount ? ' / ' + st.historyMaxCount : ''} captures · ${(totalBytes / 1048576).toFixed(1)} MB`;
-  main.querySelector('#hist-empty').hidden = items.length > 0;
-  for (const item of items) grid.appendChild(historyCard(item, () => renderHistory(main)));
+
+  draw();
+}
+
+/// A clipboard entry in the history grid. Text gets its words, an image gets its pixels; both
+/// get the app they came from, because "where was I when I copied this" is most of how people
+/// recognise a thing they copied an hour ago.
+function clipCard(clip, redraw) {
+  const li = document.createElement('li');
+  li.className = 'hist-card';
+
+  if (clip.kind === 'image' && clip.imagePath) {
+    const img = document.createElement('img');
+    img.className = 'hist-thumb';
+    img.alt = clip.preview || 'copied image';
+    img.src = convertFileSrc(clip.imagePath);
+    li.append(img);
+  } else {
+    const body = document.createElement('div');
+    body.className = 'hist-thumb hist-text';
+    body.textContent = clip.preview || '';
+    li.append(body);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'hist-meta';
+  const dt = new Date(clip.copiedAt);
+  meta.innerHTML = `<span class="hist-when">${isNaN(dt) ? '' : dt.toLocaleString()}${clip.pinned ? ' · pinned' : ''}</span>
+    <span class="hist-title">${escapeHtml(clip.sourceApp || 'clipboard')}</span>`;
+
+  const actions = document.createElement('div');
+  actions.className = 'hist-actions';
+  const mk = (name, title, fn, cls = 'ghost') => {
+    const b = document.createElement('button');
+    b.className = `${cls} iconbtn sm`;
+    b.innerHTML = icon(name, 15);
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.addEventListener('click', fn);
+    return b;
+  };
+  actions.append(
+    mk('copy', 'Copy again', async () => {
+      try {
+        await invoke('clipboard_use', { id: clip.id, paste: false });
+        setStatus('Back on the clipboard.', 'ok');
+      } catch (e) { setStatus(String(e), 'err'); }
+    }),
+    mk(clip.pinned ? 'pinFilled' : 'pin', clip.pinned ? 'Unpin' : 'Pin', async () => {
+      try {
+        await invoke('clip_set_pinned', { id: clip.id, pinned: !clip.pinned });
+        redraw();
+      } catch (e) { setStatus(String(e), 'err'); }
+    }),
+  );
+  if (clip.kind === 'image' && clip.imagePath) {
+    actions.append(mk('download', 'Save to file…', async () => {
+      const iso = (clip.copiedAt || '').replace(/[:T]/g, '-').slice(0, 19);
+      const path = await window.__TAURI__.dialog.save({
+        defaultPath: `${(state.settings?.filenamePrefix || 'glyphio')}-copied-${iso}.png`,
+        filters: [{ name: 'PNG image', extensions: ['png'] }],
+      });
+      if (!path) return;
+      try {
+        const blob = await (await fetch(convertFileSrc(clip.imagePath))).blob();
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let bin = '';
+        for (const b of buf) bin += String.fromCharCode(b);
+        await invoke('save_file', { path, pngBase64: btoa(bin) });
+        setStatus(`Saved → ${path}`, 'ok');
+      } catch (e) { setStatus(String(e), 'err'); }
+    }));
+  }
+  actions.append(
+    mk('trash', 'Delete', async () => { await invoke('delete_clip', { id: clip.id }); redraw(); }, 'danger'),
+  );
+  li.append(meta, actions);
+  return li;
 }
 
 /// What a stored capture tells its banner. Rows saved before the browser fields existed have

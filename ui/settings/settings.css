@@ -736,6 +736,21 @@
   width: 100%; height: 140px; object-fit: cover; object-position: top;
   cursor: pointer; background: var(--inset); display: block;
 }
+/* A copied text has no thumbnail, so it shows its words in the same box a picture would
+   occupy — the grid stays a grid instead of collapsing around mixed card heights. */
+.hist-text {
+  cursor: default; padding: 10px 12px; box-sizing: border-box;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-secondary); white-space: pre-wrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-search {
+  width: 200px; padding: 4px 9px; font-size: 12px;
+  background: var(--inset); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  align-self: center;
+}
+.hist-search:focus { outline: none; border-color: var(--accent); }
 .hist-meta { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px 4px; min-width: 0; }
 .hist-when { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
 .hist-title { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

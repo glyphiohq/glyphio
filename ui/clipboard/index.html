@@ -49,6 +49,29 @@
       font-family: inherit;
     }
     #q::placeholder { color: var(--text-muted); }
+    .clip-filter {
+      display: flex;
+      gap: 2px;
+      flex: 0 0 auto;
+      background: var(--surface-sunken, rgba(127, 127, 127, 0.12));
+      border-radius: 7px;
+      padding: 2px;
+    }
+    .clip-filter button {
+      font: inherit;
+      font-size: 11px;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-radius: 5px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+    .clip-filter button.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    }
     .pal-list {
       flex: 1;
       overflow-y: auto;
@@ -137,6 +160,11 @@
     <div class="pal-search">
       <span class="pal-glyph">⎘</span>
       <input id="q" type="text" placeholder="Search what you've copied…" autocomplete="off" spellcheck="false">
+      <div class="clip-filter" id="filter">
+        <button type="button" data-kind="all" class="active">All</button>
+        <button type="button" data-kind="text">Text</button>
+        <button type="button" data-kind="image">Images</button>
+      </div>
     </div>
     <ul class="pal-list" id="list"></ul>
     <p class="clip-err" id="err"></p>
@@ -145,6 +173,7 @@
       <span><kbd>⌘↩</kbd> copy only</span>
       <span><kbd>⌘P</kbd> pin</span>
       <span><kbd>⌘⌫</kbd> delete</span>
+      <span><kbd>←</kbd><kbd>→</kbd> filter</span>
       <span class="spacer"></span>
       <span><kbd>esc</kbd> close</span>
     </div>

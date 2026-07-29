@@ -4,18 +4,21 @@
 // pastes it into the app you came from; ⌘Enter loads the clipboard and leaves the pasting to
 // you. ⌘P pins an entry so retention can't reach it, ⌘⌫ forgets one.
 
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const input = document.getElementById('q');
 const list = document.getElementById('list');
 const errEl = document.getElementById('err');
+const filterBar = document.getElementById('filter');
+
+/** Which kinds the list is showing. Order matters: ← and → step through it. */
+const KINDS = ['all', 'text', 'image'];
 
 let clips = [];
 let filtered = [];
 let selected = 0;
-/** id → data URL, so re-drawing the list doesn't re-read every PNG off disk. */
-const thumbs = new Map();
+let kind = 'all';
 
 init();
 
@@ -32,7 +35,21 @@ async function init() {
   window.addEventListener('blur', close);
   input.addEventListener('input', () => { selected = 0; draw(); });
   input.addEventListener('keydown', onKey);
+  filterBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-kind]');
+    if (btn) setKind(btn.dataset.kind);
+  });
   input.focus();
+}
+
+function setKind(next) {
+  kind = next;
+  selected = 0;
+  filterBar.querySelectorAll('[data-kind]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.kind === kind);
+  });
+  draw();
+  input.focus(); // clicking a filter must not cost you the search field
 }
 
 function close() {
@@ -52,6 +69,7 @@ async function refresh() {
 }
 
 function match(clip, q) {
+  if (kind !== 'all' && clip.kind !== kind) return false;
   if (!q) return true;
   return `${clip.preview} ${clip.sourceApp}`.toLowerCase().includes(q);
 }
@@ -66,7 +84,7 @@ function draw() {
     const empty = document.createElement('li');
     empty.className = 'pal-empty';
     empty.textContent = clips.length
-      ? 'Nothing matches that.'
+      ? (kind === 'all' ? 'Nothing matches that.' : `No ${kind === 'text' ? 'text' : 'images'} match that.`)
       : 'Nothing copied yet. Anything you copy from now on shows up here.';
     list.appendChild(empty);
     return;
@@ -85,14 +103,7 @@ function draw() {
       const img = document.createElement('img');
       img.className = 'clip-thumb';
       img.alt = clip.preview;
-      const cached = thumbs.get(clip.id);
-      if (cached) {
-        img.src = cached;
-      } else {
-        invoke('clip_image_data_url', { id: clip.id })
-          .then((url) => { thumbs.set(clip.id, url); img.src = url; })
-          .catch(() => {});
-      }
+      if (clip.imagePath) img.src = convertFileSrc(clip.imagePath);
       row.appendChild(img);
     }
 
@@ -154,7 +165,6 @@ async function remove() {
   if (!clip) return;
   try {
     await invoke('delete_clip', { id: clip.id });
-    thumbs.delete(clip.id);
     await refresh();
   } catch (e) {
     errEl.textContent = String(e);
@@ -180,6 +190,12 @@ function onKey(e) {
   } else if (mod && (e.key === 'Backspace' || e.key === 'Delete')) {
     e.preventDefault();
     remove();
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // Only when the caret can't use them — typing a query still moves through the text.
+    if (input.selectionStart !== input.selectionEnd || input.value) return;
+    e.preventDefault();
+    const step = e.key === 'ArrowRight' ? 1 : KINDS.length - 1;
+    setKind(KINDS[(KINDS.indexOf(kind) + step) % KINDS.length]);
   } else if (e.key === 'Escape') {
     e.preventDefault();
     close();

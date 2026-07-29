@@ -20,8 +20,9 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
 - **Clipboard history** — everything you copy, text and images, searchable from a hotkey
-  (`Alt+Shift+C`) and pasted back into the app you were in. Pin what you want to keep; entry
-  and size caps evict the rest. **Content a password manager marks concealed is never
+  (`Alt+Shift+C`) and pasted back into the app you were in — filter to just text or just
+  images. Pin what you want to keep; entry and size caps evict the rest. It shares the
+  in-app **History** view with your screenshots, under **All / Text / Images**. **Content a password manager marks concealed is never
   recorded**, apps can be excluded by name, and none of it syncs.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
   or a static API token, against **any backend implementing the

@@ -646,22 +646,6 @@ pub fn clear_clips(state: State<AppState>) -> CmdResult<()> {
     state.clips.clear().map_err(err)
 }
 
-/// A copied image as a data URL, for the picker's thumbnails.
-#[tauri::command]
-pub fn clip_image_data_url(state: State<AppState>, id: String) -> CmdResult<String> {
-    let entry = state
-        .clips
-        .get(&id)
-        .map_err(err)?
-        .ok_or_else(|| "that clipboard entry is gone".to_string())?;
-    let path = entry.image_path.ok_or_else(|| "not an image".to_string())?;
-    let bytes = std::fs::read(path).map_err(err)?;
-    Ok(format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(&bytes)
-    ))
-}
-
 /// One-shot payload pull for bridge-driven windows (`popup` / `form`) — same pattern as
 /// `take_pending_capture`, keyed by window label.
 #[tauri::command]

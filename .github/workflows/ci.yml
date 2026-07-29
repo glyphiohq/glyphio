@@ -26,9 +26,16 @@ env:
 jobs:
   app:
     name: App (macOS)
-    runs-on: macos-14 # matches bundle.macOS.minimumSystemVersion
+    # NOT the same number as bundle.macOS.minimumSystemVersion, which is 14.0. That is the
+    # oldest macOS the app *runs* on and comes from the deployment target; this is the SDK the
+    # build needs to *compile* against, and the two are free to differ. They have to here:
+    # screencapturekit pulls apple-metal, whose Swift bridge uses MTLLogState and
+    # MTLResidencySet — symbols that don't exist before the macOS 15 SDK. On macos-14 its build
+    # script fails with "cannot find type 'MTLLogState' in scope" before any of our code is
+    # even checked. Building on a newer SDK does not raise the runtime floor.
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No `cargo fmt --check`: the codebase uses a wider, hand-kept style than rustfmt's
       # defaults, and reformatting it wholesale would rewrite every blame line for no
@@ -61,7 +68,7 @@ jobs:
     name: Sync server
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -77,7 +84,7 @@ jobs:
     name: Release sanity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # release.sh refuses to build on version drift; checking it here means a mismatched
       # version is caught on the PR that introduced it, not by the maintainer mid-release.

@@ -46,12 +46,7 @@ pub fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
 /// is typing. Expansion-summoned surfaces (popup/form/palette) belong there; the cursor
 /// can be on a different display entirely, so it's only the fallback.
 pub fn display_bounds_for_active_window() -> ((f64, f64), (f64, f64)) {
-    if let Ok(win) = backend::frontmost_window_bounds() {
-        if let Some(b) = backend::display_bounds_containing_point(win.x + win.w / 2.0, win.y + win.h / 2.0) {
-            return b;
-        }
-    }
-    backend::display_bounds_under_cursor()
+    backend::focused_window_display().unwrap_or_else(backend::display_bounds_under_cursor)
 }
 
 /// Whether a point falls on some connected display. Used to reject a remembered window

@@ -74,13 +74,16 @@ async function init() {
   setKind('all');
   setView(VIEWS.includes(asked) ? asked : 'clipboard', { keepQuery: false });
 
-  await listen('palette-show', async (e) => {
+  // Draw what we already have *before* asking for anything. The window is on screen by the
+  // time this fires, so an await here is a visibly empty palette; the lists are already in
+  // memory from last time and are almost always still right.
+  await listen('palette-show', (e) => {
     const asked = typeof e.payload === 'string' ? e.payload : null;
     input.value = '';
-    await refresh();
     setView(VIEWS.includes(asked) ? asked : view, { keepQuery: false });
     input.focus();
     input.select();
+    refresh().then(draw);
   });
   // Something copied while the palette is open should appear in it.
   await listen('clipboard-changed', async () => {
@@ -110,13 +113,14 @@ async function init() {
 
 function hide() { invoke('palette_hide').catch(() => {}); }
 
+/// Reload both lists. Never clears what is already on screen on failure — a transient error
+/// should not blank a palette the user is looking at.
 async function refresh() {
   error = '';
   await Promise.all([
-    invoke('list_clips').then((c) => { clips = c; }).catch((e) => { clips = []; error = String(e); }),
+    invoke('list_clips').then((c) => { clips = c; }).catch((e) => { error = String(e); }),
     loadSnippets(),
   ]);
-  selected = 0;
 }
 
 async function loadSnippets() {
@@ -127,7 +131,6 @@ async function loadSnippets() {
       .filter((s) => s.enabled !== false)
       .map((s) => ({ ...s, group: s.groupId ? groupName.get(s.groupId) || '' : '' }));
   } catch (e) {
-    snippets = [];
     error = String(e);
   }
 }

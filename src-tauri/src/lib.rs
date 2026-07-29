@@ -162,6 +162,10 @@ pub fn run() {
             // Dock-visible app for as long as it's open (see windows::sync_activation_policy).
             windows::open(app.handle(), "settings")?;
 
+            // Build the palette now, hidden, so the first ⌥Space is a show() rather than a
+            // webview launch. Same reasoning as the silent-capture worker below.
+            windows::prewarm_palette(app.handle());
+
             // Park the silent-capture worker while we're launching anyway: creating its
             // window activates the app, and a capture is the wrong moment for that.
             if app.state::<AppState>().settings.lock().unwrap().wants_silent_worker() {

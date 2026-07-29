@@ -473,6 +473,22 @@ fn on_screen_windows() -> Vec<ListedWindow> {
 }
 
 /// (origin, size) in points of the display under the cursor (top-left origin, global coords).
+/// Which display the focused app's window is on, without the window-list cross-check.
+///
+/// [`frontmost_window_bounds`] confirms its answer against the on-screen window list because a
+/// capture aims at *pixels*: a rect belonging to a window on another Space would photograph
+/// whatever happens to sit at those coordinates. Placing a summoned window has no such stake —
+/// "the display the user is looking at" is the entire requirement — and that confirmation is
+/// the expensive half, because it enumerates and allocates a dictionary per on-screen window.
+///
+/// So this asks the two cheap questions only. It is the difference between the palette
+/// appearing at once and appearing after a beat.
+pub(super) fn focused_window_display() -> Option<((f64, f64), (f64, f64))> {
+    let (pid, _) = frontmost_app()?;
+    let ((x, y, w, h), _) = super::ax::focused_window(pid)?;
+    display_bounds_containing_point(x + w / 2.0, y + h / 2.0)
+}
+
 pub(super) fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
     let id = display_id_under_cursor().unwrap_or_else(|| CGDisplay::main().id);
     let b = CGDisplay::new(id).bounds();

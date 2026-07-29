@@ -57,10 +57,10 @@ const CAPTURE_SECTIONS = [
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
   { title: 'After a capture', hint: `A silent capture skips the editor and goes straight to
-    the clipboard. You can take one whenever you like — from <em>Capture to Clipboard</em> in
-    the menu bar, with ⌘↩ in the snippet palette, or with a hotkey of its own below — so the
-    setting here is only about what the <em>ordinary</em> capture keys do. Either way it still
-    lands in history: open it from <strong>Capture history</strong> to annotate it later.`, fields: [
+    the clipboard. You can take one whenever you like — <kbd>⌘↩</kbd> on any row of the
+    palette's <em>Capture</em> list, or a hotkey of its own below — so the setting here is only
+    about what the <em>ordinary</em> capture keys do. Either way it still lands in history:
+    open it from <strong>History</strong> to annotate it later.`, fields: [
     ['silentCapture', 'toggle', 'Make every capture silent by default'],
     ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
     ['historyEnabled', 'toggle', 'Save captures to history'],
@@ -93,8 +93,8 @@ const CAPTURE_SECTIONS = [
   ]},
   { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `Each mode can have a second key that
     takes the same shot <strong>straight to the clipboard</strong>, with no editor window —
-    the same thing as the menu bar's <em>Capture to Clipboard</em>, or ⌘↩ in the snippet
-    palette. Leave it blank if you don't want one.`, fields: [
+    the same thing as <kbd>⌘↩</kbd> on that mode's row in the palette. Leave it blank if you
+    don't want one.`, fields: [
     ['shortcutCaptureFull', 'hotkeys', 'Full window', 'shortcutCaptureFullSilent'],
     ['shortcutCaptureVisible', 'hotkeys', 'Visible area', 'shortcutCaptureVisibleSilent'],
     ['shortcutCaptureSnip', 'hotkeys', 'Region (snip)', 'shortcutCaptureSnipSilent'],
@@ -524,8 +524,6 @@ async function renderHistory(main) {
       <span class="hist-stats" id="hist-stats"></span>
       <button class="danger" id="hist-clear">Clear all</button>
     </div>
-    <p class="hist-lede">Screenshots you took and things you copied, newest first. Everything
-      here stays on this device.</p>
     <div class="hist-bar">
       <div class="seg settings-tabs" id="hist-views">${tabs}</div>
       <input type="search" id="hist-q" class="hist-search" placeholder="Search history…"

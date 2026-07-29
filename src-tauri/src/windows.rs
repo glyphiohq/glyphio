@@ -399,48 +399,72 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
 /// view the user deliberately switched to.
 pub fn toggle_palette(app: &AppHandle, view: Option<&str>) -> anyhow::Result<()> {
     use tauri::Emitter;
-    // Summon on the display the user is working on (frontmost window's display), never
-    // wherever the palette last was — Alt+Space should feel local, like Spotlight.
-    const PALETTE_SIZE: (f64, f64) = (640.0, 460.0);
+    if let Some(win) = app.get_webview_window(PALETTE) {
+        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
+            win.hide()?;
+            return Ok(());
+        }
+        // Summon on the display the user is working on, never wherever it last was — ⌥Space
+        // should feel local, like Spotlight.
+        let pos = palette_position(app);
+        win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
+        win.show()?;
+        win.set_focus()?;
+        let _ = app.emit_to(PALETTE, "palette-show", view);
+        return Ok(());
+    }
+    // Nothing pre-created it (or it was closed): build it and show it in one go.
+    let win = build_palette(app, true)?;
+    win.set_focus()?;
+    // A page that isn't listening yet can't be told by an event, so it asks on load instead.
+    *app.state::<crate::AppState>().palette_view.lock().unwrap() =
+        view.unwrap_or("clipboard").to_string();
+    Ok(())
+}
+
+pub const PALETTE: &str = "palette";
+const PALETTE_SIZE: (f64, f64) = (640.0, 460.0);
+
+/// Build the palette window off-screen during startup, so the first ⌥Space costs a `show()`
+/// and not a webview launch plus a page load.
+///
+/// This is the same trick as [`ensure_silent_editor`], for the same reason: the work is
+/// identical whenever it happens, and the one moment it must not happen is the moment the user
+/// is waiting. Failure is not fatal — [`toggle_palette`] still builds one on demand.
+pub fn prewarm_palette(app: &AppHandle) {
+    if app.get_webview_window(PALETTE).is_some() {
+        return;
+    }
+    if let Err(e) = build_palette(app, false) {
+        log::warn!("could not pre-warm the palette: {e}");
+    }
+}
+
+fn build_palette(app: &AppHandle, visible: bool) -> anyhow::Result<WebviewWindow> {
+    let pos = palette_position(app);
+    Ok(WebviewWindowBuilder::new(app, PALETTE, WebviewUrl::App("palette/index.html".into()))
+        .title("Glyphio Search")
+        .inner_size(PALETTE_SIZE.0, PALETTE_SIZE.1)
+        .position(pos.0, pos.1)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .visible_on_all_workspaces(true)
+        .visible(visible)
+        .build()?)
+}
+
+fn palette_position(app: &AppHandle) -> (f64, f64) {
+    let _ = app;
     let (origin, display) = crate::capture::display_bounds_for_active_window();
-    let pos = (
+    (
         origin.0 + (display.0 - PALETTE_SIZE.0) / 2.0,
         // Slightly above centre, Spotlight-style; also keeps result rows from spilling
         // off-screen as the list grows downward.
         origin.1 + (display.1 - PALETTE_SIZE.1) / 3.0,
-    );
-    if let Some(win) = app.get_webview_window("palette") {
-        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
-            win.hide()?;
-        } else {
-            win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
-            win.show()?;
-            win.set_focus()?;
-            let _ = app.emit_to("palette", "palette-show", view);
-        }
-        return Ok(());
-    }
-    let win = WebviewWindowBuilder::new(
-        app,
-        "palette",
-        WebviewUrl::App("palette/index.html".into()),
     )
-    .title("Glyphio Search")
-    .inner_size(PALETTE_SIZE.0, PALETTE_SIZE.1)
-    .position(pos.0, pos.1)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .visible_on_all_workspaces(true)
-    .build()?;
-    win.set_focus()?;
-    // The page asks for its opening view on load, so a first summon lands on the same list a
-    // later one would; nothing to emit into a webview that isn't listening yet.
-    *app.state::<crate::AppState>().palette_view.lock().unwrap() =
-        view.unwrap_or("clipboard").to_string();
-    Ok(())
 }
 
 /// Open the transparent scrolling-capture selection overlay, sized to the display under the

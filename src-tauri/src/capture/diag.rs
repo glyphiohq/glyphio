@@ -2,13 +2,32 @@
 //! Prints every intermediate step of what `scrollingPage` does so failures can be
 //! localised without the app's UI in the way.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Run the scrollingPage front-half step by step; with `capture` also grab pixels and
 /// run a short 3-frame scroll loop, saving PNGs next to the report for inspection.
 pub fn page_probe(capture: bool) {
     println!("accessibility trusted: {}", super::scroll::app_accessibility_trusted());
     println!("frontmost app: {:?}", super::backend::frontmost_app());
+
+    // The two ways of answering "which display is the user on" — one confirms itself against
+    // the window list, one doesn't. Summoned windows use the cheap one; captures can't.
+    // Both are timed repeatedly after a warm-up, because the first accessibility call of a
+    // process pays for the connection and would otherwise be charged to whichever ran first.
+    let _ = super::backend::focused_window_display();
+    let _ = super::backend::frontmost_window_bounds();
+    let bench = |label: &str, f: &dyn Fn() -> bool| {
+        let mut best = Duration::MAX;
+        let mut ok = true;
+        for _ in 0..5 {
+            let t = Instant::now();
+            ok &= f();
+            best = best.min(t.elapsed());
+        }
+        println!("placement {label}: ok={ok} best of 5 = {best:?}");
+    };
+    bench("no-window-list", &|| super::backend::focused_window_display().is_some());
+    bench("window-list", &|| super::backend::frontmost_window_bounds().is_ok());
 
     let t = Instant::now();
     let win = match super::backend::frontmost_window_bounds() {

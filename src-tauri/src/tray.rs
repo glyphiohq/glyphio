@@ -1,7 +1,7 @@
 //! Menu-bar (tray) presence. This is Glyphio's user-facing surface — engine's own tray is
 //! disabled in the generated config, so only this one appears.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
 
@@ -27,52 +27,15 @@ pub fn flash_captured(app: &AppHandle) {
     });
 }
 
-/// The capture modes, in menu order: (menu-id stem, capture mode, label).
-const MODES: [(&str, &str, &str); 7] = [
-    ("visible", "visible", "Visible Area"),
-    ("snip", "snip", "Region (Snip)"),
-    ("full", "fullWindow", "Full Window"),
-    ("front", "frontWindow", "Frontmost Window"),
-    ("page", "pageOnly", "Browser Page"),
-    ("scroll", "scrolling", "Scrolling Area"),
-    ("scroll_page", "scrollingPage", "Scrolling Page"),
-];
-
-fn as_refs(items: &[MenuItem<tauri::Wry>]) -> Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> {
-    items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect()
-}
-
-/// The mode a menu id stands for, and whether it was the silent copy of the menu.
-fn menu_action(id: &str) -> Option<(&'static str, bool)> {
-    let (silent, stem) = match id.strip_prefix("silent_") {
-        Some(rest) => (true, rest),
-        None => (false, id.strip_prefix("cap_")?),
-    };
-    MODES.iter().find(|(m, _, _)| *m == stem).map(|(_, mode, _)| (*mode, silent))
-}
-
+/// The menu bar holds one way in, not fourteen.
+///
+/// It used to carry every capture mode twice — once for the editor, once for the clipboard —
+/// which is a wall of near-identical rows to read every time you want any of them. All of it
+/// lives in the palette now, where the list is searchable and ⌘↩ is the clipboard variant of
+/// whatever is selected, so the menu's job is just to be the discoverable way to summon it for
+/// anyone who hasn't learned ⌥Space yet.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    // Two menus over the same modes: one opens the editor, one goes straight to the
-    // clipboard. Having both means silent capture is something you can reach for once,
-    // rather than a mode you have to switch the app into and back out of.
-    let editor_items = MODES
-        .iter()
-        .map(|(stem, _, label)| {
-            MenuItem::with_id(app, format!("cap_{stem}"), *label, true, None::<&str>)
-        })
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let silent_items = MODES
-        .iter()
-        .map(|(stem, _, label)| {
-            MenuItem::with_id(app, format!("silent_{stem}"), *label, true, None::<&str>)
-        })
-        .collect::<tauri::Result<Vec<_>>>()?;
-    let capture_menu = Submenu::with_items(app, "Capture", true, &as_refs(&editor_items))?;
-    let silent_menu =
-        Submenu::with_items(app, "Capture to Clipboard", true, &as_refs(&silent_items))?;
-
-    let search = MenuItem::with_id(app, "search", "Search Snippets…", true, None::<&str>)?;
-    let clipboard = MenuItem::with_id(app, "clipboard", "Clipboard History…", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Search…\t⌥Space", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Snippets & Settings…", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "Reload", true, None::<&str>)?;
@@ -81,11 +44,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &search,
-            &capture_menu,
-            &silent_menu,
+            &open,
             &PredefinedMenuItem::separator(app)?,
-            &clipboard,
             &history,
             &settings,
             &PredefinedMenuItem::separator(app)?,
@@ -101,15 +61,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let id = event.id().as_ref().to_string();
             let inner = app.clone();
             let _ = app.run_on_main_thread(move || match id.as_str() {
-                id if menu_action(id).is_some() => {
-                    let (mode, silent) = menu_action(id).expect("just matched");
-                    let delivery = silent.then_some(crate::capture::Delivery::Silent);
-                    crate::capture::trigger_or_report(&inner, mode, delivery);
-                }
+                "open" => { let _ = crate::windows::toggle_palette(&inner, None); }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
-                "search" => { let _ = crate::windows::toggle_palette(&inner, Some("snippets")); }
-                "clipboard" => { let _ = crate::windows::toggle_palette(&inner, Some("clipboard")); }
                 "reload" => {
                     if let Err(e) = crate::commands::do_reload(&inner) {
                         log::error!("reload failed: {e}");

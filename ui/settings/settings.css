@@ -746,12 +746,12 @@
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7;
   border-bottom: 1px solid var(--border);
 }
-.hist-lede {
-  margin: -2px 0 14px; font-size: 12px; color: var(--text-muted); max-width: 68ch;
-}
-.hist-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+/* `stretch` rather than `center`: the segmented control's height comes from its own padding
+   and borders, so matching the search field to it by eye means re-guessing every time either
+   changes. Letting the shorter one grow to the row makes them the same box by construction. */
+.hist-bar { display: flex; align-items: stretch; gap: 10px; margin-bottom: 14px; }
 .hist-search {
-  width: 220px; padding: 5px 10px; font-size: 12px;
+  width: 220px; padding: 0 10px; font-size: 12px;
   background: var(--inset); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }

@@ -23,11 +23,11 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   were in. Pin what you want to keep; entry and size caps evict the rest. **Content a password
   manager marks concealed is never recorded**, apps can be excluded by name, and none of it
   syncs.
-- **One palette for all of it** — `Alt+Space` opens a single searchable window with three
-  lists: **Clipboard** (where it opens), **Capture** modes, and **Snippets**. `Tab` or
-  `⌘1`/`⌘2`/`⌘3` between them; `↩` does the obvious thing for whichever list you're in.
-  In-app, **History** shows screenshots and clipboard entries on one timeline under
-  **All / Text / Images**.
+- **One palette for all of it** — `Alt+Space` (or the single menu-bar entry) opens a
+  searchable window with three lists: **Clipboard** (where it opens), **Capture** modes, and
+  **Snippets**. `Tab` or `⌘1`/`⌘2`/`⌘3` between them; `↩` does the obvious thing for whichever
+  list you're in and `⌘↩` the useful alternative. In-app, **History** shows screenshots and
+  clipboard entries on one timeline under **All / Text / Images**.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
   or a static API token, against **any backend implementing the
   [documented protocol](docs/SYNC-PROTOCOL.md)**. Offline-first, last-write-wins.

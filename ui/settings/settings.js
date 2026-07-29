@@ -2344,6 +2344,16 @@ function renderClipboardTab(form) {
   renderSections(form, CLIPBOARD_SECTIONS, div);
 }
 
+/// No "Grant access…" here, deliberately.
+///
+/// That button called `AXIsProcessTrustedWithOptions` with the prompt option, which shows the
+/// system dialog *only* while the app hasn't yet been added to the Accessibility list. By the
+/// time anyone is reading this tab they have already answered that dialog once, so the call
+/// returns the current state and displays nothing — a button that does nothing every time
+/// after the first. The first-run banner still offers it, which is the one moment it works.
+///
+/// Screen Recording already had only "System Settings", so this also makes the two rows read
+/// the same way.
 function renderPermissionsTab(form) {
   const div = document.createElement('div');
   div.className = 'form-section';
@@ -2351,9 +2361,8 @@ function renderPermissionsTab(form) {
     <h3>macOS permissions</h3>
     <div class="perm-row" id="perm-ax">
       <div class="perm-info"><strong>Accessibility</strong>
-        <span class="perm-sub">One grant to “Glyphio” covers text expansion (the engine runs inside the app) and scrolling capture.</span></div>
+        <span class="perm-sub">One grant to “Glyphio” covers text expansion and scrolling capture.</span></div>
       <span class="perm-state" data-ok="">checking…</span>
-      <button class="ghost" data-act="ax-grant">Grant access…</button>
       <button class="ghost" data-act="ax-settings">System Settings</button>
     </div>
     <div class="perm-row" id="perm-sr">
@@ -2371,7 +2380,6 @@ function renderPermissionsTab(form) {
   invoke('app_accessibility_status').then((ok) => setState('perm-ax', ok));
   invoke('screen_recording_status').then((ok) => setState('perm-sr', ok));
   div.querySelector('[data-act="ax-settings"]').addEventListener('click', () => invoke('open_accessibility_settings'));
-  div.querySelector('[data-act="ax-grant"]').addEventListener('click', () => invoke('request_accessibility'));
   div.querySelector('[data-act="sr-settings"]').addEventListener('click', () => invoke('open_screen_recording_settings'));
   div.querySelector('[data-act="relaunch"]').addEventListener('click', () => invoke('relaunch_app'));
   form.append(div);

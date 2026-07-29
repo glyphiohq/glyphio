@@ -231,6 +231,41 @@ mod tests {
         assert!(default.show_window_title);
     }
 
+    /// The clipboard settings are the contract between this struct and the Settings page,
+    /// which speaks camelCase. A field renamed on one side and not the other would silently
+    /// stop saving, so pin the names — and confirm a file written before the feature existed
+    /// still loads, with recording on.
+    #[test]
+    fn the_clipboard_settings_survive_a_round_trip_and_an_older_file() {
+        let older: Settings = serde_json::from_str(r#"{"showTimestamp": true}"#).unwrap();
+        assert!(older.clipboard_history, "recording is the default");
+        assert_eq!(older.clipboard_max_items, 200);
+        assert_eq!(older.shortcut_open_clipboard, "Alt+Shift+C");
+
+        let stored: Settings = serde_json::from_str(
+            r#"{"clipboardHistory": false, "clipboardMaxItems": 25, "clipboardMaxMb": 7,
+                "clipboardIgnoreApps": ["Banking", "  "], "shortcutOpenClipboard": "Alt+V"}"#,
+        )
+        .unwrap();
+        assert!(!stored.clipboard_history);
+        assert_eq!(stored.clipboard_max_items, 25);
+        assert_eq!(stored.clipboard_max_bytes(), 7 * 1024 * 1024);
+        assert_eq!(stored.clipboard_ignore_apps, vec!["Banking", "  "]);
+        assert_eq!(stored.shortcut_open_clipboard, "Alt+V");
+
+        // And back out again under the same names the page reads.
+        let json = serde_json::to_string(&stored).unwrap();
+        for key in [
+            "clipboardHistory",
+            "clipboardMaxItems",
+            "clipboardMaxMb",
+            "clipboardIgnoreApps",
+            "shortcutOpenClipboard",
+        ] {
+            assert!(json.contains(key), "{key} must survive serialization");
+        }
+    }
+
     /// A silent hotkey is enough to want the worker parked, even with silent capture off as
     /// the default — otherwise the first press pays for creating its window.
     #[test]

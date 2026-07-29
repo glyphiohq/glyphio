@@ -41,6 +41,24 @@ const POLL: Duration = Duration::from_millis(500);
 /// is not something to quietly write to disk on every copy.
 const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 
+/// Largest text worth keeping. Truncating would be worse than skipping — a half-pasted
+/// config file is a bug report — so anything past this is left out of the history entirely.
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
+
+/// A clipboard change Glyphio made itself, which the watcher should not record.
+///
+/// When the app writes to the clipboard the content is *already* in its history under a
+/// better identity — a capture, or the entry the user just picked — so recording our own write
+/// only produces a second row saying less than the first. Storing the counter *after* the
+/// write makes this exact rather than a race: we ignore that one specific change and nothing
+/// else.
+static IGNORE: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// Call immediately after writing to the clipboard from inside the app.
+pub fn ignore_own_write() {
+    IGNORE.store(platform::change_counter(), Ordering::Relaxed);
+}
+
 /// Start watching the clipboard for the life of the app.
 ///
 /// Runs whatever the setting says: the loop keeps ticking and re-reads the setting each time,
@@ -58,6 +76,9 @@ pub fn watch(app: &AppHandle) {
                 continue;
             }
             seen.store(counter, Ordering::Relaxed);
+            if IGNORE.load(Ordering::Relaxed) == counter {
+                continue; // our own write; already in the history
+            }
             if let Err(e) = consider(&app) {
                 log::debug!("clipboard entry skipped: {e}");
             }
@@ -114,6 +135,10 @@ fn read_clipboard(app: &AppHandle) -> Option<NewClip> {
     let cb = app.clipboard();
     if let Ok(text) = cb.read_text() {
         if !text.trim().is_empty() {
+            if text.len() > MAX_TEXT_BYTES {
+                log::debug!("copied text too large to keep ({} bytes)", text.len());
+                return None;
+            }
             return Some(NewClip::Text(text));
         }
     }
@@ -134,6 +159,10 @@ fn read_clipboard(app: &AppHandle) -> Option<NewClip> {
 }
 
 /// Put an entry back on the clipboard, ready to be pasted.
+///
+/// Re-using an entry counts as copying it, so it moves to the top of the history — done here
+/// explicitly rather than by letting the watcher notice, because the watcher is told to ignore
+/// this write. Otherwise picking an old entry would either duplicate it or depend on timing.
 pub fn put_back(app: &AppHandle, entry: &ClipEntry) -> anyhow::Result<()> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
     match entry.kind.as_str() {
@@ -155,5 +184,7 @@ pub fn put_back(app: &AppHandle, entry: &ClipEntry) -> anyhow::Result<()> {
             app.clipboard().write_text(text)?;
         }
     }
+    ignore_own_write();
+    let _ = app.state::<AppState>().clips.touch(&entry.id);
     Ok(())
 }

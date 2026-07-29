@@ -391,51 +391,13 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Toggle the clipboard history picker. Same shape and habits as the snippet palette — a
-/// frameless, always-on-top list on the display you are working on — because it is the same
-/// gesture: summon, type to narrow, Enter to use.
-pub fn toggle_clipboard(app: &AppHandle) -> anyhow::Result<()> {
-    use tauri::Emitter;
-    const SIZE: (f64, f64) = (640.0, 500.0);
-    let (origin, display) = crate::capture::display_bounds_for_active_window();
-    let pos = (
-        origin.0 + (display.0 - SIZE.0) / 2.0,
-        origin.1 + (display.1 - SIZE.1) / 3.0,
-    );
-    if let Some(win) = app.get_webview_window("clipboard") {
-        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
-            win.hide()?;
-        } else {
-            win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
-            win.show()?;
-            win.set_focus()?;
-            let _ = app.emit_to("clipboard", "clipboard-show", ());
-        }
-        return Ok(());
-    }
-    let win = WebviewWindowBuilder::new(
-        app,
-        "clipboard",
-        WebviewUrl::App("clipboard/index.html".into()),
-    )
-    .title("Glyphio Clipboard")
-    .inner_size(SIZE.0, SIZE.1)
-    .position(pos.0, pos.1)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .visible_on_all_workspaces(true)
-    .build()?;
-    win.set_focus()?;
-    Ok(())
-}
-
 /// Toggle the Spotlight-style snippet palette: a frameless, always-on-top search window.
 /// Hidden (not destroyed) on dismiss so summoning it again is instant; the page refreshes
 /// its snippet list on every `palette-show`.
-pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
+/// `view` is which of the palette's three lists to land on — `clipboard`, `captures` or
+/// `snippets`. `None` means "whatever it was showing", so the ordinary hotkey doesn't reset a
+/// view the user deliberately switched to.
+pub fn toggle_palette(app: &AppHandle, view: Option<&str>) -> anyhow::Result<()> {
     use tauri::Emitter;
     // Summon on the display the user is working on (frontmost window's display), never
     // wherever the palette last was — Alt+Space should feel local, like Spotlight.
@@ -454,7 +416,7 @@ pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
             win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
             win.show()?;
             win.set_focus()?;
-            let _ = app.emit_to("palette", "palette-show", ());
+            let _ = app.emit_to("palette", "palette-show", view);
         }
         return Ok(());
     }
@@ -474,6 +436,10 @@ pub fn toggle_palette(app: &AppHandle) -> anyhow::Result<()> {
     .visible_on_all_workspaces(true)
     .build()?;
     win.set_focus()?;
+    // The page asks for its opening view on load, so a first summon lands on the same list a
+    // later one would; nothing to emit into a webview that isn't listening yet.
+    *app.state::<crate::AppState>().palette_view.lock().unwrap() =
+        view.unwrap_or("clipboard").to_string();
     Ok(())
 }
 

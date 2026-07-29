@@ -13,7 +13,7 @@ something Windows simply doesn't have.
 ## What ports unchanged
 
 - **The Tauri shell** — windows, tray, global shortcuts, deep links, the updater.
-- **All of `ui/`** — settings, editor, history, palette, banner compositing.
+- **All of `ui/`** — settings, editor, history, the three-list palette, banner compositing.
 - **`snippet-store`, `sync-client`, `sync-proto`** — pure Rust, no platform calls.
 - **History** — SQLite via `rusqlite` with the bundled build.
 - **Clipboard history** — the store, retention, dedupe, search and picker are all portable.

@@ -85,11 +85,14 @@ impl ClipStore {
         })
     }
 
-    /// Record a clipboard entry, unless it is the one we already have at the top.
+    /// Record a clipboard entry, unless we already have it.
     ///
-    /// Re-copying something moves it back to the top rather than adding a duplicate, which is
-    /// what makes a history usable after a day's work instead of a wall of the same string.
-    /// Returns the entry when one was stored, `None` when it was a repeat.
+    /// Re-copying anything already in the history moves that entry back to the top rather than
+    /// adding a second copy of it — matched on content across the whole history, not just
+    /// against the newest row. People re-copy the same handful of things all day; without this
+    /// the list becomes a wall of the same string and the search stops helping.
+    ///
+    /// Returns the entry when a new one was stored, `None` when an existing one was promoted.
     pub fn record(
         &self,
         clip: NewClip,
@@ -124,25 +127,23 @@ impl ClipStore {
 
         {
             let conn = self.conn.lock().unwrap();
-            // Same content as the newest entry? Just move that one up; nothing was learned.
-            let newest: Option<(String, String)> = conn
+            // Already have this exact content? Promote it instead of storing it twice.
+            let existing: Option<String> = conn
                 .query_row(
-                    "SELECT id, digest FROM clips ORDER BY pinned DESC, copied_at DESC LIMIT 1",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    "SELECT id FROM clips WHERE digest = ?1 LIMIT 1",
+                    params![digest],
+                    |r| r.get(0),
                 )
                 .ok();
-            if let Some((existing_id, existing_digest)) = newest {
-                if existing_digest == digest {
-                    conn.execute(
-                        "UPDATE clips SET copied_at = ?1 WHERE id = ?2",
-                        params![copied_at, existing_id],
-                    )?;
-                    if let Some(p) = image_path {
-                        let _ = std::fs::remove_file(p); // the copy we just wrote is redundant
-                    }
-                    return Ok(None);
+            if let Some(existing_id) = existing {
+                conn.execute(
+                    "UPDATE clips SET copied_at = ?1 WHERE id = ?2",
+                    params![copied_at, existing_id],
+                )?;
+                if let Some(p) = image_path {
+                    let _ = std::fs::remove_file(p); // the copy we just wrote is redundant
                 }
+                return Ok(None);
             }
             conn.execute(
                 "INSERT INTO clips (id, copied_at, kind, preview, body, image_path, \
@@ -186,6 +187,17 @@ impl ClipStore {
             Ok(e)
         })?;
         Ok(rows.next().transpose()?)
+    }
+
+    /// Move an entry to the top of the history. Used when the user picks one from the picker:
+    /// re-using something is a fresh act of copying it, and it belongs where it would be if
+    /// they had copied it again by hand.
+    pub fn touch(&self, id: &str) -> anyhow::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE clips SET copied_at = ?1 WHERE id = ?2",
+            params![chrono::Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(())
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> anyhow::Result<()> {
@@ -343,13 +355,25 @@ mod tests {
     }
 
     #[test]
-    fn re_copying_something_older_moves_it_back_to_the_top() {
+    fn re_copying_something_older_promotes_it_instead_of_duplicating_it() {
         let (s, _d) = store();
         s.record(NewClip::Text("first".into()), "", 100, 1 << 20).unwrap();
         s.record(NewClip::Text("second".into()), "", 100, 1 << 20).unwrap();
-        // "first" is no longer newest, so it comes back as a fresh entry rather than a no-op.
-        assert!(s.record(NewClip::Text("first".into()), "", 100, 1 << 20).unwrap().is_some());
-        assert_eq!(s.list().unwrap()[0].preview, "first");
+        // No new row — the one we already had comes back to the top.
+        assert!(s.record(NewClip::Text("first".into()), "", 100, 1 << 20).unwrap().is_none());
+        let list = s.list().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].preview, "first");
+    }
+
+    #[test]
+    fn touching_an_entry_moves_it_to_the_top() {
+        let (s, _d) = store();
+        let first = s.record(NewClip::Text("older".into()), "", 100, 1 << 20).unwrap().unwrap();
+        s.record(NewClip::Text("newer".into()), "", 100, 1 << 20).unwrap();
+        assert_eq!(s.list().unwrap()[0].preview, "newer");
+        s.touch(&first.id).unwrap();
+        assert_eq!(s.list().unwrap()[0].preview, "older");
     }
 
     #[test]

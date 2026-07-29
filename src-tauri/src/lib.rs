@@ -35,6 +35,10 @@ pub struct AppState {
     pub history: HistoryStore,
     /// Clipboard history — what you copy, searchable and pasteable again.
     pub clips: ClipStore,
+    /// Which list the palette should open on. Set by whatever summoned it, read once by the
+    /// page on load — a window that is hidden rather than destroyed can't be told by an event
+    /// it wasn't listening for.
+    pub palette_view: Mutex<String>,
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
     pub pending_capture: Mutex<Option<PendingCapture>>,
@@ -71,6 +75,7 @@ pub fn run() {
         settings: Mutex::new(settings),
         pending_capture: Mutex::new(None),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
+        palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
         sync,
     };
@@ -207,7 +212,7 @@ pub fn run() {
             commands::capture_done_silently,
             commands::take_pending_payload,
             commands::list_clips,
-            commands::clipboard_hide,
+            commands::palette_view,
             commands::clipboard_use,
             commands::clip_set_pinned,
             commands::delete_clip,

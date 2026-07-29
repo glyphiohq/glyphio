@@ -514,15 +514,22 @@ async function renderHistory(main) {
   state.historyQuery = state.historyQuery || '';
   const tabs = HISTORY_VIEWS.map(([id, label]) =>
     `<button type="button" class="seg-opt ${state.historyView === id ? 'active' : ''}" data-hview="${id}">${label}</button>`).join('');
+  // Two rows: what this is, then how to narrow it. One row put a title, three tabs, a search
+  // field, a stat line and a destructive button in the same space, and at any window width
+  // something ended up squeezed against something else.
   main.innerHTML = `
     <div class="main-head">
       <h2 class="main-title" style="margin:0">History</h2>
-      <div class="seg settings-tabs" id="hist-views">${tabs}</div>
-      <input type="search" id="hist-q" class="hist-search" placeholder="Search history…"
-             autocomplete="off" spellcheck="false">
       <div class="spacer"></div>
       <span class="hist-stats" id="hist-stats"></span>
       <button class="danger" id="hist-clear">Clear all</button>
+    </div>
+    <p class="hist-lede">Screenshots you took and things you copied, newest first. Everything
+      here stays on this device.</p>
+    <div class="hist-bar">
+      <div class="seg settings-tabs" id="hist-views">${tabs}</div>
+      <input type="search" id="hist-q" class="hist-search" placeholder="Search history…"
+             autocomplete="off" spellcheck="false">
     </div>
     <ul class="hist-grid" id="hist-grid"></ul>
     <div class="empty" id="hist-empty" hidden></div>`;
@@ -573,11 +580,16 @@ async function renderHistory(main) {
       );
     }
     const bytes = shown.reduce((sum, e) => sum + (e.item.sizeBytes || 0), 0);
-    stats.textContent = `${shown.length} of ${all.length} · ${(bytes / 1048576).toFixed(1)} MB`;
+    const size = bytes > 1048576
+      ? `${(bytes / 1048576).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    stats.textContent = shown.length === all.length
+      ? `${all.length} ${all.length === 1 ? 'entry' : 'entries'} · ${size}`
+      : `${shown.length} of ${all.length} · ${size}`;
     empty.hidden = shown.length > 0;
     empty.textContent = all.length
       ? 'Nothing here matches that.'
-      : 'Nothing yet — press ⌥⇧X to snip, or copy something.';
+      : 'Nothing yet — press ⌥⇧X to snip something, or copy anything at all.';
     const clear = main.querySelector('#hist-clear');
     clear.textContent = shown.length === all.length ? 'Clear all' : `Delete these ${shown.length}`;
     clear.disabled = shown.length === 0;
@@ -628,7 +640,8 @@ function clipCard(clip, redraw) {
   const meta = document.createElement('div');
   meta.className = 'hist-meta';
   const dt = new Date(clip.copiedAt);
-  meta.innerHTML = `<span class="hist-when">${isNaN(dt) ? '' : dt.toLocaleString()}${clip.pinned ? ' · pinned' : ''}</span>
+  const badge = clip.kind === 'image' ? 'Copied image' : 'Copied text';
+  meta.innerHTML = `<span class="hist-when"><span class="hist-badge">${badge}</span>${isNaN(dt) ? '' : dt.toLocaleString()}${clip.pinned ? ' · pinned' : ''}</span>
     <span class="hist-title">${escapeHtml(clip.sourceApp || 'clipboard')}</span>`;
 
   const actions = document.createElement('div');
@@ -746,7 +759,9 @@ function historyCard(item, redraw) {
   const meta = document.createElement('div');
   meta.className = 'hist-meta';
   const dt = new Date(item.capturedAt);
-  meta.innerHTML = `<span class="hist-when">${isNaN(dt) ? '' : dt.toLocaleString()}</span>
+  // The badge earns its space in a mixed grid: a screenshot of a text editor and a copied
+  // block of text can look alike at thumbnail size, and they answer to different buttons.
+  meta.innerHTML = `<span class="hist-when"><span class="hist-badge">Screenshot</span>${isNaN(dt) ? '' : dt.toLocaleString()}</span>
     <span class="hist-title">${escapeHtml(item.title || item.url || '')}</span>`;
   const actions = document.createElement('div');
   actions.className = 'hist-actions';

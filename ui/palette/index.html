@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Glyphio Search</title>
+  <title>Glyphio</title>
   <link rel="stylesheet" href="../shared/theme.css">
   <style>
-    /* Spotlight-style palette: a floating card on a fully transparent window. */
+    /* One Spotlight-style card for all three lists: clipboard, captures, snippets. */
     html, body {
       background: transparent !important;
       margin: 0;
@@ -29,25 +29,67 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border);
+      padding: 13px 16px 11px;
     }
     .pal-glyph {
       font-family: "SF Mono", "Roboto Mono", monospace;
       color: var(--accent);
       font-size: 18px;
       line-height: 1;
+      width: 16px;
+      text-align: center;
     }
     #q {
       flex: 1;
+      min-width: 0;
       background: transparent;
       border: none;
       outline: none;
       color: var(--text);
-      font-size: 18px;
+      font-size: 17px;
       font-family: inherit;
     }
     #q::placeholder { color: var(--text-muted); }
+
+    /* View switcher, and the clipboard view's kind filter, share one quiet row. */
+    .pal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .chips { display: flex; gap: 2px; }
+    .chips button {
+      font: inherit;
+      font-size: 11px;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      padding: 4px 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .chips button:hover { color: var(--text-secondary); }
+    .chips button.active { background: var(--accent-ghost); color: var(--accent); }
+    .chips button .n {
+      font-family: "SF Mono", "Roboto Mono", monospace;
+      font-size: 9px;
+      opacity: 0.65;
+    }
+    .pal-bar .spacer { flex: 1; }
+    /* The kind filter is subordinate to the view tabs, so it reads lighter. */
+    #kinds button { padding: 3px 9px; font-size: 10px; }
+    #kinds button.active {
+      background: color-mix(in srgb, var(--text) 10%, transparent);
+      color: var(--text);
+    }
+    #kinds[hidden] { display: none; }
+
     .pal-list {
       flex: 1;
       overflow-y: auto;
@@ -59,9 +101,10 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 8px 10px;
+      padding: 7px 10px;
       border-radius: 8px;
       cursor: pointer;
+      min-width: 0;
     }
     .pal-row.active { background: var(--accent-ghost); }
     .pal-trigger {
@@ -69,9 +112,11 @@
       font-size: 13px;
       color: var(--accent);
       white-space: nowrap;
+      flex: 0 0 auto;
     }
     .pal-preview {
       flex: 1;
+      min-width: 0;
       font-size: 13px;
       color: var(--text-secondary);
       white-space: nowrap;
@@ -85,28 +130,57 @@
       border-radius: 4px;
       padding: 1px 6px;
       white-space: nowrap;
+      flex: 0 0 auto;
     }
-    /* Capture actions read as commands: a leading icon, plain label, brass on active. */
-    .pal-ico {
-      display: inline-flex;
+    .pal-ico { display: inline-flex; color: var(--text-muted); flex: 0 0 auto; }
+    .pal-row.active .pal-ico { color: var(--accent); }
+    .pal-action-label { color: var(--text); flex: 1; min-width: 0; }
+
+    /* Clipboard rows */
+    .clip-pin { color: var(--accent); font-size: 10px; width: 8px; flex: 0 0 auto; }
+    .clip-body {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: "SF Mono", "Roboto Mono", monospace;
+    }
+    .clip-thumb {
+      height: 30px;
+      width: auto;
+      max-width: 96px;
+      border-radius: 4px;
+      border: 1px solid var(--border-strong);
+      object-fit: cover;
+      flex: 0 0 auto;
+      background: var(--inset);
+    }
+    .clip-when {
+      font-family: "SF Mono", "Roboto Mono", monospace;
+      font-size: 10px;
       color: var(--text-muted);
       flex: 0 0 auto;
     }
-    .pal-row.active .pal-ico { color: var(--accent); }
-    .pal-action-label { color: var(--text); flex: 1; }
+
     .pal-empty {
-      padding: 24px 16px;
+      padding: 26px 18px;
       text-align: center;
       color: var(--text-muted);
       font-size: 13px;
+      line-height: 1.65;
     }
+    .pal-empty b { color: var(--text-secondary); font-weight: 500; }
     .pal-foot {
       display: flex;
-      gap: 14px;
+      gap: 13px;
       padding: 8px 16px;
       border-top: 1px solid var(--border);
       color: var(--text-muted);
       font-size: 11px;
+      align-items: center;
     }
     .pal-foot kbd {
       font-family: "SF Mono", "Roboto Mono", monospace;
@@ -117,21 +191,30 @@
       color: var(--text-secondary);
     }
     .pal-foot .spacer { flex: 1; }
+    .pal-err { color: var(--danger); }
   </style>
 </head>
 <body>
   <div class="palette">
     <div class="pal-search">
-      <span class="pal-glyph">⌁</span>
-      <input id="q" type="text" placeholder="Search snippets and capture actions…" autocomplete="off" spellcheck="false">
+      <span class="pal-glyph" id="glyph">⎘</span>
+      <input id="q" type="text" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="pal-bar">
+      <div class="chips" id="views">
+        <button type="button" data-view="clipboard">Clipboard <span class="n" data-count></span></button>
+        <button type="button" data-view="captures">Capture <span class="n" data-count></span></button>
+        <button type="button" data-view="snippets">Snippets <span class="n" data-count></span></button>
+      </div>
+      <div class="spacer"></div>
+      <div class="chips" id="kinds">
+        <button type="button" data-kind="all">All</button>
+        <button type="button" data-kind="text">Text</button>
+        <button type="button" data-kind="image">Images</button>
+      </div>
     </div>
     <ul class="pal-list" id="list"></ul>
-    <div class="pal-foot">
-      <span><kbd>↩</kbd> insert into the active app</span>
-      <span><kbd>⌘↩</kbd> copy — captures go straight to the clipboard</span>
-      <span class="spacer"></span>
-      <span><kbd>esc</kbd> close</span>
-    </div>
+    <div class="pal-foot" id="foot"></div>
   </div>
   <script type="module" src="palette.js"></script>
 </body>

@@ -108,8 +108,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
-                "search" => { let _ = crate::windows::toggle_palette(&inner); }
-                "clipboard" => { let _ = crate::windows::toggle_clipboard(&inner); }
+                "search" => { let _ = crate::windows::toggle_palette(&inner, Some("snippets")); }
+                "clipboard" => { let _ = crate::windows::toggle_palette(&inner, Some("clipboard")); }
                 "reload" => {
                     if let Err(e) = crate::commands::do_reload(&inner) {
                         log::error!("reload failed: {e}");

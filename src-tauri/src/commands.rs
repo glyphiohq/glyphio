@@ -270,7 +270,10 @@ pub fn copy_image_to_clipboard(app: AppHandle, png_base64: String) -> CmdResult<
     let (w, h) = img.dimensions();
     app.clipboard()
         .write_image(&tauri::image::Image::new(&img.into_raw(), w, h))
-        .map_err(err)
+        .map_err(err)?;
+    // Already in history as a capture; a clipboard row for it would say less than the capture.
+    crate::clipboard::ignore_own_write();
+    Ok(())
 }
 
 /// Write a base64 PNG (optionally a data URL) to a user-chosen path (editor Download).
@@ -588,12 +591,10 @@ pub fn list_clips(state: State<AppState>) -> CmdResult<Vec<crate::clipboard::Cli
     state.clips.list().map_err(err)
 }
 
-/// Dismiss the clipboard picker (Esc, or focus loss).
+/// Which list the palette should open on, asked for once by the page on load.
 #[tauri::command]
-pub fn clipboard_hide(app: AppHandle) {
-    if let Some(win) = app.get_webview_window("clipboard") {
-        let _ = win.hide();
-    }
+pub fn palette_view(state: State<AppState>) -> String {
+    state.palette_view.lock().unwrap().clone()
 }
 
 /// Put an entry back on the clipboard and paste it where the user was.
@@ -611,7 +612,7 @@ pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult
         .ok_or_else(|| "that clipboard entry is gone".to_string())?;
     crate::clipboard::put_back(&app, &entry).map_err(err)?;
 
-    if let Some(win) = app.get_webview_window("clipboard") {
+    if let Some(win) = app.get_webview_window("palette") {
         let _ = win.hide();
     }
     if !paste {

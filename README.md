@@ -19,11 +19,15 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   scrolling capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
-- **Clipboard history** — everything you copy, text and images, searchable from a hotkey
-  (`Alt+Shift+C`) and pasted back into the app you were in — filter to just text or just
-  images. Pin what you want to keep; entry and size caps evict the rest. It shares the
-  in-app **History** view with your screenshots, under **All / Text / Images**. **Content a password manager marks concealed is never
-  recorded**, apps can be excluded by name, and none of it syncs.
+- **Clipboard history** — everything you copy, text and images, pasted back into the app you
+  were in. Pin what you want to keep; entry and size caps evict the rest. **Content a password
+  manager marks concealed is never recorded**, apps can be excluded by name, and none of it
+  syncs.
+- **One palette for all of it** — `Alt+Space` opens a single searchable window with three
+  lists: **Clipboard** (where it opens), **Capture** modes, and **Snippets**. `Tab` or
+  `⌘1`/`⌘2`/`⌘3` between them; `↩` does the obvious thing for whichever list you're in.
+  In-app, **History** shows screenshots and clipboard entries on one timeline under
+  **All / Text / Images**.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
   or a static API token, against **any backend implementing the
   [documented protocol](docs/SYNC-PROTOCOL.md)**. Offline-first, last-write-wins.

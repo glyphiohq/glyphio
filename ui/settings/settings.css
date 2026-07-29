@@ -737,20 +737,33 @@
   cursor: pointer; background: var(--inset); display: block;
 }
 /* A copied text has no thumbnail, so it shows its words in the same box a picture would
-   occupy — the grid stays a grid instead of collapsing around mixed card heights. */
+   occupy — the grid stays a grid instead of collapsing around mixed card heights. The line
+   clamp is what keeps a 400-character preview from spilling past the box. */
 .hist-text {
-  cursor: default; padding: 10px 12px; box-sizing: border-box;
-  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  cursor: default; padding: 11px 13px; box-sizing: border-box;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
   color: var(--text-secondary); white-space: pre-wrap; overflow: hidden;
-  text-overflow: ellipsis;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7;
+  border-bottom: 1px solid var(--border);
 }
+.hist-lede {
+  margin: -2px 0 14px; font-size: 12px; color: var(--text-muted); max-width: 68ch;
+}
+.hist-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .hist-search {
-  width: 200px; padding: 4px 9px; font-size: 12px;
+  width: 220px; padding: 5px 10px; font-size: 12px;
   background: var(--inset); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  align-self: center;
 }
 .hist-search:focus { outline: none; border-color: var(--accent); }
+/* What kind of thing this card is. Quiet, but present on every card so the eye can sort a
+   mixed grid without reading it. */
+.hist-badge {
+  display: inline-block; margin-right: 6px; padding: 0 5px;
+  border: 1px solid var(--border-strong); border-radius: 3px;
+  font-family: var(--font-sans); font-size: 9px; letter-spacing: 0.02em;
+  color: var(--text-secondary); text-transform: uppercase; vertical-align: 1px;
+}
 .hist-meta { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px 4px; min-width: 0; }
 .hist-when { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
 .hist-title { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

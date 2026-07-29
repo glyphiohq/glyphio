@@ -68,15 +68,15 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     } else if matches(shortcut, &s.shortcut_open_palette) {
         let inner = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if let Err(e) = crate::windows::toggle_palette(&inner) {
-                log::error!("snippet palette failed: {e}");
+            if let Err(e) = crate::windows::toggle_palette(&inner, None) {
+                log::error!("palette failed: {e}");
             }
         });
     } else if matches(shortcut, &s.shortcut_open_clipboard) {
         let inner = app.clone();
         let _ = app.run_on_main_thread(move || {
-            if let Err(e) = crate::windows::toggle_clipboard(&inner) {
-                log::error!("clipboard picker failed: {e}");
+            if let Err(e) = crate::windows::toggle_palette(&inner, Some("clipboard")) {
+                log::error!("palette failed: {e}");
             }
         });
     }

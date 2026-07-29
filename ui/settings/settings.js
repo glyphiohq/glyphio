@@ -758,10 +758,12 @@ function historyCard(item, redraw) {
   };
   actions.append(
     mk('open', 'Open', () => invoke('open_capture', { id: item.id })),
+    // Through the OS, like the editor's copy button — `navigator.clipboard.write` only works
+    // during a user gesture, and going via the command means both paths behave identically
+    // instead of one of them landing in clipboard history and the other not.
     mk('copy', 'Copy to clipboard', async () => {
       try {
-        const blob = await (await fetch(await exportDataUrl(item))).blob();
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        await invoke('copy_image_to_clipboard', { pngBase64: await exportDataUrl(item) });
         setStatus('Capture copied to clipboard.', 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),

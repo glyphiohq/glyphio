@@ -7,10 +7,10 @@ use tauri::AppHandle;
 
 const TRAY_ID: &str = "glyphio-tray";
 
-/// Acknowledge a capture that opened no window: a checkmark beside the menu-bar icon for a
-/// moment. Silent captures need *some* answer — a shortcut that copies to the clipboard and
-/// shows nothing is indistinguishable from one that didn't fire.
-pub fn flash_captured(app: &AppHandle) {
+/// Acknowledge something that finished without opening a window: a checkmark beside the
+/// menu-bar icon for a moment. A shortcut that copies to the clipboard and shows nothing is
+/// indistinguishable from one that didn't fire.
+pub fn flash_ack(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let _ = tray.set_title(Some("✓"));
     let app = app.clone();

@@ -270,10 +270,13 @@ pub fn copy_image_to_clipboard(app: AppHandle, png_base64: String) -> CmdResult<
     let (w, h) = img.dimensions();
     app.clipboard()
         .write_image(&tauri::image::Image::new(&img.into_raw(), w, h))
-        .map_err(err)?;
-    // Already in history as a capture; a clipboard row for it would say less than the capture.
-    crate::clipboard::ignore_own_write();
-    Ok(())
+        .map_err(err)
+    // Deliberately NOT suppressed from clipboard history. It was, to keep a screenshot from
+    // appearing twice in the merged History — and that traded a small redundancy for the
+    // clipboard list misreporting what is on the clipboard. Captures auto-copy when the editor
+    // opens, so the effect was that you took a screenshot, it went to the clipboard, and the
+    // one place you'd look to confirm that showed nothing. A duplicate row is a much smaller
+    // problem than a list that lies.
 }
 
 /// Write a base64 PNG (optionally a data URL) to a user-chosen path (editor Download).
@@ -615,21 +618,22 @@ pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult
     if let Some(win) = app.get_webview_window("palette") {
         let _ = win.hide();
     }
-    if !paste {
+    // Picking an entry always succeeds at the part that matters — it is on the clipboard, ready
+    // for ⌘V. Pasting for the user is the bonus, and it needs the Accessibility grant to
+    // synthesise the keystroke. Reporting the missing grant as an *error* made a working copy
+    // look like a failed one, so acknowledge it the way a silent capture does and stop there.
+    if !paste || !crate::clipboard::can_send_paste() {
+        crate::tray::flash_ack(&app);
         return Ok(());
-    }
-    if !crate::clipboard::can_send_paste() {
-        // The clipboard is loaded either way, so this is a downgrade, not a failure.
-        return Err(
-            "It's on the clipboard — press ⌘V to paste. Pasting for you needs Accessibility \
-             permission for Glyphio (System Settings › Privacy & Security › Accessibility)."
-                .into(),
-        );
     }
     #[cfg(target_os = "macos")]
     let _ = app.hide();
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    crate::clipboard::send_paste().map_err(err)
+    if let Err(e) = crate::clipboard::send_paste() {
+        log::warn!("paste keystroke failed: {e}"); // still on the clipboard
+        crate::tray::flash_ack(&app);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -700,7 +704,7 @@ pub fn capture_done_silently(app: AppHandle, error: Option<String>) {
         Some(message) => {
             crate::capture::report_failure(&app, "silent capture", &anyhow::anyhow!(message))
         }
-        None => crate::tray::flash_captured(&app),
+        None => crate::tray::flash_ack(&app),
     }
 }
 

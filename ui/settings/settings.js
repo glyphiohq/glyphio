@@ -588,26 +588,22 @@ async function renderHistory(main) {
     empty.textContent = all.length
       ? 'Nothing here matches that.'
       : 'Nothing yet — press ⌥⇧X to snip something, or copy anything at all.';
-    const clear = main.querySelector('#hist-clear');
-    clear.textContent = shown.length === all.length ? 'Clear all' : `Delete these ${shown.length}`;
-    clear.disabled = shown.length === 0;
+    main.querySelector('#hist-clear').disabled = all.length === 0;
   }
 
+  // Always "Clear all", and it always clears all of it. A label that changed with the filter
+  // made the button's reach a thing you had to read before trusting; the confirmation names
+  // exactly what goes instead.
   main.querySelector('#hist-clear').addEventListener('click', async () => {
-    // Deletes exactly what is on screen. One rule whatever the view and the search say, so
-    // the button can never take more than it appears to offer.
-    const whole = shown.length === all.length;
     const ok = await confirmDialog(
-      whole
-        ? 'Delete every capture and every clipboard entry, pinned ones included?'
-        : `Delete the ${shown.length} shown ${shown.length === 1 ? 'entry' : 'entries'}?`,
-      { confirmLabel: whole ? 'Clear all' : 'Delete', danger: true },
+      'Delete every capture and every clipboard entry, pinned ones included?',
+      { confirmLabel: 'Clear all', danger: true },
     );
     if (!ok) return;
-    for (const e of shown) {
-      try {
-        await invoke(e.source === 'capture' ? 'delete_capture' : 'delete_clip', { id: e.item.id });
-      } catch (err) { setStatus(String(err), 'err'); }
+    try {
+      await Promise.all([invoke('clear_captures'), invoke('clear_clips')]);
+    } catch (err) {
+      setStatus(String(err), 'err');
     }
     renderHistory(main);
   });

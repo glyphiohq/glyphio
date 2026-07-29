@@ -746,15 +746,24 @@
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7;
   border-bottom: 1px solid var(--border);
 }
-/* `stretch` rather than `center`: the segmented control's height comes from its own padding
-   and borders, so matching the search field to it by eye means re-guessing every time either
-   changes. Letting the shorter one grow to the row makes them the same box by construction. */
-.hist-bar { display: flex; align-items: stretch; gap: 10px; margin-bottom: 14px; }
+/* Both controls get the same explicit height. `stretch` looked like the tidy answer, but a
+   WebKit search field carries its own intrinsic height that stretch can't shrink, so the row
+   grew to fit the field instead of the field matching the row. One number, applied to both,
+   is the only version that can't drift. */
+.hist-bar {
+  --hist-control-h: 28px;
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+}
+.hist-bar .seg { height: var(--hist-control-h); align-items: center; }
 .hist-search {
-  width: 220px; padding: 0 10px; font-size: 12px;
+  width: 220px; height: var(--hist-control-h);
+  padding: 0 10px; font-size: 12px; line-height: normal;
+  -webkit-appearance: none; appearance: none;
   background: var(--inset); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+.hist-search::-webkit-search-decoration,
+.hist-search::-webkit-search-cancel-button { -webkit-appearance: none; }
 .hist-search:focus { outline: none; border-color: var(--accent); }
 /* What kind of thing this card is. Quiet, but present on every card so the eye can sort a
    mixed grid without reading it. */

@@ -1,7 +1,7 @@
 //! Menu-bar (tray) presence. This is Glyphio's user-facing surface — engine's own tray is
 //! disabled in the generated config, so only this one appears.
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
 
@@ -27,18 +27,44 @@ pub fn flash_captured(app: &AppHandle) {
     });
 }
 
+/// Brass, not black, and not left to macOS to tint.
+///
+/// `muda` sizes a menu item's image to 18pt but does not mark it as a template image, so the
+/// system never recolours it for the current appearance: a black glyph vanishes into a dark
+/// menu and a white one into a light menu. Glyphio's own brass has contrast against both, and
+/// looks deliberate rather than like a monochrome icon that failed to tint.
+fn menu_icon(bytes: &'static [u8]) -> Option<tauri::image::Image<'static>> {
+    match tauri::image::Image::from_bytes(bytes) {
+        Ok(image) => Some(image),
+        Err(e) => {
+            log::warn!("a menu icon failed to decode: {e}");
+            None // an item with no icon still works; a missing menu does not
+        }
+    }
+}
+
 /// The menu bar holds one way in, not fourteen.
 ///
 /// It used to carry every capture mode twice — once for the editor, once for the clipboard —
-/// which is a wall of near-identical rows to read every time you want any of them. All of it
-/// lives in the palette now, where the list is searchable and ⌘↩ is the clipboard variant of
-/// whatever is selected, so the menu's job is just to be the discoverable way to summon it for
-/// anyone who hasn't learned ⌥Space yet.
+/// a wall of near-identical rows to read every time you wanted any of them. All of it lives in
+/// the palette now, where the list is searchable and ⌘↩ is the clipboard variant of whatever is
+/// selected, so the menu's job is just to be the discoverable way to summon it for anyone who
+/// hasn't learned ⌥Space yet.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Search…\t⌥Space", true, None::<&str>)?;
-    let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Snippets & Settings…", true, None::<&str>)?;
-    let reload = MenuItem::with_id(app, "reload", "Reload", true, None::<&str>)?;
+    // No accelerator text and no ellipses: four rows that read the same way. The shortcut is
+    // in Settings and on the palette itself, which is where someone looks for it a second
+    // time; spelling it here only made this one row longer than its neighbours.
+    let item = |id: &str, text: &str, png: &'static [u8]| {
+        IconMenuItem::with_id(app, id, text, true, menu_icon(png), None::<&str>)
+    };
+    let open = item("open", "Search", include_bytes!("../icons/menu/menu-search.png"))?;
+    let history = item("history", "History", include_bytes!("../icons/menu/menu-history.png"))?;
+    let settings = item(
+        "settings",
+        "Snippets & Settings",
+        include_bytes!("../icons/menu/menu-settings.png"),
+    )?;
+    let reload = item("reload", "Reload", include_bytes!("../icons/menu/menu-reload.png"))?;
     let quit = PredefinedMenuItem::quit(app, Some("Quit Glyphio"))?;
 
     let menu = Menu::with_items(

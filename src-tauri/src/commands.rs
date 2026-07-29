@@ -581,6 +581,87 @@ pub fn relaunch_app(app: AppHandle) {
 }
 
 /// The editor requests its pending capture payload (set by the capture flow).
+// ---- clipboard history ------------------------------------------------------
+
+#[tauri::command]
+pub fn list_clips(state: State<AppState>) -> CmdResult<Vec<crate::clipboard::ClipEntry>> {
+    state.clips.list().map_err(err)
+}
+
+/// Dismiss the clipboard picker (Esc, or focus loss).
+#[tauri::command]
+pub fn clipboard_hide(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("clipboard") {
+        let _ = win.hide();
+    }
+}
+
+/// Put an entry back on the clipboard and paste it where the user was.
+///
+/// The picker had focus a moment ago, so the same rule as `form_submit` applies: close and
+/// step aside *first*, then paste — otherwise ⌘V arrives while Glyphio is still frontmost and
+/// nothing appears to happen. `paste: false` just loads the clipboard and leaves it there.
+#[tauri::command]
+pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult<()> {
+    let entry = app
+        .state::<AppState>()
+        .clips
+        .get(&id)
+        .map_err(err)?
+        .ok_or_else(|| "that clipboard entry is gone".to_string())?;
+    crate::clipboard::put_back(&app, &entry).map_err(err)?;
+
+    if let Some(win) = app.get_webview_window("clipboard") {
+        let _ = win.hide();
+    }
+    if !paste {
+        return Ok(());
+    }
+    if !crate::clipboard::can_send_paste() {
+        // The clipboard is loaded either way, so this is a downgrade, not a failure.
+        return Err(
+            "It's on the clipboard — press ⌘V to paste. Pasting for you needs Accessibility \
+             permission for Glyphio (System Settings › Privacy & Security › Accessibility)."
+                .into(),
+        );
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.hide();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    crate::clipboard::send_paste().map_err(err)
+}
+
+#[tauri::command]
+pub fn clip_set_pinned(state: State<AppState>, id: String, pinned: bool) -> CmdResult<()> {
+    state.clips.set_pinned(&id, pinned).map_err(err)
+}
+
+#[tauri::command]
+pub fn delete_clip(state: State<AppState>, id: String) -> CmdResult<()> {
+    state.clips.delete(&id).map_err(err)
+}
+
+#[tauri::command]
+pub fn clear_clips(state: State<AppState>) -> CmdResult<()> {
+    state.clips.clear().map_err(err)
+}
+
+/// A copied image as a data URL, for the picker's thumbnails.
+#[tauri::command]
+pub fn clip_image_data_url(state: State<AppState>, id: String) -> CmdResult<String> {
+    let entry = state
+        .clips
+        .get(&id)
+        .map_err(err)?
+        .ok_or_else(|| "that clipboard entry is gone".to_string())?;
+    let path = entry.image_path.ok_or_else(|| "not an image".to_string())?;
+    let bytes = std::fs::read(path).map_err(err)?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    ))
+}
+
 /// One-shot payload pull for bridge-driven windows (`popup` / `form`) — same pattern as
 /// `take_pending_capture`, keyed by window label.
 #[tauri::command]

@@ -17,6 +17,10 @@ pub struct AppPaths {
     pub history_db: PathBuf,
     /// On-disk PNG blobs for capture history (never synced).
     pub history_images: PathBuf,
+    /// SQLite store for clipboard history (never synced — see `docs/SECURITY.md`).
+    pub clipboard_db: PathBuf,
+    /// On-disk PNG blobs for copied images.
+    pub clipboard_images: PathBuf,
     /// JSON settings file (replaces Checkpoint's chrome.storage.sync).
     pub settings_json: PathBuf,
 }
@@ -35,12 +39,17 @@ impl AppPaths {
         }
         let history_images = history.join("images");
         std::fs::create_dir_all(&history_images)?;
+        let clipboard = root.join("clipboard");
+        let clipboard_images = clipboard.join("images");
+        std::fs::create_dir_all(&clipboard_images)?;
 
         Ok(Self {
             snippets_db: root.join("snippets.db"),
             engine_config,
             history_db: history.join("history.db"),
             history_images,
+            clipboard_db: clipboard.join("clipboard.db"),
+            clipboard_images,
             settings_json: root.join("settings.json"),
             root,
         })

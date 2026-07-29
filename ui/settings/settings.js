@@ -112,6 +112,24 @@ const SNIPPET_SECTIONS = [
   ]},
 ];
 
+const CLIPBOARD_SECTIONS = [
+  { title: 'Clipboard history', hint: `Everything you copy, kept on this device so you can
+    paste it again later. <strong>Content a password manager marks as concealed is never
+    recorded</strong>, and neither is anything marked transient — that marking is the
+    convention clipboard tools use, and Glyphio honours it. Nothing here is ever synced or
+    sent anywhere: there is no code that could.`, fields: [
+    ['clipboardHistory', 'toggle', 'Remember what I copy'],
+    ['clipboardMaxItems', 'number', 'Entries kept'],
+    ['clipboardMaxMb', 'number', 'Megabytes of copied images kept'],
+    ['shortcutOpenClipboard', 'text', 'Open clipboard history'],
+  ]},
+  { title: 'Never record from these apps', hint: `One app name per line, matched loosely —
+    <code>bank</code> catches “Banking”. Password managers already mark their own content and
+    don't need listing.`, fields: [
+    ['clipboardIgnoreApps', 'lines', 'Ignored apps'],
+  ]},
+];
+
 init().catch((e) => setStatus(e.message, 'err'));
 
 async function init() {
@@ -2085,6 +2103,7 @@ async function wireSync() {
 const SETTINGS_TABS = [
   ['capture', 'Capture'],
   ['snippets', 'Snippets'],
+  ['clipboard', 'Clipboard'],
   ['sync', 'Sync'],
   ['permissions', 'Permissions'],
   ['about', 'About'],
@@ -2104,6 +2123,7 @@ function renderSettings(main) {
   const form = main.querySelector('#settings-form');
   switch (state.settingsTab) {
     case 'snippets': renderSnippetsTab(form); break;
+    case 'clipboard': renderClipboardTab(form); break;
     case 'sync': renderSyncSection(form); break;
     case 'permissions': renderPermissionsTab(form); break;
     case 'about': renderAboutTab(form); break;
@@ -2145,6 +2165,27 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
   renderSections(form, SNIPPET_SECTIONS);
+}
+
+function renderClipboardTab(form) {
+  renderSections(form, CLIPBOARD_SECTIONS);
+  const div = document.createElement('div');
+  div.className = 'form-section';
+  div.innerHTML = `
+    <h3>Forget everything</h3>
+    <p class="adv-hint">Deletes every stored entry and every copied image, pinned ones
+    included. There is no undo, and nothing to recover from — that's the point.</p>
+    <div class="sync-actions"><button class="secondary" id="clip-clear">Clear clipboard history</button></div>`;
+  div.querySelector('#clip-clear').addEventListener('click', async () => {
+    const ok = await confirmDialog(
+      'Delete every stored clipboard entry and copied image, pinned ones included?',
+      { confirmLabel: 'Clear all', danger: true },
+    );
+    if (!ok) return;
+    try { await invoke('clear_clips'); setStatus('Clipboard history cleared.', 'ok'); }
+    catch (e) { setStatus(String(e), 'err'); }
+  });
+  form.append(div);
 }
 
 function renderPermissionsTab(form) {
@@ -2279,6 +2320,12 @@ function renderField(key, type, label, opts) {
   else if (type === 'select') { input = renderSelect(key, opts); }
   else if (type === 'color') { input = el('input', { type: 'color', className: 'color' }); input.value = state.settings[key] || '#000000'; }
   else if (type === 'number') { input = el('input', { type: 'number', min: '1' }); input.value = state.settings[key]; }
+  // A list the user edits as lines, stored as an array. One per line beats comma-separated
+  // for names that may contain commas — and app names do.
+  else if (type === 'lines') {
+    input = el('textarea', { rows: 4, spellcheck: false });
+    input.value = (state.settings[key] ?? []).join('\n');
+  }
   else { input = el('input', { type: 'text' }); input.value = state.settings[key] ?? ''; }
   input.dataset.key = key; input.dataset.type = type;
   field.append(input);
@@ -2398,6 +2445,9 @@ async function saveSettings() {
     const { key, type } = el.dataset;
     if (type === 'toggle') next[key] = el.checked;
     else if (type === 'number') next[key] = parseInt(el.value, 10) || state.settings[key];
+    else if (type === 'lines') {
+      next[key] = el.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    }
     else next[key] = el.value;
   });
   try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }

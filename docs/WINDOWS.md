@@ -16,6 +16,12 @@ something Windows simply doesn't have.
 - **All of `ui/`** — settings, editor, history, palette, banner compositing.
 - **`snippet-store`, `sync-client`, `sync-proto`** — pure Rust, no platform calls.
 - **History** — SQLite via `rusqlite` with the bundled build.
+- **Clipboard history** — the store, retention, dedupe, search and picker are all portable.
+  Its platform surface is four functions in `clipboard/platform.rs` (change counter, concealed
+  check, foreground app, paste keystroke) and **the Windows half is already written** — via
+  `GetClipboardSequenceNumber`, `ExcludeClipboardContentFromMonitorProcessing` and `SendInput`.
+  It has never been compiled, so treat it as a first draft, not a finished port; it also needs
+  `windows-sys` adding as a `[target.'cfg(windows)'.dependencies]` entry.
 - **Capture orchestration** (`src/capture.rs` itself) — mode selection, delivery, encoding.
 
 ## Text expansion: nearly free

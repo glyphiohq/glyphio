@@ -11,6 +11,7 @@ device except content a user *deliberately* shares with a team, over a channel t
 |---|---|---|
 | keystrokes | observed locally by the espanso-fork engine (macOS Accessibility) | never stored, never transmitted; engine is a local child process |
 | screenshots + history | local disk only (`~/Library/Application Support/Glyphio/history`) | **no sync path exists** for history — not a policy, an absence of code |
+| clipboard history | local disk only (`~/Library/Application Support/Glyphio/clipboard`, `0600`) | concealed/transient content never recorded; no sync path; off with one toggle; clearable |
 | personal snippets | local SQLite | excluded from sync at the query level (`team IS NULL` records are never serialized) |
 | team snippets | synced to *your* configured backend | TLS, bearer auth, server-side team authorization, LWW merge |
 | credentials | OS keychain (macOS Keychain / Windows Credential Manager) | never in files, DB, logs, or config |
@@ -44,6 +45,15 @@ device except content a user *deliberately* shares with a team, over a channel t
   launch update check against GitHub Releases, which sends nothing but the request and can be
   turned off in Settings → About. Updates carry a minisign signature verified against a public
   key compiled into the app, so a compromised release host cannot ship a payload that installs.
+- **Clipboard history refuses concealed content.** A clipboard manager is a log of what you
+  copy, and what people copy includes passwords — so content marked
+  `org.nspasteboard.ConcealedType` (the convention password managers use; the Windows
+  equivalent is `ExcludeClipboardContentFromMonitorProcessing`) is never recorded, and neither
+  is anything marked transient or auto-generated. An unreadable clipboard counts as concealed.
+  Apps can additionally be excluded by name, the database and every stored image are `0600`,
+  entry and byte caps bound what is kept, and Settings → Clipboard clears the lot. It is on by
+  default — a history that starts empty when you first need it is not a clipboard manager —
+  and one toggle turns it off.
 - Config files carry no secrets; the app refuses `authMode`/URL combinations that would
   downgrade transport security.
 - Snippet HTML is **sanitized before rendering** in any app webview (preview, popup and

@@ -56,6 +56,20 @@ pub struct Settings {
     pub history_max_count: u32,
     pub history_max_bytes: u64,
 
+    // ---- clipboard history ----
+    /// Record what you copy. On by default — a clipboard manager that has to be switched on
+    /// remembers nothing about the day you switched it on — but content marked concealed by
+    /// a password manager is never recorded either way. See `docs/SECURITY.md`.
+    pub clipboard_history: bool,
+    pub clipboard_max_items: u32,
+    /// Megabytes of stored images to keep. Text costs nothing next to this, so the cap is
+    /// expressed in the unit that actually fills a disk.
+    pub clipboard_max_mb: u64,
+    /// Apps whose copies are never recorded, matched case-insensitively as a substring of
+    /// the frontmost app's name. Password managers ship the concealed marker and don't need
+    /// listing; this is for everything else a user would rather not keep.
+    pub clipboard_ignore_apps: Vec<String>,
+
     // ---- global capture hotkeys (Tauri accelerator syntax) ----
     pub shortcut_capture_visible: String,
     pub shortcut_capture_snip: String,
@@ -68,6 +82,8 @@ pub struct Settings {
     pub shortcut_open_history: String,
     /// Summons the Spotlight-style snippet search palette.
     pub shortcut_open_palette: String,
+    /// Summons the clipboard history picker.
+    pub shortcut_open_clipboard: String,
 
     // ---- the same captures, delivered straight to the clipboard ----
     // Empty by default: nothing is registered until a key is put here, and each one is a
@@ -112,6 +128,10 @@ impl Default for Settings {
             history_enabled: true,
             history_max_count: 50,
             history_max_bytes: 200 * 1024 * 1024, // 200 MB, matching Checkpoint
+            clipboard_history: true,
+            clipboard_max_items: 200,
+            clipboard_max_mb: 100,
+            clipboard_ignore_apps: Vec::new(),
             // Alt+Shift+S/V/X mirrors Checkpoint; H opens history.
             shortcut_capture_full: "Alt+Shift+S".into(),
             shortcut_capture_visible: "Alt+Shift+V".into(),
@@ -122,6 +142,7 @@ impl Default for Settings {
             shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),
             shortcut_open_palette: "Alt+Space".into(),
+            shortcut_open_clipboard: "Alt+Shift+C".into(), // C = clipboard
             shortcut_capture_visible_silent: String::new(),
             shortcut_capture_snip_silent: String::new(),
             shortcut_capture_full_silent: String::new(),
@@ -138,6 +159,12 @@ impl Settings {
     /// from the browser unless one of these is on — see `capture::ax::browser_meta`.
     pub fn wants_browser_details(&self) -> bool {
         self.show_page_title || self.show_page_url || self.show_browser_profile
+    }
+
+    /// The clipboard image cap in bytes. Stored as MB because that is the number a person
+    /// has an opinion about.
+    pub fn clipboard_max_bytes(&self) -> u64 {
+        self.clipboard_max_mb.saturating_mul(1024 * 1024)
     }
 
     /// Whether the silent-capture worker should be parked in advance: the user has either

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyphio Clipboard</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <style>
+    /* Same floating card as the snippet palette — it is the same gesture, so it should not
+       look like a different app. */
+    html, body {
+      background: transparent !important;
+      margin: 0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .palette {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      box-sizing: border-box;
+      background: color-mix(in srgb, var(--surface) 96%, transparent);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+    .pal-search {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .pal-glyph {
+      font-family: "SF Mono", "Roboto Mono", monospace;
+      color: var(--accent);
+      font-size: 18px;
+      line-height: 1;
+    }
+    #q {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-size: 18px;
+      font-family: inherit;
+    }
+    #q::placeholder { color: var(--text-muted); }
+    .pal-list {
+      flex: 1;
+      overflow-y: auto;
+      margin: 0;
+      padding: 6px;
+      list-style: none;
+    }
+    .pal-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .pal-row.active { background: var(--accent-ghost); }
+    .clip-pin {
+      color: var(--accent);
+      font-size: 11px;
+      flex: 0 0 auto;
+      width: 12px;
+      text-align: center;
+    }
+    .clip-preview {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: "SF Mono", "Roboto Mono", monospace;
+    }
+    .clip-thumb {
+      height: 34px;
+      width: auto;
+      max-width: 120px;
+      border-radius: 4px;
+      border: 1px solid var(--border-strong);
+      object-fit: cover;
+      flex: 0 0 auto;
+    }
+    .pal-tag {
+      font-size: 10px;
+      color: var(--text-muted);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
+    .clip-when { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+    .pal-empty {
+      padding: 24px 16px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .pal-foot {
+      display: flex;
+      gap: 14px;
+      padding: 8px 16px;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .pal-foot kbd {
+      font-family: "SF Mono", "Roboto Mono", monospace;
+      font-size: 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 0 4px;
+      color: var(--text-secondary);
+    }
+    .pal-foot .spacer { flex: 1; }
+    .clip-err {
+      padding: 8px 16px;
+      color: var(--danger);
+      font-size: 11px;
+      border-top: 1px solid var(--border);
+    }
+    .clip-err:empty { display: none; }
+  </style>
+</head>
+<body>
+  <div class="palette">
+    <div class="pal-search">
+      <span class="pal-glyph">⎘</span>
+      <input id="q" type="text" placeholder="Search what you've copied…" autocomplete="off" spellcheck="false">
+    </div>
+    <ul class="pal-list" id="list"></ul>
+    <p class="clip-err" id="err"></p>
+    <div class="pal-foot">
+      <span><kbd>↩</kbd> paste</span>
+      <span><kbd>⌘↩</kbd> copy only</span>
+      <span><kbd>⌘P</kbd> pin</span>
+      <span><kbd>⌘⌫</kbd> delete</span>
+      <span class="spacer"></span>
+      <span><kbd>esc</kbd> close</span>
+    </div>
+  </div>
+  <script type="module" src="clipboard.js"></script>
+</body>
+</html>

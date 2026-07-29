@@ -72,6 +72,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         Submenu::with_items(app, "Capture to Clipboard", true, &as_refs(&silent_items))?;
 
     let search = MenuItem::with_id(app, "search", "Search Snippets…", true, None::<&str>)?;
+    let clipboard = MenuItem::with_id(app, "clipboard", "Clipboard History…", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "History…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Snippets & Settings…", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "Reload", true, None::<&str>)?;
@@ -84,6 +85,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             &capture_menu,
             &silent_menu,
             &PredefinedMenuItem::separator(app)?,
+            &clipboard,
             &history,
             &settings,
             &PredefinedMenuItem::separator(app)?,
@@ -107,6 +109,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }
                 "search" => { let _ = crate::windows::toggle_palette(&inner); }
+                "clipboard" => { let _ = crate::windows::toggle_clipboard(&inner); }
                 "reload" => {
                     if let Err(e) = crate::commands::do_reload(&inner) {
                         log::error!("reload failed: {e}");

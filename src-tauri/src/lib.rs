@@ -3,6 +3,7 @@
 
 mod bridge;
 pub mod capture;
+mod clipboard;
 mod commands;
 mod engine;
 mod history;
@@ -21,6 +22,7 @@ use tauri::{Emitter, Manager};
 
 use crate::capture::PendingCapture;
 use crate::engine::Supervisor;
+use crate::clipboard::ClipStore;
 use crate::history::HistoryStore;
 use crate::paths::AppPaths;
 use crate::settings::Settings;
@@ -31,6 +33,8 @@ pub struct AppState {
     pub paths: AppPaths,
     pub snippets: Arc<SnippetStore>,
     pub history: HistoryStore,
+    /// Clipboard history — what you copy, searchable and pasteable again.
+    pub clips: ClipStore,
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
     pub pending_capture: Mutex<Option<PendingCapture>>,
@@ -49,6 +53,7 @@ pub fn run() {
     let paths = AppPaths::resolve().expect("resolve app paths");
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
     let history = HistoryStore::open(&paths).expect("open history store");
+    let clips = ClipStore::open(&paths).expect("open clipboard store");
     let settings = Settings::load(&paths.settings_json);
     let sync = sync::SyncState::new(paths.root.join("sync.toml"));
 
@@ -61,6 +66,7 @@ pub fn run() {
         paths,
         snippets,
         history,
+        clips,
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         pending_capture: Mutex::new(None),
@@ -88,6 +94,10 @@ pub fn run() {
             // closing the last one demotes us again (windows::sync_activation_policy).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Watch the clipboard. The loop re-reads the setting each tick, so this is
+            // started unconditionally and does nothing while history is switched off.
+            clipboard::watch(app.handle());
 
             tray::build(app.handle())?;
             shortcuts::register(app.handle())?;
@@ -196,6 +206,13 @@ pub fn run() {
             commands::install_update,
             commands::capture_done_silently,
             commands::take_pending_payload,
+            commands::list_clips,
+            commands::clipboard_hide,
+            commands::clipboard_use,
+            commands::clip_set_pinned,
+            commands::delete_clip,
+            commands::clear_clips,
+            commands::clip_image_data_url,
             commands::form_submit,
             commands::form_cancel,
             commands::accessibility_status,

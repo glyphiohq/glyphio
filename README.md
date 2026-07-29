@@ -19,6 +19,10 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   scrolling capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
+- **Clipboard history** — everything you copy, text and images, searchable from a hotkey
+  (`Alt+Shift+C`) and pasted back into the app you were in. Pin what you want to keep; entry
+  and size caps evict the rest. **Content a password manager marks concealed is never
+  recorded**, apps can be excluded by name, and none of it syncs.
 - **Team sync (opt-in)** — sign in with **any OIDC IdP** (Okta, Entra, Auth0, Keycloak, …)
   or a static API token, against **any backend implementing the
   [documented protocol](docs/SYNC-PROTOCOL.md)**. Offline-first, last-write-wins.

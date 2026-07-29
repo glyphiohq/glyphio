@@ -19,7 +19,11 @@ pub fn register(app: &AppHandle) -> anyhow::Result<()> {
     for acc in captures
         .iter()
         .map(|(acc, _, _)| *acc)
-        .chain([s.shortcut_open_history.as_str(), s.shortcut_open_palette.as_str()])
+        .chain([
+            s.shortcut_open_history.as_str(),
+            s.shortcut_open_palette.as_str(),
+            s.shortcut_open_clipboard.as_str(),
+        ])
     {
         if acc.is_empty() {
             continue;
@@ -66,6 +70,13 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
         let _ = app.run_on_main_thread(move || {
             if let Err(e) = crate::windows::toggle_palette(&inner) {
                 log::error!("snippet palette failed: {e}");
+            }
+        });
+    } else if matches(shortcut, &s.shortcut_open_clipboard) {
+        let inner = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Err(e) = crate::windows::toggle_clipboard(&inner) {
+                log::error!("clipboard picker failed: {e}");
             }
         });
     }

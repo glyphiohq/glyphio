@@ -56,14 +56,32 @@ jobs:
             server
             espanso
 
+      # tauri-build validates every `bundle.externalBin` path, and it does so for plain
+      # `cargo clippy` and `--lib` too — not just `tauri build`. So the crate cannot be checked
+      # at all without the sidecars on disk, and they are gitignored build products: the engine
+      # means compiling the whole espanso fork, and both get signed. Placeholders satisfy the
+      # existence check. Nothing in this job executes them, and this job never produces a
+      # shippable artifact — see the header.
+      - name: Placeholder sidecars
+        run: |
+          set -euo pipefail
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          for name in glyphio-engine glyphio-ocr; do
+            path="src-tauri/binaries/${name}-${triple}"
+            printf '#!/bin/sh\necho "CI placeholder, not a real sidecar" >&2\nexit 1\n' > "$path"
+            chmod +x "$path"
+            echo "created $path"
+          done
+
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
 
-      # Builds the library, not the bundle: `tauri build` would need the signing identity and
-      # the sidecars, neither of which exist here.
+      # The library, not the bundle: `tauri build` needs the signing identity, which lives only
+      # in the maintainer's keychain.
       - name: Build
         run: cargo build --manifest-path src-tauri/Cargo.toml --lib --release
 

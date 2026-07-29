@@ -754,16 +754,23 @@
   --hist-control-h: 28px;
   display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
 }
-.hist-bar .seg { height: var(--hist-control-h); align-items: center; }
-.hist-search {
-  width: 220px; height: var(--hist-control-h);
-  padding: 0 10px; font-size: 12px; line-height: normal;
+/* `margin: 0` is load-bearing: this reuses `.settings-tabs`, which carries a 16px bottom
+   margin for the Settings tab strip. `align-items: center` centres *margin* boxes, so that
+   16px pushed the tabs 8px above the search field — the whole misalignment, measured. */
+.hist-bar .seg { height: var(--hist-control-h); align-items: center; margin: 0; }
+/* Scoped to `.hist-bar` on purpose, and not written as a bare `.hist-search`: theme.css styles
+   `input[type="search"]` with `width: 100%`, and an attribute selector plus a type selector
+   outranks a lone class. That is why this field kept coming out full-width and too tall. */
+.hist-bar .hist-search {
+  flex: 0 0 auto;
+  width: 240px; height: var(--hist-control-h);
+  padding: 0 10px; font: 400 12px/normal var(--font-sans);
   -webkit-appearance: none; appearance: none;
   background: var(--inset); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
-.hist-search::-webkit-search-decoration,
-.hist-search::-webkit-search-cancel-button { -webkit-appearance: none; }
+.hist-bar .hist-search::-webkit-search-decoration,
+.hist-bar .hist-search::-webkit-search-cancel-button { -webkit-appearance: none; }
 .hist-search:focus { outline: none; border-color: var(--accent); }
 /* What kind of thing this card is. Quiet, but present on every card so the eye can sort a
    mixed grid without reading it. */

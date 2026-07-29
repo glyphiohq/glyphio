@@ -10,8 +10,8 @@
 # other download, but it also supports `--no-quarantine`, which is a single documented flag
 # rather than a trip through System Settings. See docs/INSTALL.md.
 cask "glyphio" do
-  version "1.1.0"
-  sha256 "3f8b11da4b65a8bdf35c4823689406e6e4929623e17875ecbec2cd0f953acb4d"
+  version "1.1.1"
+  sha256 "9fbfda69da880539ceae64dc75b29c1e73567d5aaea5a5b2195a8aa717b19389"
 
   url "https://github.com/glyphiohq/glyphio/releases/download/v#{version}/Glyphio_#{version}_aarch64.dmg"
   name "Glyphio"

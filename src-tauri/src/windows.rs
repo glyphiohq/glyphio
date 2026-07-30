@@ -35,30 +35,43 @@ fn is_main_window(label: &str) -> bool {
 pub fn sync_activation_policy(app: &AppHandle, ignoring: Option<&str>) {
     #[cfg(target_os = "macos")]
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        // The policy transition is visible (the Dock icon appears/disappears), so only apply
-        // it on an actual change — set_activation_policy on every window event flickers.
-        static IS_REGULAR: AtomicBool = AtomicBool::new(false);
-
         let any_visible = app.webview_windows().iter().any(|(label, win)| {
             is_main_window(label)
                 && Some(label.as_str()) != ignoring
                 && win.is_visible().unwrap_or(false)
         });
-        if any_visible == IS_REGULAR.swap(any_visible, Ordering::SeqCst) {
-            return;
-        }
-        let policy = if any_visible {
-            tauri::ActivationPolicy::Regular
-        } else {
-            tauri::ActivationPolicy::Accessory
-        };
-        if let Err(e) = app.set_activation_policy(policy) {
-            log::warn!("could not set activation policy: {e}");
-        }
+        apply_activation_policy(app, any_visible);
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, ignoring);
+}
+
+/// Set the policy, remembering what it is. The transition is visible — the Dock icon appears
+/// or disappears — so it is only applied on an actual change; calling it on every window event
+/// otherwise flickers.
+///
+/// Summoned surfaces call this with `false` before building themselves: a window created by a
+/// *regular* app is born on the Space that app's other windows are on, so with Settings parked
+/// on a spare display the palette, the capture overlay and the expansion popups all appeared
+/// over there — or nowhere at all, if the user was in a full-screen app. Created as a menu-bar
+/// agent, the same window is born where the user is. The Dock icon comes back on its own: the
+/// surface's `Destroyed` event re-derives the policy from what is still on screen.
+#[cfg(target_os = "macos")]
+fn apply_activation_policy(app: &AppHandle, regular: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static IS_REGULAR: AtomicBool = AtomicBool::new(false);
+
+    if regular == IS_REGULAR.swap(regular, Ordering::SeqCst) {
+        return;
+    }
+    let policy = if regular {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    if let Err(e) = app.set_activation_policy(policy) {
+        log::warn!("could not set activation policy: {e}");
+    }
 }
 
 // --- Remembered window geometry ----------------------------------------------------------
@@ -388,6 +401,9 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
         "form" => ((440.0, 420.0), "form/index.html"),
         other => anyhow::bail!("unknown surface: {other}"),
     };
+    // Born where the user is typing, not where Settings is — see `apply_activation_policy`.
+    #[cfg(target_os = "macos")]
+    apply_activation_policy(app, false);
     let (origin, display) = crate::capture::display_bounds_for_active_window();
     let win = WebviewWindowBuilder::new(app, surface, WebviewUrl::App(url.into()))
         .title("Glyphio")
@@ -399,63 +415,81 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
         )
         .always_on_top(true)
         .skip_taskbar(true)
-        .build()?;
-    win.set_focus()?;
-    Ok(())
+        .build()
+        .map_err(anyhow::Error::from)
+        .and_then(|win| Ok(win.set_focus()?));
+    if win.is_err() {
+        // No window means no `Destroyed` event to hand the Dock icon back — see `toggle_palette`.
+        sync_activation_policy(app, None);
+    }
+    win
 }
 
 /// Toggle the Spotlight-style snippet palette: a frameless, always-on-top search window.
-/// Hidden (not destroyed) on dismiss so summoning it again is instant; the page refreshes
-/// its snippet list on every `palette-show`.
+///
+/// # Why this builds a window instead of showing one
+///
+/// Summoning builds the window; dismissing destroys it. That is not the obvious design — this
+/// used to keep one window alive and hidden, so ⌥Space cost only a `show()`. Two measured facts
+/// on macOS 26 (three displays, Safari/Chrome/Ghostty full screen) rule that out:
+///
+/// 1. **A window can only be shown on the Space it was created on.** The kept window was
+///    positioned on the right display, ordered in, and even made the key window — and the window
+///    server still would not draw it, because it belonged to the desktop Space it was built on.
+///    Typing went into a window nobody could see. `CanJoinAllSpaces` (which macOS reads as
+///    "every *ordinary* Space", excluding full screen), `FullScreenAuxiliary`, `MoveToActiveSpace`
+///    and ordering it out and back in all failed to move it.
+/// 2. **A window created by a *regular* app is born on the Space that app's other windows are
+///    on.** With the Settings window open, the palette could only ever appear on that window's
+///    display — which is exactly "it only opens on empty screens" if Settings is parked on a
+///    spare monitor. As a menu-bar agent, the same window is born where the user is, full-screen
+///    Spaces included. See [`apply_activation_policy`], which the other summoned surfaces use
+///    for the same reason.
+///
+/// So: build it fresh, as an agent, every time. The capture overlay has always been built per
+/// use and never had this problem.
+///
 /// `view` is which of the palette's three lists to land on — `clipboard`, `captures` or
-/// `snippets`. `None` means "whatever it was showing", so the ordinary hotkey doesn't reset a
-/// view the user deliberately switched to.
+/// `snippets`. `None` means "whatever it was showing last", so the ordinary hotkey doesn't
+/// reset a view the user deliberately switched to.
 pub fn toggle_palette(app: &AppHandle, view: Option<&str>) -> anyhow::Result<()> {
-    use tauri::Emitter;
     if let Some(win) = app.get_webview_window(PALETTE) {
-        if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
-            win.hide()?;
+        if win.is_focused().unwrap_or(true) {
+            // On screen and taking keys: this press is the dismissal. (It destroys itself the
+            // moment it loses focus, so there is nothing else it could mean.)
+            win.destroy()?;
             return Ok(());
         }
-        // Summon on the display the user is working on, never wherever it last was — ⌥Space
-        // should feel local, like Spotlight.
-        let pos = palette_position(app);
-        win.set_position(tauri::LogicalPosition::new(pos.0, pos.1))?;
-        win.show()?;
+        // On screen but not key — the summon that built it lost the focus race. The user
+        // pressed the hotkey to get *to* the palette, so give it focus instead of throwing it
+        // away and making them press again.
         win.set_focus()?;
-        let _ = app.emit_to(PALETTE, "palette-show", view);
         return Ok(());
     }
-    // Nothing pre-created it (or it was closed): build it and show it in one go.
-    let win = build_palette(app, true)?;
-    win.set_focus()?;
     // A page that isn't listening yet can't be told by an event, so it asks on load instead.
-    *app.state::<crate::AppState>().palette_view.lock().unwrap() =
-        view.unwrap_or("clipboard").to_string();
-    Ok(())
+    if let Some(view) = view {
+        *app.state::<crate::AppState>().palette_view.lock().unwrap() = view.to_string();
+    }
+    // Born where the user is, not where Settings is — see `apply_activation_policy`.
+    #[cfg(target_os = "macos")]
+    apply_activation_policy(app, false);
+    // On failure the policy has to be put back by hand: there is no window, so no `Destroyed`
+    // event will ever do it, and the app would sit there as a menu-bar agent with Settings on
+    // screen and no Dock icon.
+    let built = build_palette(app).and_then(|win| Ok(win.set_focus()?));
+    if built.is_err() {
+        sync_activation_policy(app, None);
+    }
+    built
 }
 
 pub const PALETTE: &str = "palette";
 const PALETTE_SIZE: (f64, f64) = (640.0, 460.0);
 
-/// Build the palette window off-screen during startup, so the first ⌥Space costs a `show()`
-/// and not a webview launch plus a page load.
-///
-/// This is the same trick as [`ensure_silent_editor`], for the same reason: the work is
-/// identical whenever it happens, and the one moment it must not happen is the moment the user
-/// is waiting. Failure is not fatal — [`toggle_palette`] still builds one on demand.
-pub fn prewarm_palette(app: &AppHandle) {
-    if app.get_webview_window(PALETTE).is_some() {
-        return;
-    }
-    if let Err(e) = build_palette(app, false) {
-        log::warn!("could not pre-warm the palette: {e}");
-    }
-}
-
-fn build_palette(app: &AppHandle, visible: bool) -> anyhow::Result<WebviewWindow> {
+/// Build the palette, on screen, on the Space the user is looking at right now.
+fn build_palette(app: &AppHandle) -> anyhow::Result<WebviewWindow> {
     let pos = palette_position(app);
-    Ok(WebviewWindowBuilder::new(app, PALETTE, WebviewUrl::App("palette/index.html".into()))
+    let win = WebviewWindowBuilder::new(app, PALETTE, WebviewUrl::App("palette/index.html".into()))
         .title("Glyphio Search")
         .inner_size(PALETTE_SIZE.0, PALETTE_SIZE.1)
         .position(pos.0, pos.1)
@@ -464,9 +498,9 @@ fn build_palette(app: &AppHandle, visible: bool) -> anyhow::Result<WebviewWindow
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .visible_on_all_workspaces(true)
-        .visible(visible)
-        .build()?)
+        .build()?;
+    // No Spaces flags at all, deliberately — see [`toggle_palette`].
+    Ok(win)
 }
 
 fn palette_position(app: &AppHandle) -> (f64, f64) {
@@ -490,6 +524,9 @@ pub fn open_scroll_overlay(app: &AppHandle, delivery: crate::capture::Delivery) 
     if let Some(win) = app.get_webview_window("scroll-overlay") {
         win.close().ok(); // stale one — restart fresh
     }
+    // Born where the user is, not where Settings is — see `apply_activation_policy`.
+    #[cfg(target_os = "macos")]
+    apply_activation_policy(app, false);
     let (origin, size) = crate::capture::display_bounds_under_cursor();
     let url = if delivery.is_silent() {
         "scroll-overlay/index.html?silent=1"
@@ -505,14 +542,215 @@ pub fn open_scroll_overlay(app: &AppHandle, delivery: crate::capture::Delivery) 
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
-    .build()?;
-    win.set_focus()?;
-    Ok(())
+    .build()
+    .map_err(anyhow::Error::from)
+    .and_then(|win| Ok(win.set_focus()?));
+    if win.is_err() {
+        // No window means no `Destroyed` event to hand the Dock icon back — see `toggle_palette`.
+        sync_activation_policy(app, None);
+    }
+    win
 }
 
 /// Close the selection overlay if present.
 pub fn close_scroll_overlay(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("scroll-overlay") {
         let _ = win.close();
+    }
+}
+
+/// The readout that sits beside a running scrolling capture.
+pub const SCROLL_HUD: &str = "scroll-hud";
+/// One line: a spinner, the frame count, and the key that ends it. Nothing needing a second.
+const SCROLL_HUD_SIZE: (f64, f64) = (272.0, 44.0);
+/// Clearance between the readout and the region, and from the screen edge.
+const SCROLL_HUD_GAP: f64 = 14.0;
+
+/// Just outside the region being captured — below it when there is room, above it otherwise —
+/// so it never covers what is being photographed. Clamped to the display the region is on.
+fn scroll_hud_position(rect: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (origin, size) = crate::capture::display_bounds_containing(
+        rect.0 + rect.2 / 2.0,
+        rect.1 + rect.3 / 2.0,
+    )
+    .unwrap_or_else(crate::capture::display_bounds_under_cursor);
+    scroll_hud_slot(rect, origin, size)
+}
+
+/// The placement arithmetic on its own, so it can be checked without a display attached.
+fn scroll_hud_slot(
+    rect: (f64, f64, f64, f64),
+    origin: (f64, f64),
+    size: (f64, f64),
+) -> (f64, f64) {
+    let (rx, ry, rw, rh) = rect;
+    let (w, h) = SCROLL_HUD_SIZE;
+    let g = SCROLL_HUD_GAP;
+    // `f64::clamp` panics if the bounds cross, which they do on a display narrower than the
+    // readout plus both gaps — so the upper bound is never allowed below the lower one.
+    let left = origin.0 + g;
+    let right = (origin.0 + size.0 - w - g).max(left);
+    let x = (rx + (rw - w) / 2.0).clamp(left, right);
+    let (below, above) = (ry + rh + g, ry - h - g);
+    let y = if below + h + g <= origin.1 + size.1 {
+        below
+    } else if above >= origin.1 + g {
+        above
+    } else {
+        // The region fills the display. Sit at the bottom edge, over the region: it is still
+        // left out of the frames, and only the live view has it on top of anything.
+        origin.1 + size.1 - h - g
+    };
+    (x, y)
+}
+
+/// Where the readout waits between captures: off every display, so it is simply not on screen.
+const SCROLL_HUD_PARK: (f64, f64) = (-20000.0, -20000.0);
+
+/// Build the readout up front and leave it parked off screen.
+///
+/// Same trick and same reason as [`ensure_silent_editor`]: *creating* a window activates the
+/// application, and a capture is the worst possible moment for that — Glyphio coming forward
+/// deactivates the window being photographed, so its toolbar greys and its selection fades,
+/// baked into every frame from that moment on. Creating it at launch spends the activation while
+/// the user is already looking at Glyphio; a capture then only moves a window that exists.
+pub fn park_scroll_hud(app: &AppHandle) {
+    if app.get_webview_window(SCROLL_HUD).is_some() {
+        return;
+    }
+    let (w, h) = SCROLL_HUD_SIZE;
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        SCROLL_HUD,
+        WebviewUrl::App("scroll-hud/index.html".into()),
+    )
+    .title("Capturing")
+    .position(SCROLL_HUD_PARK.0, SCROLL_HUD_PARK.1)
+    .inner_size(w, h)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .focused(false);
+    #[cfg(target_os = "macos")]
+    {
+        // Nothing here is clickable, but a stray click must not activate Glyphio mid-capture:
+        // that would deactivate the window being photographed and grey its toolbar in the
+        // frames from then on.
+        builder = builder.accept_first_mouse(true);
+    }
+    if let Err(e) = builder.build() {
+        log::warn!("could not park the scrolling readout: {e}");
+    }
+}
+
+/// Bring the readout to the region being captured and return the frame it occupies, so the
+/// capture knows which patch of screen is its own readout rather than the content to scroll.
+///
+/// A move, not a show: see [`park_scroll_hud`] for why nothing may be created here.
+pub fn open_scroll_hud(app: &AppHandle, rect: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
+    let (x, y) = scroll_hud_position(rect);
+    let (w, h) = SCROLL_HUD_SIZE;
+    move_scroll_hud(app, (x, y))?;
+    Some((x, y, w, h))
+}
+
+/// Send the readout back off screen. Left in place, not closed — closing it would mean creating
+/// it again next time, which is the one thing a capture must not do.
+pub fn close_scroll_hud(app: &AppHandle) {
+    if move_scroll_hud(app, SCROLL_HUD_PARK).is_some() {
+        return;
+    }
+    // It wasn't there to park. Now — with the capture over — is the safe moment to build one,
+    // so the next capture has its readout. See `park_scroll_hud` for why not a moment sooner.
+    let repair = app.clone();
+    let _ = app.run_on_main_thread(move || park_scroll_hud(&repair));
+}
+
+fn move_scroll_hud(app: &AppHandle, (x, y): (f64, f64)) -> Option<()> {
+    let inner = app.clone();
+    // A missing readout is left missing for this capture: rebuilding it here would create a
+    // window, and creating a window activates Glyphio — in front of whatever is being
+    // photographed. `close_scroll_hud` does the repair once the frames are taken.
+    if app.get_webview_window(SCROLL_HUD).is_none() {
+        log::warn!("the scrolling readout is missing; this capture runs without it");
+        return None;
+    }
+    app.run_on_main_thread(move || {
+        if let Some(win) = inner.get_webview_window(SCROLL_HUD) {
+            if let Err(e) = win.set_position(tauri::LogicalPosition::new(x, y)) {
+                log::warn!("could not move the scrolling readout: {e}");
+            }
+            // Something opened over it since the last capture — take the top back.
+            let _ = win.set_always_on_top(true);
+        }
+    })
+    .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCREEN: ((f64, f64), (f64, f64)) = ((0.0, 0.0), (1920.0, 1080.0));
+
+    /// The readout has to stay on the display and, wherever possible, off the region: it must
+    /// not sit on top of what is being captured.
+    #[test]
+    fn the_readout_sits_below_the_region_when_there_is_room_and_above_it_otherwise() {
+        let (w, h) = SCROLL_HUD_SIZE;
+        let g = SCROLL_HUD_GAP;
+
+        // Room underneath: centred on the region, in the gap below it.
+        let region = (400.0, 100.0, 800.0, 600.0);
+        let (x, y) = scroll_hud_slot(region, SCREEN.0, SCREEN.1);
+        assert_eq!(x, 400.0 + (800.0 - w) / 2.0);
+        assert_eq!(y, 700.0 + g);
+
+        // Region runs to the bottom of the screen: the readout goes above it.
+        let (_, y) = scroll_hud_slot((400.0, 400.0, 800.0, 680.0), SCREEN.0, SCREEN.1);
+        assert_eq!(y, 400.0 - h - g);
+
+        // Region fills the display: nowhere clear, so the bottom edge — inset, still on screen.
+        let (x, y) = scroll_hud_slot((0.0, 0.0, 1920.0, 1080.0), SCREEN.0, SCREEN.1);
+        assert_eq!(y, 1080.0 - h - g);
+        assert!(x >= g && x + w <= 1920.0 - g);
+
+        // A narrow region at the screen edge can't centre the readout off the display.
+        let (x, _) = scroll_hud_slot((1860.0, 100.0, 50.0, 200.0), SCREEN.0, SCREEN.1);
+        assert_eq!(x, 1920.0 - w - g);
+        let (x, _) = scroll_hud_slot((10.0, 100.0, 50.0, 200.0), SCREEN.0, SCREEN.1);
+        assert_eq!(x, g);
+    }
+
+    /// A second display starts at a non-zero origin, and everything above still has to hold
+    /// relative to it — the readout belongs on the screen the region is on.
+    #[test]
+    fn the_readout_follows_the_region_onto_a_second_display() {
+        let (w, h) = SCROLL_HUD_SIZE;
+        let g = SCROLL_HUD_GAP;
+        let (origin, size) = ((1920.0, 34.0), (1920.0, 1080.0));
+        let (x, y) = scroll_hud_slot((2000.0, 134.0, 600.0, 500.0), origin, size);
+        assert_eq!((x, y), (2000.0 + (600.0 - w) / 2.0, 634.0 + g));
+
+        let (x, y) = scroll_hud_slot((1920.0, 34.0, 1920.0, 1080.0), origin, size);
+        assert_eq!(y, 34.0 + 1080.0 - h - g);
+        assert!(x >= 1920.0 + g && x + w <= 1920.0 + 1920.0 - g);
+    }
+
+    /// A display too narrow for the readout and both gaps used to cross `clamp`'s bounds, which
+    /// panics — on the async task, so the capture would die with nothing to show for it.
+    #[test]
+    fn a_display_narrower_than_the_readout_places_it_instead_of_panicking() {
+        let (w, _) = SCROLL_HUD_SIZE;
+        let origin = (0.0, 0.0);
+        for width in [200.0, 272.0, 285.0, 299.0] {
+            let (x, _) = scroll_hud_slot((0.0, 0.0, width, 400.0), origin, (width, 600.0));
+            assert!(x >= origin.0, "{width}pt display put the readout off the left edge");
+            assert!(x <= origin.0 + SCROLL_HUD_GAP, "{width}pt display: {x} is not pinned left");
+            let _ = w;
+        }
     }
 }

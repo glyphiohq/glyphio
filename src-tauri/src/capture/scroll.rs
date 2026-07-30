@@ -10,6 +10,14 @@
 //! Requires TWO macOS permissions: Screen Recording (capture — shared with all capture modes)
 //! and Accessibility **for the app itself** (posting synthetic scroll events; separate from
 //! the engine's grant, which covers a different process).
+//!
+//! It stops on its own at the bottom of the content, and **Esc** stops it early and keeps every
+//! frame taken so far. Because a wheel event lands wherever the pointer is, the loop also pauses
+//! whenever the pointer leaves the region: moving the mouse mid-capture used to scroll something
+//! else and stitch nonsense.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use core_graphics::display::{CGDisplay, CGPoint};
@@ -25,11 +33,57 @@ const MAX_FRAMES: usize = 30;
 const SCROLL_FRACTION: f64 = 0.6;
 /// Settle time after a scroll before the next capture (rendering, inertia none — we use
 /// discrete wheel events, but slow pages need paint time).
-const SETTLE_MS: u64 = 300;
+const SETTLE: Duration = Duration::from_millis(300);
 /// How far (px) around the expected overlap the stitcher searches.
 const OVERLAP_SEARCH: i64 = 90;
 /// Mean-absolute-difference (0-255) below which two rows bands are "the same".
 const MATCH_THRESHOLD: f64 = 8.0;
+/// How far outside the region the pointer may stray before the capture hands it back. A hand
+/// resting on a trackpad twitches; a deliberate move away from the region does not.
+const POINTER_SLACK: f64 = 24.0;
+/// How long to stay paused waiting for the pointer before finishing with the frames in hand.
+/// Someone who walks away mid-capture still gets a usable image rather than a stuck app.
+const PAUSE_LIMIT: Duration = Duration::from_secs(30);
+/// Granularity of every wait in the loop, so an Esc lands well inside one frame time.
+const TICK: Duration = Duration::from_millis(40);
+
+/// Set by [`request_stop`], cleared at the start of every capture.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Finish the running capture now and keep the frames it already has — what Escape
+/// and Esc do. Not a cancel: a short page you stopped early is still the page you wanted.
+pub fn request_stop() {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+fn stopping() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
+/// Forget a stop asked for before this capture existed.
+///
+/// Called by the caller *before* it arms Escape, never from inside [`capture`]: clearing it
+/// after the key is live throws away a press made in between, and "I hit Esc immediately and it
+/// kept going" is the one failure this control cannot have.
+pub fn clear_stop() {
+}
+
+/// One scrolling capture.
+pub struct Job {
+    /// Region to photograph, in global points (top-left origin).
+    pub rect: (f64, f64, f64, f64),
+    /// The on-screen readout's own frame, if one is up. The pointer being there means the user
+    /// is over the readout, which cannot scroll anything, rather than asking for another scroll.
+    pub hud: Option<(f64, f64, f64, f64)>,
+}
+
+/// What the capture is doing, for the readout.
+#[derive(Clone, Copy)]
+pub struct Progress {
+    pub frames: usize,
+    /// The pointer has left the region — nothing is being scrolled until it comes back.
+    pub paused: bool,
+}
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -57,23 +111,35 @@ pub fn request_accessibility() -> bool {
     unsafe { AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef()) }
 }
 
-/// Capture a scrolling region. `x/y/w/h` are global screen coordinates in points
-/// (top-left origin), as reported by the selection overlay.
-pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
-    if !app_accessibility_trusted() {
-        anyhow::bail!(
-            "Scrolling capture needs Accessibility permission for Glyphio itself \
-             (System Settings › Privacy & Security › Accessibility) — it scrolls the page for you."
-        );
+/// The grant this mode needs, as an error rather than a bool, so the caller can refuse before
+/// putting anything on screen — a missing permission shouldn't flash a readout first.
+pub fn require_accessibility() -> anyhow::Result<()> {
+    if app_accessibility_trusted() {
+        return Ok(());
     }
+    anyhow::bail!(
+        "Scrolling capture needs Accessibility permission for Glyphio itself \
+         (System Settings › Privacy & Security › Accessibility) — it scrolls the page for you."
+    )
+}
+
+/// Capture a scrolling region. The rect is in global screen coordinates in points (top-left
+/// origin), as reported by the selection overlay or by the page's accessibility geometry.
+///
+/// `on_progress` is called on this thread every time the count or the paused state changes, so
+/// the readout can say what is happening; it must not block.
+pub fn capture(job: Job, on_progress: &dyn Fn(Progress)) -> anyhow::Result<Shot> {
+    let (x, y, w, h) = job.rect;
+    require_accessibility()?;
     if w < 40.0 || h < 40.0 {
         anyhow::bail!("selection too small");
     }
 
+    // NB: the stop flag is cleared by the caller before it arms Escape — see [`clear_stop`].
     // Park the cursor mid-region so wheel events reach the right scroller; restore after.
     let original = cursor_position();
     warp_cursor(CGPoint::new(x + w / 2.0, y + h / 2.0));
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    std::thread::sleep(Duration::from_millis(120));
 
     let mut frames: Vec<RgbaImage> = Vec::new();
     let mut capture_dpr = 1.0;
@@ -88,17 +154,28 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
                 }
             }
             frames.push(frame);
+            on_progress(Progress { frames: frames.len(), paused: false });
             if frames.len() >= MAX_FRAMES {
                 log::info!("scrolling capture reached the {MAX_FRAMES}-frame cap");
                 break;
             }
+            if stopping() || !wait_for_pointer(&job, frames.len(), on_progress) {
+                break;
+            }
             post_scroll(-(scroll_px_points as i32))?;
-            std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
+            if !nap(SETTLE) {
+                break;
+            }
         }
         Ok(())
     })();
+    // Give the pointer back where we found it — but only if it is still where we put it. If the
+    // user has moved it themselves (that's what pauses the capture), yanking it back would be
+    // the rudest possible ending.
     if let Some(p) = original {
-        warp_cursor(p);
+        if pointer_in_region(&job) {
+            warp_cursor(p);
+        }
     }
     result?;
 
@@ -118,6 +195,61 @@ pub fn capture(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Shot> {
         title: String::new(),
         browser: Default::default(),
     })
+}
+
+/// Whether the pointer is still over the region and not over the readout — i.e. whether the
+/// capture may scroll. A wheel event goes to whatever is under the pointer, so scrolling while
+/// the user has taken the mouse elsewhere scrolls the wrong thing and stitches nonsense.
+fn pointer_in_region(job: &Job) -> bool {
+    match cursor_position() {
+        Some(p) => may_scroll(job, (p.x, p.y)),
+        None => true, // can't tell where the pointer is — carry on rather than stall
+    }
+}
+
+/// The rule itself, without asking the window server where the pointer is.
+fn may_scroll(job: &Job, p: (f64, f64)) -> bool {
+    let inside = |(rx, ry, rw, rh): (f64, f64, f64, f64), slack: f64| {
+        p.0 >= rx - slack && p.0 <= rx + rw + slack && p.1 >= ry - slack && p.1 <= ry + rh + slack
+    };
+    inside(job.rect, POINTER_SLACK) && !job.hud.is_some_and(|r| inside(r, 0.0))
+}
+
+/// Hold the capture while the pointer is away, and resume when it comes back. Returns false
+/// when the capture should finish with what it has: an Esc, or nobody came back.
+fn wait_for_pointer(job: &Job, frames: usize, on_progress: &dyn Fn(Progress)) -> bool {
+    if pointer_in_region(job) {
+        return true;
+    }
+    on_progress(Progress { frames, paused: true });
+    let deadline = Instant::now() + PAUSE_LIMIT;
+    while Instant::now() < deadline {
+        if stopping() {
+            return false;
+        }
+        std::thread::sleep(TICK);
+        if pointer_in_region(job) {
+            on_progress(Progress { frames, paused: false });
+            return true;
+        }
+    }
+    log::info!("scrolling capture: pointer stayed away, finishing with {frames} frame(s)");
+    false
+}
+
+/// Sleep in slices so an Esc is noticed promptly. False when the capture should finish.
+fn nap(total: Duration) -> bool {
+    let deadline = Instant::now() + total;
+    loop {
+        if stopping() {
+            return false;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return !stopping(); // an Esc in the final slice still ends it here
+        }
+        std::thread::sleep(left.min(TICK));
+    }
 }
 
 fn cursor_position() -> Option<CGPoint> {
@@ -259,6 +391,21 @@ mod tests {
                 assert_eq!(out.get_pixel(x, y), page.get_pixel(x, y), "mismatch at {x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn the_capture_scrolls_only_while_the_pointer_is_its_own() {
+        // A 800×600 region with the readout parked just below it.
+        let job = Job { rect: (100.0, 100.0, 800.0, 600.0), hud: Some((364.0, 714.0, 272.0, 44.0)) };
+        assert!(may_scroll(&job, (500.0, 400.0)), "middle of the region");
+        assert!(may_scroll(&job, (100.0, 100.0)), "top-left corner counts as inside");
+        // A twitch just outside the edge must not hand the pointer back.
+        assert!(may_scroll(&job, (905.0, 400.0)), "within the slack");
+        assert!(!may_scroll(&job, (960.0, 400.0)), "clearly outside");
+        // The readout's top edge falls inside the slack margin, so only the readout check can
+        // pause the capture here — which is the whole point of passing its frame in.
+        assert!(may_scroll(&job, (500.0, 705.0)), "in the gap, still scrolling");
+        assert!(!may_scroll(&job, (500.0, 718.0)), "over the readout, paused");
     }
 
     #[test]

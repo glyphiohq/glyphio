@@ -69,22 +69,25 @@ let error = '';
 init();
 
 async function init() {
+  // Before anything that awaits. This window is built when you press ⌥Space, so `init` runs
+  // while it is already on screen — every await here is a moment where the palette is visible
+  // but the caret isn't in the field, and anything typed in it is lost. Wiring the field and
+  // the dismissal first means type-ahead lands in the search box and clicking away always
+  // closes, however slow the lists are.
+  input.focus();
+  window.addEventListener('blur', hide);
+  input.addEventListener('input', () => { selected = 0; draw(); });
+  input.addEventListener('keydown', onKey);
+
   const asked = await invoke('palette_view').catch(() => '');
   await refresh();
   setKind('all');
   setView(VIEWS.includes(asked) ? asked : 'clipboard', { keepQuery: false });
 
-  // Draw what we already have *before* asking for anything. The window is on screen by the
-  // time this fires, so an await here is a visibly empty palette; the lists are already in
-  // memory from last time and are almost always still right.
-  await listen('palette-show', (e) => {
-    const asked = typeof e.payload === 'string' ? e.payload : null;
-    input.value = '';
-    setView(VIEWS.includes(asked) ? asked : view, { keepQuery: false });
-    input.focus();
-    input.select();
-    refresh().then(draw);
-  });
+  // No `palette-show` listener: this window is built when the palette is summoned and
+  // destroyed when it is dismissed, so every summon runs `init` from the top. See
+  // `windows::toggle_palette` for why it can't be a long-lived window that hides.
+
   // Something copied while the palette is open should appear in it.
   await listen('clipboard-changed', async () => {
     if (!document.hasFocus()) return;
@@ -97,9 +100,6 @@ async function init() {
     draw();
   });
 
-  window.addEventListener('blur', hide);
-  input.addEventListener('input', () => { selected = 0; draw(); });
-  input.addEventListener('keydown', onKey);
   viewBar.addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
     if (b) setView(b.dataset.view);
@@ -138,6 +138,9 @@ async function loadSnippets() {
 function setView(next, { keepQuery = true } = {}) {
   view = VIEWS.includes(next) ? next : 'clipboard';
   selected = 0;
+  // The window is destroyed on dismiss, so "the list it was showing" can't live in this page —
+  // it is kept in the app, and read back by the next summon.
+  invoke('palette_view_set', { view }).catch(() => {});
   if (!keepQuery) input.value = '';
   glyph.textContent = CHROME[view].glyph;
   input.placeholder = CHROME[view].placeholder;

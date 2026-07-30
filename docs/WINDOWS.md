@@ -73,6 +73,12 @@ existing rule that browser details are opt-in.
 Only `post_scroll`, `warp_cursor` and `cursor_position` are Quartz. `stitch`, `band_gray`,
 `mad` and `frames_identical` are pure image work with existing tests, and port as-is.
 
+The stop control ports as-is too: Esc is a global hotkey either way, `may_scroll` is arithmetic,
+the readout is a webview, and
+Windows delivers wheel messages to the window under the cursor exactly as macOS does — so the
+pause-when-the-pointer-leaves rule is needed there for the same reason. `GetCursorPos` replaces
+`cursor_position`, `SetCursorPos` replaces `warp_cursor`.
+
 ### `scripts/ocr.swift` → Windows.Media.Ocr
 
 On-image OCR. Comparable scope to the Swift version. WinRT's OCR API is a reasonable match.

@@ -367,14 +367,20 @@ pub async fn scroll_capture_run(
     // Give the compositor a beat to remove the overlay before the first frame.
     tokio::time::sleep(std::time::Duration::from_millis(180)).await;
 
-    let shot = tauri::async_runtime::spawn_blocking(move || {
-        crate::capture::scroll::capture(gx, gy, w, h)
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)?;
-    let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
-    crate::capture::finish(&app, shot, "scrolling", delivery).map_err(err)
+    // Everything from here on has to report itself. The page that invoked this command is the
+    // selection overlay, and it was closed four lines ago — a returned `Err` resolves into a
+    // dead webview, so a capture that failed simply looked like a capture that never happened.
+    let outcome = match crate::capture::run_scrolling(&app, (gx, gy, w, h)).await {
+        Ok(shot) => {
+            let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
+            crate::capture::finish(&app, shot, "scrolling", delivery)
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = outcome {
+        crate::capture::report_failure(&app, "capture (scrolling)", &e);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -418,11 +424,15 @@ pub fn open_capture(app: AppHandle, id: String) -> CmdResult<()> {
 
 // ---- snippet palette ---------------------------------------------------------
 
-/// Hide the snippet palette (Esc, focus loss, or after an expansion).
+/// Dismiss the snippet palette (Esc, focus loss, or after an expansion).
+///
+/// Destroyed rather than hidden: it is rebuilt on the Space the user is on next time it is
+/// summoned, which is the only way it can appear over a full-screen app (see
+/// `windows::toggle_palette`).
 #[tauri::command]
 pub fn palette_hide(app: AppHandle) {
     if let Some(win) = app.get_webview_window("palette") {
-        let _ = win.hide();
+        let _ = win.destroy();
     }
 }
 
@@ -433,7 +443,7 @@ pub fn palette_hide(app: AppHandle) {
 #[tauri::command]
 pub async fn palette_exec(app: AppHandle, trigger: String) -> CmdResult<()> {
     if let Some(win) = app.get_webview_window("palette") {
-        let _ = win.hide();
+        let _ = win.destroy();
     }
     // Deactivate the whole app, not just the palette: if another Glyphio window is open,
     // macOS would hand key focus to it and the expansion would land inside Glyphio instead
@@ -467,7 +477,7 @@ pub async fn palette_exec(app: AppHandle, trigger: String) -> CmdResult<()> {
 #[tauri::command]
 pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>) -> CmdResult<()> {
     if let Some(win) = app.get_webview_window("palette") {
-        let _ = win.hide();
+        let _ = win.destroy();
     }
     #[cfg(target_os = "macos")]
     let _ = app.hide();
@@ -600,6 +610,15 @@ pub fn palette_view(state: State<AppState>) -> String {
     state.palette_view.lock().unwrap().clone()
 }
 
+/// Remember the list the user just switched to, so the next ⌥Space opens on it.
+///
+/// The palette window is destroyed when it is dismissed (see `windows::toggle_palette`), so
+/// this can't be state in the page — the page is gone.
+#[tauri::command]
+pub fn palette_view_set(state: State<AppState>, view: String) {
+    *state.palette_view.lock().unwrap() = view;
+}
+
 /// Put an entry back on the clipboard and paste it where the user was.
 ///
 /// The picker had focus a moment ago, so the same rule as `form_submit` applies: close and
@@ -616,7 +635,7 @@ pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult
     crate::clipboard::put_back(&app, &entry).map_err(err)?;
 
     if let Some(win) = app.get_webview_window("palette") {
-        let _ = win.hide();
+        let _ = win.destroy();
     }
     // Picking an entry always succeeds at the part that matters — it is on the clipboard, ready
     // for ⌘V. Pasting for the user is the bonus, and it needs the Accessibility grant to

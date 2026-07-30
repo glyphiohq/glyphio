@@ -56,6 +56,12 @@ pub fn point_on_a_display(x: f64, y: f64) -> bool {
     backend::display_bounds_containing_point(x, y).is_some()
 }
 
+/// (origin, size) in points of the display holding a global point — where a panel anchored to
+/// something on screen has to stay inside.
+pub fn display_bounds_containing(x: f64, y: f64) -> Option<((f64, f64), (f64, f64))> {
+    backend::display_bounds_containing_point(x, y)
+}
+
 /// A captured, un-annotated frame handed to the editor webview.
 pub struct Shot {
     pub rgba: Vec<u8>,
@@ -150,9 +156,23 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
         let details = wants_browser_details(app);
         tauri::async_runtime::spawn(async move {
             let m = mode.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || capture_page(&m, details)).await;
+            let target = tauri::async_runtime::spawn_blocking(move || page_target(&m, details)).await;
+            let result = match target {
+                // scrollingPage: the readout and the scroll loop are driven from here, because
+                // opening a window needs the app, and the loop needs to not be on the main thread.
+                Ok(Ok(PageTarget::Scroll { rect, title, browser })) => {
+                    run_scrolling(&app2, rect).await.map(|mut shot| {
+                        shot.title = title;
+                        shot.browser = browser;
+                        shot
+                    })
+                }
+                Ok(Ok(PageTarget::Done(shot))) => Ok(shot),
+                Ok(Err(e)) => Err(e),
+                Err(e) => Err(anyhow!("page capture task failed: {e}")),
+            };
             match result {
-                Ok(Ok(shot)) => {
+                Ok(shot) => {
                     let app3 = app2.clone();
                     let mode2 = mode.clone();
                     let _ = app2.run_on_main_thread(move || {
@@ -161,8 +181,7 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
                         }
                     });
                 }
-                Ok(Err(e)) => report_failure(&app2, "page capture", &e),
-                Err(e) => log::error!("page capture task failed: {e}"),
+                Err(e) => report_failure(&app2, "page capture", &e),
             }
         });
         return Ok(());
@@ -181,6 +200,15 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
 /// and expensive to keep tight.
 const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(8000);
 
+/// Outcome of resolving what a frontmost-page capture is aimed at.
+enum PageTarget {
+    /// `pageOnly` — one frame, already taken.
+    Done(Shot),
+    /// `scrollingPage` — the region to scroll through, plus the banner details already read
+    /// from the browser (the scroll loop can't ask afterwards: the page will have moved).
+    Scroll { rect: (f64, f64, f64, f64), title: String, browser: ax::BrowserMeta },
+}
+
 /// Blocking body of the two frontmost-page modes. `pageOnly` requires a visible web area
 /// (that's the point of the mode); `scrollingPage` prefers it — no browser chrome repeating
 /// in the stitched frames — and falls back to the window frame for non-browsers.
@@ -188,7 +216,7 @@ const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(8
 /// Geometry comes from the AX tree when possible: CGWindowList ordering is unreliable on
 /// modern macOS (Safari's toolbar strip is its own window), and `AXWebArea` alone reports
 /// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
-fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> {
+fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTarget> {
     let win = backend::frontmost_window_bounds()?;
     let geometry = if scroll::app_accessibility_trusted() {
         ax::page_geometry(win.pid, PAGE_TREE_BUDGET)
@@ -226,20 +254,106 @@ fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> 
         })?;
         let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
         let (width, height) = img.dimensions();
-        return Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title, browser });
+        return Ok(PageTarget::Done(Shot {
+            rgba: img.into_raw(),
+            width,
+            height,
+            dpr,
+            title: win.title,
+            browser,
+        }));
     }
     // scrollingPage — the Accessibility error, if the grant is missing, comes from
     // scroll::capture itself. Fallbacks: viewport → AX window frame → CGWindow rect
     // (title bar already inset away by frontmost_window_bounds).
-    let (x, y, w, h) = match &geometry {
+    let rect = match &geometry {
         Some(g) => g.web_visible.unwrap_or(g.window),
         None => (win.x, win.y, win.w, win.h),
     };
-    scroll::capture(x, y, w, h).map(|mut s| {
-        s.title = win.title;
-        s.browser = browser;
-        s
+    Ok(PageTarget::Scroll { rect, title: win.title, browser })
+}
+
+/// One scrolling capture at a time. Two would fight over the pointer, and the second one's
+/// start would clear the first one's stop flag — so a second hotkey press says so instead.
+static SCROLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run a scrolling capture with its on-screen readout: frame count, a paused state, and how to
+/// stop.
+///
+/// The readout is one of Glyphio's own windows, so `backend::our_windows` already keeps it out
+/// of every frame — it can sit right beside the region without photographing itself. Esc does
+/// stop it, for as long as the capture is running and no longer.
+pub(crate) async fn run_scrolling(
+    app: &AppHandle,
+    rect: (f64, f64, f64, f64),
+) -> anyhow::Result<Shot> {
+    use std::sync::atomic::Ordering;
+    use tauri::Emitter;
+    // Both checks before anything is on screen: these are the failures that happen before the
+    // first frame, and neither should flash a readout on its way to an error.
+    scroll::require_accessibility()?;
+    if SCROLLING.swap(true, Ordering::SeqCst) {
+        return Err(AlreadyScrolling.into());
+    }
+    // From here on the three things a capture holds — the flag, the borrowed Escape and the
+    // readout's place on screen — are given back by this guard, on every path out including a
+    // panic. They were released by three calls at the end of this function, correct only for as
+    // long as nobody added a `?` above them; leaking the Escape registration would swallow the
+    // key in *every* application until Glyphio quit.
+    let _session = ScrollingSession(app.clone());
+
+    // Before Escape is armed, not inside the capture: a press landing between arming and the
+    // clear would be wiped by it, and the capture would run on as though the key had missed.
+    scroll::clear_stop();
+
+    let hud = crate::windows::open_scroll_hud(app, rect);
+    let _ = app.emit("scroll-begin", ());
+    // Let the readout settle where it has just been moved to before the first frame. It isn't in
+    // the shot either way — it's one of ours, so `backend::our_windows` excludes it — but a panel
+    // that slides in halfway through reads as a glitch.
+    tokio::time::sleep(std::time::Duration::from_millis(140)).await;
+    crate::shortcuts::arm_stop_key(app);
+
+    let reporter = app.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        scroll::capture(scroll::Job { rect, hud }, &move |p: scroll::Progress| {
+            let _ = reporter.emit(
+                "scroll-progress",
+                serde_json::json!({ "frames": p.frames, "paused": p.paused }),
+            );
+        })
     })
+    .await;
+
+    out.map_err(|e| anyhow!("scrolling capture task failed: {e}"))?
+}
+
+/// Asked for a scrolling capture while one was already running.
+///
+/// A type rather than a message, because this one failure must not be reported the way the
+/// others are: [`report_failure`] puts a dialog up, and a dialog activates Glyphio — which
+/// deactivates the window the *running* capture is photographing and greys its toolbar in every
+/// remaining frame. Pressing the hotkey twice would damage the shot it was meant to protect.
+#[derive(Debug)]
+pub struct AlreadyScrolling;
+
+impl std::fmt::Display for AlreadyScrolling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "A scrolling capture is already running — Esc finishes it.")
+    }
+}
+
+impl std::error::Error for AlreadyScrolling {}
+
+/// Everything a running scrolling capture has to give back, released by dropping it.
+struct ScrollingSession(AppHandle);
+
+impl Drop for ScrollingSession {
+    fn drop(&mut self) {
+        crate::shortcuts::release_stop_key(&self.0);
+        crate::windows::close_scroll_hud(&self.0);
+        SCROLLING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Log a capture failure AND put it in front of the user — captures fire from global
@@ -247,6 +361,9 @@ fn capture_page(mode: &str, with_browser_details: bool) -> anyhow::Result<Shot> 
 pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     log::error!("{context} failed: {e}");
+    if e.downcast_ref::<AlreadyScrolling>().is_some() {
+        return; // see AlreadyScrolling: a dialog here would spoil the capture that IS running
+    }
     app.dialog()
         .message(format!("{e:#}"))
         .title("Glyphio — capture failed")

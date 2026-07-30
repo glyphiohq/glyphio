@@ -74,6 +74,39 @@ fn apply_activation_policy(app: &AppHandle, regular: bool) {
     }
 }
 
+/// Build a summoned surface as a menu-bar agent, so it is born on the Space the user is on
+/// rather than on whichever one Settings is parked on.
+///
+/// The demotion is only safe because something promotes us back, and that something is the new
+/// window's own `Destroyed` event. A build that fails leaves no window and therefore no such
+/// event, so the app would sit there with no Dock icon and no menu bar while Settings is still
+/// on screen — hence the re-derive on the error path. Every summoned surface needs both halves,
+/// which is why they live here instead of being spelled out at each call site.
+fn summoned<T>(app: &AppHandle, build: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    #[cfg(target_os = "macos")]
+    apply_activation_policy(app, false);
+    let out = build();
+    if out.is_err() {
+        sync_activation_policy(app, None);
+    }
+    out
+}
+
+/// Become a menu-bar agent for the length of something that must not bring Glyphio forward, and
+/// hand the Dock icon back by re-deriving the policy when it ends.
+///
+/// A scrolling capture avoids *creating* windows for this reason; the activation policy matters
+/// for the same one. The two scrolling paths used to disagree about it: the region-drag mode
+/// closes its selection overlay first, and that `CloseRequested` re-derives the policy and
+/// promotes us back to a regular app a beat before the first frame, while `scrollingPage` never
+/// touched it at all. Held by `capture::ScrollingSession` so both paths agree and the release
+/// happens on every path out.
+pub fn hold_agent_policy(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    apply_activation_policy(app, false);
+    let _ = app;
+}
+
 // --- Remembered window geometry ----------------------------------------------------------
 // Size and position survive a quit: reopening Settings on a 6K display shouldn't hand back
 // the small default every launch. Stored next to the rest of the app data, keyed by surface
@@ -401,28 +434,23 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
         "form" => ((440.0, 420.0), "form/index.html"),
         other => anyhow::bail!("unknown surface: {other}"),
     };
-    // Born where the user is typing, not where Settings is — see `apply_activation_policy`.
-    #[cfg(target_os = "macos")]
-    apply_activation_policy(app, false);
-    let (origin, display) = crate::capture::display_bounds_for_active_window();
-    let win = WebviewWindowBuilder::new(app, surface, WebviewUrl::App(url.into()))
-        .title("Glyphio")
-        .inner_size(size.0, size.1)
-        .min_inner_size(if surface == "popup" { 280.0 } else { 320.0 }, if surface == "popup" { 200.0 } else { 240.0 })
-        .position(
-            origin.0 + (display.0 - size.0) / 2.0,
-            origin.1 + (display.1 - size.1) / 2.0,
-        )
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .build()
-        .map_err(anyhow::Error::from)
-        .and_then(|win| Ok(win.set_focus()?));
-    if win.is_err() {
-        // No window means no `Destroyed` event to hand the Dock icon back — see `toggle_palette`.
-        sync_activation_policy(app, None);
-    }
-    win
+    // Born where the user is typing, not where Settings is — see `summoned`.
+    summoned(app, || {
+        let (origin, display) = crate::capture::display_bounds_for_active_window();
+        let win = WebviewWindowBuilder::new(app, surface, WebviewUrl::App(url.into()))
+            .title("Glyphio")
+            .inner_size(size.0, size.1)
+            .min_inner_size(if surface == "popup" { 280.0 } else { 320.0 }, if surface == "popup" { 200.0 } else { 240.0 })
+            .position(
+                origin.0 + (display.0 - size.0) / 2.0,
+                origin.1 + (display.1 - size.1) / 2.0,
+            )
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .build()?;
+        win.set_focus()?;
+        Ok(())
+    })
 }
 
 /// Toggle the Spotlight-style snippet palette: a frameless, always-on-top search window.
@@ -470,17 +498,8 @@ pub fn toggle_palette(app: &AppHandle, view: Option<&str>) -> anyhow::Result<()>
     if let Some(view) = view {
         *app.state::<crate::AppState>().palette_view.lock().unwrap() = view.to_string();
     }
-    // Born where the user is, not where Settings is — see `apply_activation_policy`.
-    #[cfg(target_os = "macos")]
-    apply_activation_policy(app, false);
-    // On failure the policy has to be put back by hand: there is no window, so no `Destroyed`
-    // event will ever do it, and the app would sit there as a menu-bar agent with Settings on
-    // screen and no Dock icon.
-    let built = build_palette(app).and_then(|win| Ok(win.set_focus()?));
-    if built.is_err() {
-        sync_activation_policy(app, None);
-    }
-    built
+    // Born where the user is, not where Settings is — see `summoned`.
+    summoned(app, || Ok(build_palette(app)?.set_focus()?))
 }
 
 pub const PALETTE: &str = "palette";
@@ -524,32 +543,27 @@ pub fn open_scroll_overlay(app: &AppHandle, delivery: crate::capture::Delivery) 
     if let Some(win) = app.get_webview_window("scroll-overlay") {
         win.close().ok(); // stale one — restart fresh
     }
-    // Born where the user is, not where Settings is — see `apply_activation_policy`.
-    #[cfg(target_os = "macos")]
-    apply_activation_policy(app, false);
-    let (origin, size) = crate::capture::display_bounds_under_cursor();
-    let url = if delivery.is_silent() {
-        "scroll-overlay/index.html?silent=1"
-    } else {
-        "scroll-overlay/index.html"
-    };
-    let win = WebviewWindowBuilder::new(app, "scroll-overlay", WebviewUrl::App(url.into()))
-    .title("Select scrolling region")
-    .position(origin.0, origin.1)
-    .inner_size(size.0, size.1)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .build()
-    .map_err(anyhow::Error::from)
-    .and_then(|win| Ok(win.set_focus()?));
-    if win.is_err() {
-        // No window means no `Destroyed` event to hand the Dock icon back — see `toggle_palette`.
-        sync_activation_policy(app, None);
-    }
-    win
+    // Born where the user is, not where Settings is — see `summoned`.
+    summoned(app, || {
+        let (origin, size) = crate::capture::display_bounds_under_cursor();
+        let url = if delivery.is_silent() {
+            "scroll-overlay/index.html?silent=1"
+        } else {
+            "scroll-overlay/index.html"
+        };
+        let win = WebviewWindowBuilder::new(app, "scroll-overlay", WebviewUrl::App(url.into()))
+            .title("Select scrolling region")
+            .position(origin.0, origin.1)
+            .inner_size(size.0, size.1)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .build()?;
+        win.set_focus()?;
+        Ok(())
+    })
 }
 
 /// Close the selection overlay if present.
@@ -618,6 +632,12 @@ pub fn park_scroll_hud(app: &AppHandle) {
     if app.get_webview_window(SCROLL_HUD).is_some() {
         return;
     }
+    if let Err(e) = build_scroll_hud(app, SCROLL_HUD_PARK) {
+        log::warn!("could not park the scrolling readout: {e}");
+    }
+}
+
+fn build_scroll_hud(app: &AppHandle, (x, y): (f64, f64)) -> anyhow::Result<WebviewWindow> {
     let (w, h) = SCROLL_HUD_SIZE;
     let mut builder = WebviewWindowBuilder::new(
         app,
@@ -625,7 +645,7 @@ pub fn park_scroll_hud(app: &AppHandle) {
         WebviewUrl::App("scroll-hud/index.html".into()),
     )
     .title("Capturing")
-    .position(SCROLL_HUD_PARK.0, SCROLL_HUD_PARK.1)
+    .position(x, y)
     .inner_size(w, h)
     .decorations(false)
     .transparent(true)
@@ -641,20 +661,137 @@ pub fn park_scroll_hud(app: &AppHandle) {
         // frames from then on.
         builder = builder.accept_first_mouse(true);
     }
-    if let Err(e) = builder.build() {
-        log::warn!("could not park the scrolling readout: {e}");
-    }
+    let win = builder.build()?;
+    float_over_all_spaces(&win);
+    Ok(win)
+}
+
+/// Let a window be shown wherever the user is, full-screen Spaces included.
+///
+/// [`toggle_palette`] records this flag set failing, and the difference is *when* it is asked
+/// for. The palette was built hidden and then shown, and a window is bound to the Space it was
+/// ordered in on — no later flag moves it. The readout is never hidden: it is ordered in once at
+/// launch and afterwards only moved, so the window server can honour `CanJoinAllSpaces` for it.
+/// `FullScreenAuxiliary` is the half that covers full-screen Spaces, which `CanJoinAllSpaces`
+/// alone reads as excluded; it is mutually exclusive with `FullScreenPrimary`, so it costs a
+/// window its own green full-screen button — nothing for a 272×44 readout, which is why the
+/// editor deliberately doesn't take it (see [`follow_user_across_spaces`]).
+///
+/// This is a request, not a guarantee — [`scroll_hud_on_active_space`] checks whether it landed.
+#[cfg(target_os = "macos")]
+fn float_over_all_spaces(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let win = win.clone();
+    let app = win.app_handle().clone();
+    let _ = app.run_on_main_thread(move || {
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        // Safety: `ns_window` hands back this window's live NSWindow, and this block only runs
+        // on the main thread — `setCollectionBehavior:` traps otherwise on macOS 26.
+        unsafe {
+            let ns: &NSWindow = &*(ptr as *const NSWindow);
+            ns.setCollectionBehavior(
+                NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary
+                    | NSWindowCollectionBehavior::Stationary
+                    | NSWindowCollectionBehavior::IgnoresCycle,
+            );
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn float_over_all_spaces(_win: &WebviewWindow) {}
+
+/// Whether the readout is on the Space the user is looking at right now, or `None` if AppKit
+/// couldn't be asked.
+///
+/// The point of the question: a parked window is cheap but might be stranded, and a rebuilt one
+/// always lands where the user is but costs an activation. Asking means paying that cost only
+/// when it actually buys something, instead of guessing which mechanism works — which is how
+/// this went wrong the first time.
+///
+/// Blocks the calling thread on a main-thread hop, so it must not be called from the main
+/// thread. The capture path calls it from `spawn_blocking`.
+#[cfg(target_os = "macos")]
+fn scroll_hud_on_active_space(app: &AppHandle) -> Option<bool> {
+    use objc2_app_kit::NSWindow;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let inner = app.clone();
+    app.run_on_main_thread(move || {
+        let answer = (|| {
+            let win = inner.get_webview_window(SCROLL_HUD)?;
+            let ptr = win.ns_window().ok()?;
+            if ptr.is_null() {
+                return None;
+            }
+            // Safety: live NSWindow for this window, read on the main thread.
+            unsafe {
+                let ns: &NSWindow = &*(ptr as *const NSWindow);
+                Some(ns.isOnActiveSpace())
+            }
+        })();
+        let _ = tx.send(answer);
+    })
+    .ok()?;
+    rx.recv_timeout(std::time::Duration::from_millis(500)).ok()?
 }
 
 /// Bring the readout to the region being captured and return the frame it occupies, so the
 /// capture knows which patch of screen is its own readout rather than the content to scroll.
 ///
-/// A move, not a show: see [`park_scroll_hud`] for why nothing may be created here.
+/// Normally a move, not a show: see [`park_scroll_hud`] for why creating a window here is the
+/// expensive path. It is taken only when the parked window turns out to be stranded on another
+/// Space, where the alternative is not a cheaper readout but no readout at all.
+///
+/// Blocking; called from `spawn_blocking`, never the main thread.
 pub fn open_scroll_hud(app: &AppHandle, rect: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)> {
     let (x, y) = scroll_hud_position(rect);
     let (w, h) = SCROLL_HUD_SIZE;
     move_scroll_hud(app, (x, y))?;
+    #[cfg(target_os = "macos")]
+    if scroll_hud_on_active_space(app) == Some(false) {
+        rebuild_scroll_hud_here(app, (x, y))?;
+    }
     Some((x, y, w, h))
+}
+
+/// Replace a stranded readout with one born on the Space the user is on.
+///
+/// Returns `None` when that couldn't be done, so the capture runs with `hud: None` rather than
+/// with the frame of a window nobody can see — which would otherwise leave an invisible band
+/// beside the region that silently pauses the capture when the pointer crosses it.
+#[cfg(target_os = "macos")]
+fn rebuild_scroll_hud_here(app: &AppHandle, pos: (f64, f64)) -> Option<()> {
+    log::info!("the parked readout can't reach this Space; rebuilding it where the user is");
+    if let Some(win) = app.get_webview_window(SCROLL_HUD) {
+        win.destroy().ok()?;
+        // `destroy` is dispatched to the event loop, and the label stays taken until it lands —
+        // building the replacement too early just fails with "already exists". We are on a
+        // blocking thread, so waiting here is free; giving up means no readout, never a crash.
+        let freed = (0..50).any(|_| {
+            if app.get_webview_window(SCROLL_HUD).is_none() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        if !freed {
+            log::warn!("the stranded readout would not go away; this capture runs without one");
+            return None;
+        }
+    }
+    // Deliberately NOT through `summoned`: the policy is already held for the whole capture by
+    // `windows::hold_agent_policy`, and `summoned`'s error path re-derives it — which would
+    // promote us back to a regular app in the middle of the frames it is there to protect.
+    build_scroll_hud(app, pos)
+        .map_err(|e| log::warn!("could not rebuild the scrolling readout: {e}"))
+        .ok()?;
+    Some(())
 }
 
 /// Send the readout back off screen. Left in place, not closed — closing it would mean creating

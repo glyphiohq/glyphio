@@ -104,30 +104,14 @@ impl ClipStore {
         let copied_at = chrono::Utc::now().to_rfc3339();
         let digest = digest_of(&clip);
 
-        let (kind, preview, body, image_path, dims, size) = match clip {
-            NewClip::Text(text) => {
-                let preview = preview_of(&text);
-                let size = text.len() as i64;
-                ("text", preview, Some(text), None, (None, None), size)
-            }
-            NewClip::Image { png, width, height } => {
-                let path = self.images_dir.join(format!("{id}.png"));
-                std::fs::write(&path, &png)?;
-                restrict(&path);
-                (
-                    "image",
-                    format!("{width} × {height} image"),
-                    None,
-                    Some(crate::paths::s(&path)),
-                    (Some(width), Some(height)),
-                    png.len() as i64,
-                )
-            }
-        };
-
         {
             let conn = self.conn.lock().unwrap();
             // Already have this exact content? Promote it instead of storing it twice.
+            //
+            // Asked before an image is written rather than after. Every capture auto-copies
+            // itself when the editor opens, so re-copying a picture we already hold is the
+            // ordinary case, not the rare one — and the old order wrote the PNG to disk, found
+            // the duplicate, and deleted it again every single time.
             let existing: Option<String> = conn
                 .query_row(
                     "SELECT id FROM clips WHERE digest = ?1 LIMIT 1",
@@ -140,11 +124,31 @@ impl ClipStore {
                     "UPDATE clips SET copied_at = ?1 WHERE id = ?2",
                     params![copied_at, existing_id],
                 )?;
-                if let Some(p) = image_path {
-                    let _ = std::fs::remove_file(p); // the copy we just wrote is redundant
-                }
                 return Ok(None);
             }
+
+            // Held across the write and the insert: the check above is only meaningful if
+            // nothing can slip a row in behind it.
+            let (kind, preview, body, image_path, dims, size) = match clip {
+                NewClip::Text(text) => {
+                    let preview = preview_of(&text);
+                    let size = text.len() as i64;
+                    ("text", preview, Some(text), None, (None, None), size)
+                }
+                NewClip::Image { png, width, height } => {
+                    let path = self.images_dir.join(format!("{id}.png"));
+                    std::fs::write(&path, &png)?;
+                    restrict(&path);
+                    (
+                        "image",
+                        format!("{width} × {height} image"),
+                        None,
+                        Some(crate::paths::s(&path)),
+                        (Some(width), Some(height)),
+                        png.len() as i64,
+                    )
+                }
+            };
             conn.execute(
                 "INSERT INTO clips (id, copied_at, kind, preview, body, image_path, \
                  image_width_px, image_height_px, source_app, size_bytes, pinned, digest) \
@@ -352,6 +356,40 @@ mod tests {
         assert!(s.record(NewClip::Text("hello".into()), "", 100, 1 << 20).unwrap().is_some());
         assert!(s.record(NewClip::Text("hello".into()), "", 100, 1 << 20).unwrap().is_none());
         assert_eq!(s.list().unwrap().len(), 1);
+    }
+
+    /// Every capture auto-copies itself, so the same PNG arrives here again and again. It must
+    /// promote the row it already has — and, because the duplicate is settled before anything is
+    /// written, must not leave a second file behind on the way.
+    #[test]
+    fn re_copying_the_same_image_neither_adds_a_row_nor_writes_a_second_file() {
+        let (s, _d) = store();
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        let files = |s: &ClipStore| {
+            std::fs::read_dir(&s.images_dir).unwrap().filter_map(|e| e.ok()).count()
+        };
+
+        assert!(s
+            .record(NewClip::Image { png: png.clone(), width: 4, height: 4 }, "", 100, 1 << 20)
+            .unwrap()
+            .is_some());
+        assert_eq!(files(&s), 1);
+
+        assert!(s
+            .record(NewClip::Image { png: png.clone(), width: 4, height: 4 }, "", 100, 1 << 20)
+            .unwrap()
+            .is_none());
+        assert_eq!(s.list().unwrap().len(), 1, "one row, not two");
+        assert_eq!(files(&s), 1, "no second PNG written for content we already had");
+
+        // A genuinely different image is still a new row with its own file.
+        let other = vec![0x89, b'P', b'N', b'G', 9, 9, 9, 9];
+        assert!(s
+            .record(NewClip::Image { png: other, width: 4, height: 4 }, "", 100, 1 << 20)
+            .unwrap()
+            .is_some());
+        assert_eq!(s.list().unwrap().len(), 2);
+        assert_eq!(files(&s), 2);
     }
 
     #[test]

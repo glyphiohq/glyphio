@@ -302,11 +302,24 @@ pub(crate) async fn run_scrolling(
     // key in *every* application until Glyphio quit.
     let _session = ScrollingSession(app.clone());
 
+    // A capture must not bring Glyphio forward, and the activation policy is half of that: the
+    // region-drag path closes its selection overlay just before this, which re-derives the
+    // policy and promotes us back to a regular app a beat before the first frame. Held for the
+    // length of the capture so both scrolling paths agree, and given back by the guard.
+    crate::windows::hold_agent_policy(app);
+
     // Before Escape is armed, not inside the capture: a press landing between arming and the
     // clear would be wiped by it, and the capture would run on as though the key had missed.
     scroll::clear_stop();
 
-    let hud = crate::windows::open_scroll_hud(app, rect);
+    // Off the async worker: placing the readout asks AppKit, on the main thread, whether the
+    // window actually reached this Space, and waits for the answer.
+    let hud_app = app.clone();
+    let hud = tauri::async_runtime::spawn_blocking(move || {
+        crate::windows::open_scroll_hud(&hud_app, rect)
+    })
+    .await
+    .unwrap_or(None);
     let _ = app.emit("scroll-begin", ());
     // Let the readout settle where it has just been moved to before the first frame. It isn't in
     // the shot either way — it's one of ours, so `backend::our_windows` excludes it — but a panel
@@ -352,6 +365,9 @@ impl Drop for ScrollingSession {
     fn drop(&mut self) {
         crate::shortcuts::release_stop_key(&self.0);
         crate::windows::close_scroll_hud(&self.0);
+        // Back to whatever the windows on screen say we should be — the Dock icon returns if a
+        // main window is still up. See `windows::hold_agent_policy`.
+        crate::windows::sync_activation_policy(&self.0, None);
         SCROLLING.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

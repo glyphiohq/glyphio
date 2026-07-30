@@ -12,8 +12,8 @@
 # needs. The tap isn't published yet, so docs/INSTALL.md deliberately doesn't offer a `brew`
 # line — this file is kept in step so it's ready the day it is.
 cask "glyphio" do
-  version "1.1.1"
-  sha256 "9fbfda69da880539ceae64dc75b29c1e73567d5aaea5a5b2195a8aa717b19389"
+  version "1.1.2"
+  sha256 "5e87658bc0925d95f24671fd2de1e5a173c2b1a6b48a6d224ceda8a08f49efc8"
 
   url "https://github.com/glyphiohq/glyphio/releases/download/v#{version}/Glyphio_#{version}_aarch64.dmg"
   name "Glyphio"

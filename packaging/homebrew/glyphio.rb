@@ -8,7 +8,9 @@
 #
 # Why a tap matters while Glyphio is unsigned: Homebrew quarantines casks by default like any
 # other download, but it also supports `--no-quarantine`, which is a single documented flag
-# rather than a trip through System Settings. See docs/INSTALL.md.
+# rather than the trip through System Settings → Privacy & Security → Open Anyway that the DMG
+# needs. The tap isn't published yet, so docs/INSTALL.md deliberately doesn't offer a `brew`
+# line — this file is kept in step so it's ready the day it is.
 cask "glyphio" do
   version "1.1.1"
   sha256 "9fbfda69da880539ceae64dc75b29c1e73567d5aaea5a5b2195a8aa717b19389"

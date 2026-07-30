@@ -9,26 +9,7 @@ software whose publisher Apple hasn't vouched for. Decide that on the usual grou
 source is public, the build is reproducible from it, and the checksums are published with each
 release.
 
-## Option 1 — Homebrew (recommended)
-
-```bash
-brew install --cask --no-quarantine glyphiohq/tap/glyphio
-```
-
-`--no-quarantine` is the important part. Homebrew quarantines casks by default, exactly like a
-browser download; the flag tells it not to, which means no Gatekeeper dialog and no trip
-through System Settings.
-
-Updating:
-
-```bash
-brew upgrade --cask glyphio
-```
-
-Glyphio detects that Homebrew owns the install and won't try to update itself underneath it —
-it'll point you at this command instead.
-
-## Option 2 — DMG from GitHub Releases
+## Option 1 — DMG from GitHub Releases
 
 1. Download `Glyphio_<version>_aarch64.dmg` from
    [Releases](https://github.com/glyphiohq/glyphio/releases).
@@ -47,7 +28,7 @@ Control-click → Open shortcut no longer overrides Gatekeeper for unsigned apps
 You do this once. Updates installed through Glyphio's own updater are verified against the
 project's signing key and don't repeat it.
 
-## Option 3 — Build from source
+## Option 2 — Build from source
 
 No Gatekeeper involvement at all, because you built it.
 

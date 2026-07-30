@@ -16,7 +16,8 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   never synced).
 - **Capture** — global hotkeys for screen / frontmost-window / browser-page (web content
   only, no browser chrome — via Accessibility, no extension needed) / picker / region /
-  scrolling capture, a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
+  scrolling capture (which shows a readout while it works and stops on `Esc`, keeping the
+  frames it has), a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
 - **Clipboard history** — everything you copy, text and images, pasted back into the app you
@@ -38,16 +39,16 @@ Platforms: macOS (Apple Silicon) today; Windows is on the roadmap.
 
 ## Install
 
-```bash
-brew install --cask --no-quarantine glyphiohq/tap/glyphio
-```
-
-Or grab the DMG from [Releases](https://github.com/glyphiohq/glyphio/releases).
+Download `Glyphio_<version>_aarch64.dmg` from
+[Releases](https://github.com/glyphiohq/glyphio/releases) and drag it to Applications.
 
 Glyphio isn't notarized yet — a Developer ID costs $99/year and this is a donation-funded
-project — so a downloaded DMG needs one trip through System Settings → Privacy & Security →
-**Open Anyway**. The Homebrew line above avoids that entirely. Full details, including
-checksum verification, are in **[docs/INSTALL.md](docs/INSTALL.md)**.
+project — so the first launch needs one trip through System Settings → Privacy & Security →
+**Open Anyway**. You do that once. Full details, including checksum verification, are in
+**[docs/INSTALL.md](docs/INSTALL.md)**.
+
+A Homebrew cask is written and kept in step with each release (`packaging/homebrew/`), but the
+tap isn't published yet, so there is no `brew install` line to copy today.
 
 First run prompts for two macOS permissions (Accessibility for expansion, Screen Recording
 for capture) — the in-app banners walk you through both.

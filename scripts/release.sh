@@ -159,8 +159,8 @@ if [[ "$NOTARIZE" == "1" ]]; then
     || fail "Gatekeeper still rejects the notarized DMG"
   log "notarized and stapled — Gatekeeper accepts this build"
 else
-  log "NOT notarized: users will need System Settings → Privacy & Security → Open Anyway,"
-  log "               or install via Homebrew (see docs/INSTALL.md)"
+  log "NOT notarized: users will need System Settings → Privacy & Security → Open Anyway"
+  log "               once, on first launch (see docs/INSTALL.md)"
 fi
 
 # ---- 7. updater manifest ----------------------------------------------------------

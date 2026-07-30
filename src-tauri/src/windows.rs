@@ -185,21 +185,34 @@ fn present(app: &AppHandle, win: &WebviewWindow) -> anyhow::Result<()> {
 ///
 /// Also deliberately not `CanJoinAllSpaces`: that pins a window to *every* Space permanently,
 /// which suits a palette and not a document window.
+/// # Threading
+///
+/// `setCollectionBehavior:` is main-thread-only, and macOS 26 enforces it with a trap rather
+/// than a warning: `EXC_BREAKPOINT`, "Must only be used from the main thread". Not every caller
+/// is on the main thread — a page-only or scrolling capture finishes on a tokio worker and opens
+/// the editor from there, which killed the app outright the first time a capture had to *create*
+/// the editor window (an already-open one takes the `present` path and never reaches here, which
+/// is why this could hide for a while). So the hop is done here, once, rather than trusted at
+/// each call site; `run_on_main_thread` runs it inline when we are already on the main thread.
 #[cfg(target_os = "macos")]
 fn follow_user_across_spaces(win: &WebviewWindow) {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 
-    let Ok(ptr) = win.ns_window() else { return };
-    if ptr.is_null() {
-        return;
-    }
-    // Safety: `ns_window` hands back this window's live NSWindow, and we only touch it on the
-    // main thread — every caller is already there (window creation and `present`).
-    unsafe {
-        let ns: &NSWindow = &*(ptr as *const NSWindow);
-        let behavior = ns.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
-        ns.setCollectionBehavior(behavior);
-    }
+    let win = win.clone();
+    let app = win.app_handle().clone();
+    let _ = app.run_on_main_thread(move || {
+        let Ok(ptr) = win.ns_window() else { return };
+        if ptr.is_null() {
+            return;
+        }
+        // Safety: `ns_window` hands back this window's live NSWindow, and this block only runs
+        // on the main thread.
+        unsafe {
+            let ns: &NSWindow = &*(ptr as *const NSWindow);
+            let behavior = ns.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
+            ns.setCollectionBehavior(behavior);
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]

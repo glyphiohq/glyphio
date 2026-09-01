@@ -13,14 +13,16 @@
       #hint { position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
               background: #14161a; color: #ecedef; border: 1px solid rgba(255,255,255,0.12);
               border-radius: 8px; padding: 7px 14px; pointer-events: none; }
-      #hint b { color: #d9a54a; }
+      #hint kbd { color: #ecedef; font: 600 10px/1 ui-monospace, "SF Mono", monospace;
+                  border: 1px solid rgba(255,255,255,0.26); border-radius: 4px;
+                  padding: 2px 5px; box-shadow: inset 0 -1px rgba(0,0,0,0.3); }
       #size { position: fixed; display: none; background: #14161a; color: #d9a54a;
               border: 1px solid rgba(217,165,74,0.35); border-radius: 5px; padding: 2px 7px;
               font: 11px/1.3 ui-monospace, "SF Mono", monospace; pointer-events: none; }
     </style>
   </head>
   <body>
-    <div id="hint">Drag over the area that scrolls — a page, or just a panel. <b>Esc</b> cancels.</div>
+    <div id="hint">Drag over the area that scrolls — a page, or just a panel. <kbd>esc</kbd> cancels.</div>
     <div id="rect"></div>
     <div id="size"></div>
     <script>

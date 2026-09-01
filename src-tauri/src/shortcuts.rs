@@ -97,10 +97,6 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     // "stop now and keep the frames" and nothing else.
     if STOP_KEY_ARMED.load(Ordering::SeqCst) && matches(shortcut, STOP_KEY) {
         crate::capture::scroll::request_stop();
-        // Stitching a tall image takes a moment; without this the readout would go on counting
-        // frames as though Escape had missed.
-        use tauri::Emitter;
-        let _ = app.emit("scroll-stopping", ());
         return;
     }
     let s = app.state::<AppState>().settings.lock().unwrap().clone();

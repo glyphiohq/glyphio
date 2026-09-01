@@ -16,8 +16,8 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   never synced).
 - **Capture** — global hotkeys for screen / frontmost-window / browser-page (web content
   only, no browser chrome — via Accessibility, no extension needed) / picker / region /
-  scrolling capture (which shows a readout while it works and stops on `Esc`, keeping the
-  frames it has), a crop (drag-handle) + redact (black-out & blur) + draw + text editor, a
+  scrolling capture (press `Esc` to stop early while keeping the frames it has), a crop
+  (drag-handle) + redact (black-out & blur) + draw + text editor, a
   timestamp/context banner you can add or remove later (the original capture time is
   always kept), and a device-local, re-editable history with size-capped eviction.
 - **Clipboard history** — everything you copy, text and images, pasted back into the app you

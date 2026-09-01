@@ -72,17 +72,6 @@ pub fn clear_stop() {
 pub struct Job {
     /// Region to photograph, in global points (top-left origin).
     pub rect: (f64, f64, f64, f64),
-    /// The on-screen readout's own frame, if one is up. The pointer being there means the user
-    /// is over the readout, which cannot scroll anything, rather than asking for another scroll.
-    pub hud: Option<(f64, f64, f64, f64)>,
-}
-
-/// What the capture is doing, for the readout.
-#[derive(Clone, Copy)]
-pub struct Progress {
-    pub frames: usize,
-    /// The pointer has left the region — nothing is being scrolled until it comes back.
-    pub paused: bool,
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -112,7 +101,7 @@ pub fn request_accessibility() -> bool {
 }
 
 /// The grant this mode needs, as an error rather than a bool, so the caller can refuse before
-/// putting anything on screen — a missing permission shouldn't flash a readout first.
+/// starting a capture.
 pub fn require_accessibility() -> anyhow::Result<()> {
     if app_accessibility_trusted() {
         return Ok(());
@@ -126,9 +115,7 @@ pub fn require_accessibility() -> anyhow::Result<()> {
 /// Capture a scrolling region. The rect is in global screen coordinates in points (top-left
 /// origin), as reported by the selection overlay or by the page's accessibility geometry.
 ///
-/// `on_progress` is called on this thread every time the count or the paused state changes, so
-/// the readout can say what is happening; it must not block.
-pub fn capture(job: Job, on_progress: &dyn Fn(Progress)) -> anyhow::Result<Shot> {
+pub fn capture(job: Job) -> anyhow::Result<Shot> {
     let (x, y, w, h) = job.rect;
     require_accessibility()?;
     if w < 40.0 || h < 40.0 {
@@ -154,12 +141,11 @@ pub fn capture(job: Job, on_progress: &dyn Fn(Progress)) -> anyhow::Result<Shot>
                 }
             }
             frames.push(frame);
-            on_progress(Progress { frames: frames.len(), paused: false });
             if frames.len() >= MAX_FRAMES {
                 log::info!("scrolling capture reached the {MAX_FRAMES}-frame cap");
                 break;
             }
-            if stopping() || !wait_for_pointer(&job, frames.len(), on_progress) {
+            if stopping() || !wait_for_pointer(&job, frames.len()) {
                 break;
             }
             post_scroll(-(scroll_px_points as i32))?;
@@ -197,9 +183,9 @@ pub fn capture(job: Job, on_progress: &dyn Fn(Progress)) -> anyhow::Result<Shot>
     })
 }
 
-/// Whether the pointer is still over the region and not over the readout — i.e. whether the
-/// capture may scroll. A wheel event goes to whatever is under the pointer, so scrolling while
-/// the user has taken the mouse elsewhere scrolls the wrong thing and stitches nonsense.
+/// Whether the pointer is still over the region — i.e. whether the capture may scroll. A wheel
+/// event goes to whatever is under the pointer, so scrolling while the user has taken the mouse
+/// elsewhere scrolls the wrong thing and stitches nonsense.
 fn pointer_in_region(job: &Job) -> bool {
     match cursor_position() {
         Some(p) => may_scroll(job, (p.x, p.y)),
@@ -212,16 +198,15 @@ fn may_scroll(job: &Job, p: (f64, f64)) -> bool {
     let inside = |(rx, ry, rw, rh): (f64, f64, f64, f64), slack: f64| {
         p.0 >= rx - slack && p.0 <= rx + rw + slack && p.1 >= ry - slack && p.1 <= ry + rh + slack
     };
-    inside(job.rect, POINTER_SLACK) && !job.hud.is_some_and(|r| inside(r, 0.0))
+    inside(job.rect, POINTER_SLACK)
 }
 
 /// Hold the capture while the pointer is away, and resume when it comes back. Returns false
 /// when the capture should finish with what it has: an Esc, or nobody came back.
-fn wait_for_pointer(job: &Job, frames: usize, on_progress: &dyn Fn(Progress)) -> bool {
+fn wait_for_pointer(job: &Job, frames: usize) -> bool {
     if pointer_in_region(job) {
         return true;
     }
-    on_progress(Progress { frames, paused: true });
     let deadline = Instant::now() + PAUSE_LIMIT;
     while Instant::now() < deadline {
         if stopping() {
@@ -229,7 +214,6 @@ fn wait_for_pointer(job: &Job, frames: usize, on_progress: &dyn Fn(Progress)) ->
         }
         std::thread::sleep(TICK);
         if pointer_in_region(job) {
-            on_progress(Progress { frames, paused: false });
             return true;
         }
     }
@@ -395,17 +379,13 @@ mod tests {
 
     #[test]
     fn the_capture_scrolls_only_while_the_pointer_is_its_own() {
-        // A 800×600 region with the readout parked just below it.
-        let job = Job { rect: (100.0, 100.0, 800.0, 600.0), hud: Some((364.0, 714.0, 272.0, 44.0)) };
+        let job = Job { rect: (100.0, 100.0, 800.0, 600.0) };
         assert!(may_scroll(&job, (500.0, 400.0)), "middle of the region");
         assert!(may_scroll(&job, (100.0, 100.0)), "top-left corner counts as inside");
         // A twitch just outside the edge must not hand the pointer back.
         assert!(may_scroll(&job, (905.0, 400.0)), "within the slack");
         assert!(!may_scroll(&job, (960.0, 400.0)), "clearly outside");
-        // The readout's top edge falls inside the slack margin, so only the readout check can
-        // pause the capture here — which is the whole point of passing its frame in.
         assert!(may_scroll(&job, (500.0, 705.0)), "in the gap, still scrolling");
-        assert!(!may_scroll(&job, (500.0, 718.0)), "over the readout, paused");
     }
 
     #[test]

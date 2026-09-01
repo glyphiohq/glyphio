@@ -166,11 +166,6 @@ pub fn run() {
             // shown on the Space it was created on, so a pre-built one is invisible the moment
             // the user is in a full-screen app. See windows::toggle_palette.
 
-            // The scrolling-capture readout does have to exist up front, because it appears
-            // *during* a capture: creating it then would pull Glyphio in front of the window
-            // being photographed.
-            windows::park_scroll_hud(app.handle());
-
             // Park the silent-capture worker while we're launching anyway: creating its
             // window activates the app, and a capture is the wrong moment for that.
             if app.state::<AppState>().settings.lock().unwrap().wants_silent_worker() {
@@ -325,4 +320,3 @@ pub fn run() {
             _ => {}
         });
 }
-

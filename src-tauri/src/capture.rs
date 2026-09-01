@@ -158,8 +158,7 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
             let m = mode.clone();
             let target = tauri::async_runtime::spawn_blocking(move || page_target(&m, details)).await;
             let result = match target {
-                // scrollingPage: the readout and the scroll loop are driven from here, because
-                // opening a window needs the app, and the loop needs to not be on the main thread.
+            // scrollingPage runs off the main thread so its capture loop never blocks the app.
                 Ok(Ok(PageTarget::Scroll { rect, title, browser })) => {
                     run_scrolling(&app2, rect).await.map(|mut shot| {
                         shot.title = title;
@@ -277,29 +276,20 @@ fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTar
 /// start would clear the first one's stop flag — so a second hotkey press says so instead.
 static SCROLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Run a scrolling capture with its on-screen readout: frame count, a paused state, and how to
-/// stop.
-///
-/// The readout is one of Glyphio's own windows, so `backend::our_windows` already keeps it out
-/// of every frame — it can sit right beside the region without photographing itself. Esc does
-/// stop it, for as long as the capture is running and no longer.
+/// Run a scrolling capture. Escape is borrowed for its duration so it can finish early while
+/// retaining every frame already captured.
 pub(crate) async fn run_scrolling(
     app: &AppHandle,
     rect: (f64, f64, f64, f64),
 ) -> anyhow::Result<Shot> {
     use std::sync::atomic::Ordering;
-    use tauri::Emitter;
-    // Both checks before anything is on screen: these are the failures that happen before the
-    // first frame, and neither should flash a readout on its way to an error.
+    // Both checks happen before the capture starts.
     scroll::require_accessibility()?;
     if SCROLLING.swap(true, Ordering::SeqCst) {
         return Err(AlreadyScrolling.into());
     }
-    // From here on the three things a capture holds — the flag, the borrowed Escape and the
-    // readout's place on screen — are given back by this guard, on every path out including a
-    // panic. They were released by three calls at the end of this function, correct only for as
-    // long as nobody added a `?` above them; leaking the Escape registration would swallow the
-    // key in *every* application until Glyphio quit.
+    // From here, the running flag and borrowed Escape are restored by this guard on every exit,
+    // including a panic. Leaking the Escape registration would swallow it in every application.
     let _session = ScrollingSession(app.clone());
 
     // A capture must not bring Glyphio forward, and the activation policy is half of that: the
@@ -312,29 +302,10 @@ pub(crate) async fn run_scrolling(
     // clear would be wiped by it, and the capture would run on as though the key had missed.
     scroll::clear_stop();
 
-    // Off the async worker: placing the readout asks AppKit, on the main thread, whether the
-    // window actually reached this Space, and waits for the answer.
-    let hud_app = app.clone();
-    let hud = tauri::async_runtime::spawn_blocking(move || {
-        crate::windows::open_scroll_hud(&hud_app, rect)
-    })
-    .await
-    .unwrap_or(None);
-    let _ = app.emit("scroll-begin", ());
-    // Let the readout settle where it has just been moved to before the first frame. It isn't in
-    // the shot either way — it's one of ours, so `backend::our_windows` excludes it — but a panel
-    // that slides in halfway through reads as a glitch.
-    tokio::time::sleep(std::time::Duration::from_millis(140)).await;
     crate::shortcuts::arm_stop_key(app);
 
-    let reporter = app.clone();
     let out = tauri::async_runtime::spawn_blocking(move || {
-        scroll::capture(scroll::Job { rect, hud }, &move |p: scroll::Progress| {
-            let _ = reporter.emit(
-                "scroll-progress",
-                serde_json::json!({ "frames": p.frames, "paused": p.paused }),
-            );
-        })
+        scroll::capture(scroll::Job { rect })
     })
     .await;
 
@@ -364,7 +335,6 @@ struct ScrollingSession(AppHandle);
 impl Drop for ScrollingSession {
     fn drop(&mut self) {
         crate::shortcuts::release_stop_key(&self.0);
-        crate::windows::close_scroll_hud(&self.0);
         // Back to whatever the windows on screen say we should be — the Dock icon returns if a
         // main window is still up. See `windows::hold_agent_policy`.
         crate::windows::sync_activation_policy(&self.0, None);

@@ -50,6 +50,8 @@ pub struct Settings {
     /// Ask GitHub on launch whether a newer Glyphio exists. The only network call an
     /// otherwise-unconfigured app makes, so it is a setting rather than an assumption.
     pub check_for_updates: bool,
+    /// Keep the menu-bar tools available after signing in. A login launch stays windowless.
+    pub launch_at_login: bool,
 
     // ---- history ----
     pub history_enabled: bool,
@@ -125,6 +127,7 @@ impl Default for Settings {
             auto_copy_on_open: true,
             silent_capture: false,
             check_for_updates: true,
+            launch_at_login: true,
             history_enabled: true,
             history_max_count: 50,
             history_max_bytes: 200 * 1024 * 1024, // 200 MB, matching Checkpoint
@@ -137,9 +140,9 @@ impl Default for Settings {
             shortcut_capture_visible: "Alt+Shift+V".into(),
             shortcut_capture_snip: "Alt+Shift+X".into(),
             shortcut_capture_front_window: "Alt+Shift+W".into(), // W = frontmost window
-            shortcut_capture_page: "Alt+Shift+B".into(), // B = browser page (content only)
-            shortcut_capture_scroll: "Alt+Shift+L".into(), // L = long/scrolling area
-            shortcut_capture_scroll_page: "Alt+Shift+P".into(), // P = whole page/window
+            shortcut_capture_page: "Alt+Shift+B".into(),         // B = browser page (content only)
+            shortcut_capture_scroll: "Alt+Shift+L".into(),       // L = long/scrolling area
+            shortcut_capture_scroll_page: "Alt+Shift+P".into(),  // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),
             shortcut_open_palette: "Alt+Space".into(),
             shortcut_open_clipboard: "Alt+Shift+C".into(), // C = clipboard
@@ -193,10 +196,18 @@ impl Settings {
             (&self.shortcut_capture_visible_silent, "visible", true),
             (&self.shortcut_capture_snip_silent, "snip", true),
             (&self.shortcut_capture_full_silent, "fullWindow", true),
-            (&self.shortcut_capture_front_window_silent, "frontWindow", true),
+            (
+                &self.shortcut_capture_front_window_silent,
+                "frontWindow",
+                true,
+            ),
             (&self.shortcut_capture_page_silent, "pageOnly", true),
             (&self.shortcut_capture_scroll_silent, "scrolling", true),
-            (&self.shortcut_capture_scroll_page_silent, "scrollingPage", true),
+            (
+                &self.shortcut_capture_scroll_page_silent,
+                "scrollingPage",
+                true,
+            ),
         ]
     }
 
@@ -275,11 +286,17 @@ mod tests {
         let with_key: Settings =
             serde_json::from_str(r#"{"shortcutCaptureSnipSilent": "Alt+Shift+C"}"#).unwrap();
         assert!(with_key.wants_silent_worker());
-        assert!(!with_key.silent_capture, "the ordinary keys still open the editor");
+        assert!(
+            !with_key.silent_capture,
+            "the ordinary keys still open the editor"
+        );
 
         // And that key dispatches the same mode, delivered silently.
         let fired = with_key.capture_shortcuts();
-        let hit = fired.iter().find(|(acc, _, _)| *acc == "Alt+Shift+C").expect("registered");
+        let hit = fired
+            .iter()
+            .find(|(acc, _, _)| *acc == "Alt+Shift+C")
+            .expect("registered");
         assert_eq!((hit.1, hit.2), ("snip", true));
     }
 
@@ -298,5 +315,32 @@ mod tests {
             let s: Settings = serde_json::from_str(on).unwrap();
             assert!(s.wants_browser_details(), "{on}");
         }
+    }
+
+    /// Starting the menu-bar tools with macOS is the useful default, but the value remains
+    /// an ordinary preference that can be switched off and survives a JSON round-trip.
+    #[test]
+    fn launch_at_login_defaults_on_and_can_be_saved_off() {
+        let default: Settings = serde_json::from_str("{}").unwrap();
+        assert!(default.launch_at_login);
+
+        let off: Settings = serde_json::from_str(r#"{"launchAtLogin": false}"#).unwrap();
+        assert!(!off.launch_at_login);
+        assert!(serde_json::to_string(&off)
+            .unwrap()
+            .contains(r#""launchAtLogin":false"#));
+    }
+
+    #[test]
+    fn launch_at_login_preference_survives_a_settings_file_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = Settings {
+            launch_at_login: false,
+            ..Settings::default()
+        };
+
+        settings.save(&path).unwrap();
+        assert!(!Settings::load(&path).launch_at_login);
     }
 }

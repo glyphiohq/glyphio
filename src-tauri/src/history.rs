@@ -20,7 +20,7 @@ pub struct CaptureMeta {
     /// Original capture time — immutable. Banner add/remove later never changes it; the
     /// banner timestamp is always rendered from this value.
     pub captured_at: String,
-    pub url: String,   // window/app title natively
+    pub url: String, // window/app title natively
     pub title: String,
     /// What the browser said about the page, when the capture targeted one window and the
     /// user asked for it. Kept per row so the banner renders the same months later.
@@ -30,7 +30,7 @@ pub struct CaptureMeta {
     pub page_url: String,
     #[serde(default)]
     pub profile: String,
-    pub mode: String,  // "visible" | "snip" | "fullWindow"
+    pub mode: String, // "visible" | "snip" | "fullWindow"
     pub image_width_px: i64,
     pub image_height_px: i64,
     pub dpr: f64,
@@ -52,6 +52,9 @@ pub struct CaptureMeta {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewCapture {
+    /// Capture completion time supplied by the artifact. Empty for callers restoring older data.
+    #[serde(default)]
+    pub captured_at: String,
     pub url: String,
     pub title: String,
     #[serde(default)]
@@ -169,7 +172,11 @@ impl HistoryStore {
         std::fs::write(&full_path, full_png)?;
         std::fs::write(&thumb_path, thumb_png)?;
         let size_bytes = (full_png.len() + thumb_png.len()) as i64;
-        let captured_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let captured_at = if meta.captured_at.is_empty() {
+            Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        } else {
+            meta.captured_at
+        };
 
         let row = CaptureMeta {
             id,
@@ -198,11 +205,22 @@ impl HistoryStore {
                     note, banner_enabled, banner_baked, page_title, page_url, profile)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,?14,?15,?16)",
                 rusqlite::params![
-                    row.id, row.captured_at, row.url, row.title, row.mode,
-                    row.image_width_px, row.image_height_px, row.dpr,
-                    row.full_path, row.thumb_path, row.size_bytes,
-                    row.note, row.banner_enabled,
-                    row.page_title, row.page_url, row.profile,
+                    row.id,
+                    row.captured_at,
+                    row.url,
+                    row.title,
+                    row.mode,
+                    row.image_width_px,
+                    row.image_height_px,
+                    row.dpr,
+                    row.full_path,
+                    row.thumb_path,
+                    row.size_bytes,
+                    row.note,
+                    row.banner_enabled,
+                    row.page_title,
+                    row.page_url,
+                    row.profile,
                 ],
             )?;
         }
@@ -236,7 +254,9 @@ impl HistoryStore {
             if let Some(thumb) = thumb_png {
                 std::fs::write(self.thumb_path(id), thumb)?;
             }
-            let thumb_len = std::fs::metadata(self.thumb_path(id)).map(|m| m.len()).unwrap_or(0);
+            let thumb_len = std::fs::metadata(self.thumb_path(id))
+                .map(|m| m.len())
+                .unwrap_or(0);
             row.size_bytes = full.len() as i64 + thumb_len as i64;
             row.image_width_px = patch.image_width_px.unwrap_or(row.image_width_px);
             row.image_height_px = patch.image_height_px.unwrap_or(row.image_height_px);
@@ -245,8 +265,12 @@ impl HistoryStore {
             "UPDATE captures SET note=?2, banner_enabled=?3, size_bytes=?4,
                 image_width_px=?5, image_height_px=?6 WHERE id=?1",
             rusqlite::params![
-                id, row.note, row.banner_enabled, row.size_bytes,
-                row.image_width_px, row.image_height_px,
+                id,
+                row.note,
+                row.banner_enabled,
+                row.size_bytes,
+                row.image_width_px,
+                row.image_height_px,
             ],
         )?;
         Ok(row)
@@ -293,7 +317,10 @@ impl HistoryStore {
             let _ = std::fs::remove_file(self.full_path(id));
             let _ = std::fs::remove_file(self.thumb_path(id));
         }
-        self.conn.lock().unwrap().execute("DELETE FROM captures", [])?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM captures", [])?;
         Ok(())
     }
 
@@ -302,8 +329,8 @@ impl HistoryStore {
         // (id, size) oldest-first.
         let entries: Vec<(String, i64)> = {
             let conn = self.conn.lock().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT id, size_bytes FROM captures ORDER BY captured_at ASC")?;
+            let mut stmt =
+                conn.prepare("SELECT id, size_bytes FROM captures ORDER BY captured_at ASC")?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
@@ -341,4 +368,55 @@ fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<CaptureMeta> {
         page_url: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
         profile: row.get::<_, Option<String>>(16)?.unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HistoryStore, NewCapture};
+    use crate::paths::AppPaths;
+
+    fn paths(root: std::path::PathBuf) -> AppPaths {
+        let history = root.join("history");
+        let history_images = history.join("images");
+        std::fs::create_dir_all(&history_images).unwrap();
+        AppPaths {
+            snippets_db: root.join("snippets.db"),
+            engine_config: root.join("espanso"),
+            history_db: history.join("history.db"),
+            history_images,
+            clipboard_db: root.join("clipboard.db"),
+            clipboard_images: root.join("clipboard/images"),
+            settings_json: root.join("settings.json"),
+            root,
+        }
+    }
+
+    fn capture(captured_at: &str) -> NewCapture {
+        NewCapture {
+            captured_at: captured_at.into(),
+            url: "Safari".into(),
+            title: "Glyphio".into(),
+            page_title: String::new(),
+            page_url: String::new(),
+            profile: String::new(),
+            mode: "visible".into(),
+            image_width_px: 2,
+            image_height_px: 1,
+            dpr: 2.0,
+            note: "note".into(),
+            banner_enabled: true,
+        }
+    }
+
+    #[test]
+    fn reopens_the_artifact_with_its_original_capture_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = HistoryStore::open(&paths(temp.path().to_path_buf())).unwrap();
+        let captured_at = "2026-09-02T12:00:00.000Z";
+
+        let saved = store.save(capture(captured_at), &[1], &[2], 50, 200).unwrap();
+        let reopened = store.get(&saved.id).unwrap().unwrap();
+
+        assert_eq!(reopened.captured_at, captured_at);
+    }
 }

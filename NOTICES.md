@@ -7,8 +7,9 @@ Glyphio is licensed **GPL-3.0-or-later** (see `LICENSE`), with two carve-outs be
 - **espanso** — `espanso/` is a fork of [espanso](https://github.com/espanso/espanso)
   (GPL-3.0, © Federico Terzi and contributors). Upstream provenance:
   `espanso/UPSTREAM_VERSION.txt`; the original `espanso/LICENSE` and all upstream copyright
-  notices are preserved. The fork is deliberately thin — see `docs/PHASE1.md` for the exact
-  deviations. Because Glyphio distributes this fork, the combined application is GPL-3.0.
+  notices are preserved. The fork is deliberately thin — see `docs/ARCHITECTURE.md` for the
+  integration boundary. Because Glyphio distributes this fork, the combined application is
+  GPL-3.0.
 - **Checkpoint** — the capture/annotate/redact editor (`ui/editor/`, `ui/history/`) is ported
   from Checkpoint, a Chrome extension owned by Glyphio's author, relicensed here under
   GPL-3.0-or-later. No third-party constraints.

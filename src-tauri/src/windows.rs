@@ -15,8 +15,18 @@ struct Spec {
 fn spec(name: &str) -> Option<Spec> {
     Some(match name {
         // The main index is the Settings / snippet-manager surface.
-        "settings" => Spec { url: "index.html", title: "Glyphio", width: 1180.0, height: 820.0 },
-        "editor" => Spec { url: "editor/index.html", title: "Glyphio — Edit Capture", width: 1280.0, height: 880.0 },
+        "settings" => Spec {
+            url: "index.html",
+            title: "Glyphio",
+            width: 1180.0,
+            height: 820.0,
+        },
+        "editor" => Spec {
+            url: "editor/index.html",
+            title: "Glyphio — Edit Capture",
+            width: 1280.0,
+            height: 880.0,
+        },
         _ => return None,
     })
 }
@@ -129,7 +139,10 @@ fn geometry_key(label: &str) -> &str {
 }
 
 fn geometry_file(app: &AppHandle) -> std::path::PathBuf {
-    app.state::<crate::AppState>().paths.root.join("window-state.json")
+    app.state::<crate::AppState>()
+        .paths
+        .root
+        .join("window-state.json")
 }
 
 fn load_geometry(app: &AppHandle, label: &str) -> Option<Geometry> {
@@ -150,12 +163,15 @@ pub fn save_geometry(app: &AppHandle, label: &str) {
     if label == SILENT_EDITOR {
         return; // never shown, so its frame is nobody's preference
     }
-    let Some(win) = app.get_webview_window(label) else { return };
+    let Some(win) = app.get_webview_window(label) else {
+        return;
+    };
     // A full-screen or minimized frame is not what the user wants back on next launch.
     if win.is_fullscreen().unwrap_or(false) || win.is_minimized().unwrap_or(false) {
         return;
     }
-    let (Ok(pos), Ok(size), Ok(scale)) = (win.outer_position(), win.inner_size(), win.scale_factor())
+    let (Ok(pos), Ok(size), Ok(scale)) =
+        (win.outer_position(), win.inner_size(), win.scale_factor())
     else {
         return;
     };
@@ -168,7 +184,12 @@ pub fn save_geometry(app: &AppHandle, label: &str) {
         .unwrap_or_default();
     all.insert(
         geometry_key(label).to_string(),
-        Geometry { x: pos.x, y: pos.y, w: size.width, h: size.height },
+        Geometry {
+            x: pos.x,
+            y: pos.y,
+            w: size.width,
+            h: size.height,
+        },
     );
     if let Ok(json) = serde_json::to_vec_pretty(&all) {
         let _ = std::fs::write(path, json);
@@ -290,7 +311,9 @@ fn refocus_shortly(app: &AppHandle, label: &str) {
 /// capture editor: it should open where the capture happened, not wherever it last sat —
 /// which, with geometry remembered across launches, can be a different monitor entirely.
 fn move_to_active_display(win: &WebviewWindow) {
-    let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) else { return };
+    let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) else {
+        return;
+    };
     let size = size.to_logical::<f64>(scale);
     let (origin, display) = crate::capture::display_bounds_for_active_window();
     let _ = win.set_position(tauri::LogicalPosition::new(
@@ -370,8 +393,61 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Present the editor for one named delivery session. A session id is part of the page URL so
+/// an older editor page cannot take the result that belongs to a replacement page.
+pub fn open_editor_session(app: &AppHandle, session_id: &str) -> anyhow::Result<()> {
+    let url = format!("editor/index.html?session={session_id}");
+    if let Some(win) = app.get_webview_window("editor") {
+        let script = format!("window.location.replace({});", serde_json::to_string(&url)?);
+        win.eval(&script)?;
+        move_to_active_display(&win);
+        present(app, &win)?;
+        refocus_shortly(app, "editor");
+        return Ok(());
+    }
+
+    let spec = spec("editor").expect("editor spec");
+    let mut g = placement(app, "editor", &spec);
+    let (origin, display) = crate::capture::display_bounds_for_active_window();
+    g.x = origin.0 + (display.0 - g.w).max(0.0) / 2.0;
+    g.y = origin.1 + (display.1 - g.h).max(0.0) / 2.0;
+    let win = WebviewWindowBuilder::new(app, "editor", WebviewUrl::App(url.into()))
+        .title(spec.title)
+        .inner_size(g.w, g.h)
+        .position(g.x, g.y)
+        .min_inner_size(640.0, 480.0)
+        .build()?;
+    follow_user_across_spaces(&win);
+    sync_activation_policy(app, None);
+    win.set_focus()?;
+    refocus_shortly(app, "editor");
+    Ok(())
+}
+
 /// The window that runs a silent capture: the editor page, never shown.
 pub const SILENT_EDITOR: &str = "editor-silent";
+
+fn silent_editor_url(session_id: Option<&str>) -> String {
+    match session_id {
+        Some(id) => format!("editor/index.html?silent=1&session={id}"),
+        None => "editor/index.html?silent=1".to_string(),
+    }
+}
+
+fn build_silent_editor(app: &AppHandle, session_id: Option<&str>) -> anyhow::Result<()> {
+    WebviewWindowBuilder::new(
+        app,
+        SILENT_EDITOR,
+        WebviewUrl::App(silent_editor_url(session_id).into()),
+    )
+    .title("Glyphio")
+    .inner_size(900.0, 700.0)
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .build()?;
+    Ok(())
+}
 
 /// Park the silent-capture worker: the editor page, invisible, with no capture to work on
 /// yet. It sits there until a capture is handed to it by [`run_silent_capture`].
@@ -389,26 +465,19 @@ pub fn ensure_silent_editor(app: &AppHandle) -> anyhow::Result<()> {
     if app.get_webview_window(SILENT_EDITOR).is_some() {
         return Ok(());
     }
-    WebviewWindowBuilder::new(
-        app,
-        SILENT_EDITOR,
-        WebviewUrl::App("editor/index.html?silent=1".into()),
-    )
-    .title("Glyphio")
-    .inner_size(900.0, 700.0)
-    .visible(false)
-    .focused(false)
-    .skip_taskbar(true)
-    .build()?;
-    Ok(())
+    build_silent_editor(app, None)
 }
 
 /// Hand the pending capture to the parked worker. Reloading is what starts it: the page pulls
 /// the capture at load, exactly as the visible editor does.
-pub fn run_silent_capture(app: &AppHandle) -> anyhow::Result<()> {
+pub fn run_silent_capture(app: &AppHandle, session_id: &str) -> anyhow::Result<()> {
     match app.get_webview_window(SILENT_EDITOR) {
-        Some(win) => win.eval("window.location.reload()").map_err(Into::into),
-        None => ensure_silent_editor(app),
+        Some(win) => {
+            let url = silent_editor_url(Some(session_id));
+            let script = format!("window.location.replace({});", serde_json::to_string(&url)?);
+            win.eval(&script).map_err(Into::into)
+        }
+        None => build_silent_editor(app, Some(session_id)),
     }
 }
 
@@ -440,7 +509,10 @@ pub fn open_surface(app: &AppHandle, surface: &str) -> anyhow::Result<()> {
         let win = WebviewWindowBuilder::new(app, surface, WebviewUrl::App(url.into()))
             .title("Glyphio")
             .inner_size(size.0, size.1)
-            .min_inner_size(if surface == "popup" { 280.0 } else { 320.0 }, if surface == "popup" { 200.0 } else { 240.0 })
+            .min_inner_size(
+                if surface == "popup" { 280.0 } else { 320.0 },
+                if surface == "popup" { 200.0 } else { 240.0 },
+            )
             .position(
                 origin.0 + (display.0 - size.0) / 2.0,
                 origin.1 + (display.1 - size.1) / 2.0,
@@ -539,7 +611,10 @@ fn palette_position(app: &AppHandle) -> (f64, f64) {
 /// `delivery` rides along in the URL and comes back with the selected rect: the user chose
 /// how this capture should be delivered before they started dragging, and dragging a region
 /// shouldn't quietly change the answer.
-pub fn open_scroll_overlay(app: &AppHandle, delivery: crate::capture::Delivery) -> anyhow::Result<()> {
+pub fn open_scroll_overlay(
+    app: &AppHandle,
+    delivery: crate::capture::Delivery,
+) -> anyhow::Result<()> {
     if let Some(win) = app.get_webview_window("scroll-overlay") {
         win.close().ok(); // stale one — restart fresh
     }

@@ -5,7 +5,7 @@
 //!     (`-iW` starts in window-pick mode). This is Apple's ScreenCaptureKit-backed picker: a dim
 //!     overlay across every display, hover-highlights windows, click (or drag a region) to
 //!     capture — exactly the requested UX, multi-monitor, with none of the fragility of a custom
-//!     overlay. (Deviation from "SCK crate for everything", documented in docs/PHASE1.md.)
+//!     overlay. This boundary is documented in `docs/ARCHITECTURE.md`.
 //!   * `visible` -> automatic, non-interactive capture of the **display under the cursor** via the
 //!     `screencapturekit` crate (SCScreenshotManager) — "just grab the screen I'm on".
 //!
@@ -41,7 +41,11 @@ fn backing_scale(display_id: u32) -> f64 {
         .display_mode()
         .map(|m| {
             let points = m.width() as f64;
-            if points > 0.0 { m.pixel_width() as f64 / points } else { 1.0 }
+            if points > 0.0 {
+                m.pixel_width() as f64 / points
+            } else {
+                1.0
+            }
         })
         .unwrap_or(1.0)
 }
@@ -115,7 +119,14 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
     let rgba = image
         .rgba_data()
         .map_err(|e| anyhow!("reading captured pixels failed: {e:?}"))?;
-    Ok(Shot { rgba, width, height, dpr, title: String::new(), browser: Default::default() })
+    Ok(Shot {
+        rgba,
+        width,
+        height,
+        dpr,
+        title: String::new(),
+        browser: Default::default(),
+    })
 }
 
 /// Non-interactive capture of the frontmost window (whole window, chrome included) — one
@@ -123,10 +134,21 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
 /// entire screen.
 fn capture_front_window(with_browser_details: bool) -> anyhow::Result<Shot> {
     let win = frontmost_window_bounds_with_inset(0.0)?;
-    let browser = if with_browser_details { win.browser_meta() } else { Default::default() };
+    let browser = if with_browser_details {
+        win.browser_meta()
+    } else {
+        Default::default()
+    };
     let (img, dpr) = capture_rect_image(win.x, win.y, win.w, win.h)?;
     let (width, height) = img.dimensions();
-    Ok(Shot { rgba: img.into_raw(), width, height, dpr, title: win.title, browser })
+    Ok(Shot {
+        rgba: img.into_raw(),
+        width,
+        height,
+        dpr,
+        title: win.title,
+        browser,
+    })
 }
 
 /// Capture an arbitrary global rect (points, top-left origin of the main display) and return
@@ -190,8 +212,14 @@ pub(super) fn capture_rect_image(
         pieces.iter().map(|p| p.1 .1).fold(f64::MAX, f64::min),
     );
     let (ux2, uy2) = (
-        pieces.iter().map(|p| p.1 .0 + p.1 .2).fold(f64::MIN, f64::max),
-        pieces.iter().map(|p| p.1 .1 + p.1 .3).fold(f64::MIN, f64::max),
+        pieces
+            .iter()
+            .map(|p| p.1 .0 + p.1 .2)
+            .fold(f64::MIN, f64::max),
+        pieces
+            .iter()
+            .map(|p| p.1 .1 + p.1 .3)
+            .fold(f64::MIN, f64::max),
     );
     let mut out = image::RgbaImage::new(
         ((ux2 - ux) * scale).round().max(1.0) as u32,
@@ -237,8 +265,14 @@ fn capture_display_rect(
         .with_width((cw * scale).round().max(1.0) as u32)
         .with_height((ch * scale).round().max(1.0) as u32)
         .with_source_rect(ScRect {
-            origin: ScPoint { x: cx - b.origin.x, y: cy - b.origin.y },
-            size: ScSize { width: cw, height: ch },
+            origin: ScPoint {
+                x: cx - b.origin.x,
+                y: cy - b.origin.y,
+            },
+            size: ScSize {
+                width: cw,
+                height: ch,
+            },
         })
         .with_shows_cursor(false);
     let image = SCScreenshotManager::capture_image(&filter, &config)
@@ -258,7 +292,10 @@ fn our_windows(windows: &[SCWindow]) -> Vec<&SCWindow> {
     let us = std::process::id() as i32;
     windows
         .iter()
-        .filter(|w| w.owning_application().is_some_and(|app| app.process_id() == us))
+        .filter(|w| {
+            w.owning_application()
+                .is_some_and(|app| app.process_id() == us)
+        })
         .collect()
 }
 
@@ -326,7 +363,11 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
             // AX has the better title for most apps but none for some, so take whichever is
             // non-empty, preferring AX: `kCGWindowName` comes back empty for full-screen
             // browser windows, which is how captures ended up labelled just "Safari".
-            let title = if ax_title.trim().is_empty() { listed.title.clone() } else { ax_title };
+            let title = if ax_title.trim().is_empty() {
+                listed.title.clone()
+            } else {
+                ax_title
+            };
             let (x, y, w, h) = frame;
             return Ok(FrontWindow {
                 x,
@@ -339,7 +380,10 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
             });
         }
     }
-    let first = onscreen.into_iter().next().ok_or_else(|| anyhow!("no capturable window found"))?;
+    let first = onscreen
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no capturable window found"))?;
     Ok(FrontWindow {
         x: first.x,
         y: first.y + title_bar_inset,
@@ -385,7 +429,10 @@ pub(super) fn frontmost_app() -> Option<(i32, String)> {
     if let Some(app) = front {
         let pid = app.processIdentifier();
         if pid > 0 {
-            let name = app.localizedName().map(|n| n.to_string()).unwrap_or_default();
+            let name = app
+                .localizedName()
+                .map(|n| n.to_string())
+                .unwrap_or_default();
             return Some((pid, name));
         }
     }
@@ -467,7 +514,15 @@ fn on_screen_windows() -> Vec<ListedWindow> {
             .and_then(|v| v.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())
             .unwrap_or(0) as i32;
-        out.push(ListedWindow { pid, x, y, w, h, title, owner });
+        out.push(ListedWindow {
+            pid,
+            x,
+            y,
+            w,
+            h,
+            title,
+            owner,
+        });
     }
     out
 }
@@ -545,7 +600,10 @@ mod tests {
         assert_eq!(intersect(window, right), None);
 
         // The pieces tile the window exactly — no overlap, no gap, so the composite lines up.
-        let pieces = [intersect(window, left).unwrap(), intersect(window, middle).unwrap()];
+        let pieces = [
+            intersect(window, left).unwrap(),
+            intersect(window, middle).unwrap(),
+        ];
         assert_eq!(pieces[0].0 + pieces[0].2, pieces[1].0);
         assert_eq!(pieces.iter().map(|p| p.2).sum::<f64>(), window.2);
     }
@@ -554,7 +612,10 @@ mod tests {
     fn a_window_hanging_off_the_desktop_is_trimmed_not_padded() {
         let display = (0.0, 0.0, 1920.0, 1080.0);
         // Half off the left edge of a single-display desktop.
-        assert_eq!(intersect((-400.0, 50.0, 800.0, 600.0), display), Some((0.0, 50.0, 400.0, 600.0)));
+        assert_eq!(
+            intersect((-400.0, 50.0, 800.0, 600.0), display),
+            Some((0.0, 50.0, 400.0, 600.0))
+        );
         // Entirely off it.
         assert_eq!(intersect((-900.0, 50.0, 800.0, 600.0), display), None);
         // Edge-to-edge contact is not an overlap worth capturing.

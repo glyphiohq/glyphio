@@ -20,6 +20,7 @@
 
 mod ax;
 mod backend;
+pub mod delivery;
 pub mod diag;
 pub mod scroll;
 
@@ -29,6 +30,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::AppState;
+use delivery::DeliveryRoute;
 
 /// Undo any accessibility opt-in still outstanding on a browser we captured from — called on
 /// app exit, since the cooldown thread that normally does it dies with us.
@@ -96,7 +98,11 @@ pub struct PendingCapture {
 
 /// Whether any banner line needs the browser asked about the page.
 pub(crate) fn wants_browser_details(app: &AppHandle) -> bool {
-    app.state::<AppState>().settings.lock().unwrap().wants_browser_details()
+    app.state::<AppState>()
+        .settings
+        .lock()
+        .unwrap()
+        .wants_browser_details()
 }
 
 /// Where a capture goes once it has been taken.
@@ -122,7 +128,13 @@ impl Delivery {
 
     fn resolve(app: &AppHandle, asked: Option<Delivery>) -> Delivery {
         asked.unwrap_or_else(|| {
-            if app.state::<AppState>().settings.lock().unwrap().silent_capture {
+            if app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .unwrap()
+                .silent_capture
+            {
                 Delivery::Silent
             } else {
                 Delivery::Editor
@@ -156,16 +168,19 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
         let details = wants_browser_details(app);
         tauri::async_runtime::spawn(async move {
             let m = mode.clone();
-            let target = tauri::async_runtime::spawn_blocking(move || page_target(&m, details)).await;
+            let target =
+                tauri::async_runtime::spawn_blocking(move || page_target(&m, details)).await;
             let result = match target {
-            // scrollingPage runs off the main thread so its capture loop never blocks the app.
-                Ok(Ok(PageTarget::Scroll { rect, title, browser })) => {
-                    run_scrolling(&app2, rect).await.map(|mut shot| {
-                        shot.title = title;
-                        shot.browser = browser;
-                        shot
-                    })
-                }
+                // scrollingPage runs off the main thread so its capture loop never blocks the app.
+                Ok(Ok(PageTarget::Scroll {
+                    rect,
+                    title,
+                    browser,
+                })) => run_scrolling(&app2, rect).await.map(|mut shot| {
+                    shot.title = title;
+                    shot.browser = browser;
+                    shot
+                }),
                 Ok(Ok(PageTarget::Done(shot))) => Ok(shot),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(anyhow!("page capture task failed: {e}")),
@@ -205,7 +220,11 @@ enum PageTarget {
     Done(Shot),
     /// `scrollingPage` — the region to scroll through, plus the banner details already read
     /// from the browser (the scroll loop can't ask afterwards: the page will have moved).
-    Scroll { rect: (f64, f64, f64, f64), title: String, browser: ax::BrowserMeta },
+    Scroll {
+        rect: (f64, f64, f64, f64),
+        title: String,
+        browser: ax::BrowserMeta,
+    },
 }
 
 /// Blocking body of the two frontmost-page modes. `pageOnly` requires a visible web area
@@ -224,7 +243,11 @@ fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTar
     };
     // Read after `page_geometry`, which has just opted a Chromium browser in if it needed to:
     // by now the page will answer, and this costs a single tree walk.
-    let browser = if with_browser_details { win.browser_meta() } else { Default::default() };
+    let browser = if with_browser_details {
+        win.browser_meta()
+    } else {
+        Default::default()
+    };
     if mode == "pageOnly" {
         if !scroll::app_accessibility_trusted() {
             anyhow::bail!(
@@ -233,24 +256,31 @@ fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTar
                  page's position from the browser."
             );
         }
-        let (x, y, w, h) = geometry.as_ref().and_then(|g| g.web_visible).ok_or_else(|| {
-            if geometry.as_ref().is_some_and(|g| g.tree_still_building) {
-                // Not the user's fault and not a lasting problem: the opt-in this attempt
-                // just made is what the next one will find already done.
-                anyhow!(
-                    "{} was still publishing the page to macOS when the capture fired — \
+        let (x, y, w, h) = geometry
+            .as_ref()
+            .and_then(|g| g.web_visible)
+            .ok_or_else(|| {
+                if geometry.as_ref().is_some_and(|g| g.tree_still_building) {
+                    // Not the user's fault and not a lasting problem: the opt-in this attempt
+                    // just made is what the next one will find already done.
+                    anyhow!(
+                        "{} was still publishing the page to macOS when the capture fired — \
                      Glyphio had to ask it to, which it only has to do once. Try again.",
-                    if win.app_name.is_empty() { "The browser" } else { &win.app_name }
-                )
-            } else {
-                anyhow!(
-                    "No web page found in the frontmost window (“{}”) — Browser Page capture \
+                        if win.app_name.is_empty() {
+                            "The browser"
+                        } else {
+                            &win.app_name
+                        }
+                    )
+                } else {
+                    anyhow!(
+                        "No web page found in the frontmost window (“{}”) — Browser Page capture \
                      works when a browser (Safari, Chrome, Edge, Arc…) is in front, with a page \
                      loaded rather than a settings or downloads tab.",
-                    win.title
-                )
-            }
-        })?;
+                        win.title
+                    )
+                }
+            })?;
         let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
         let (width, height) = img.dimensions();
         return Ok(PageTarget::Done(Shot {
@@ -269,7 +299,11 @@ fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTar
         Some(g) => g.web_visible.unwrap_or(g.window),
         None => (win.x, win.y, win.w, win.h),
     };
-    Ok(PageTarget::Scroll { rect, title: win.title, browser })
+    Ok(PageTarget::Scroll {
+        rect,
+        title: win.title,
+        browser,
+    })
 }
 
 /// One scrolling capture at a time. Two would fight over the pointer, and the second one's
@@ -304,10 +338,8 @@ pub(crate) async fn run_scrolling(
 
     crate::shortcuts::arm_stop_key(app);
 
-    let out = tauri::async_runtime::spawn_blocking(move || {
-        scroll::capture(scroll::Job { rect })
-    })
-    .await;
+    let out =
+        tauri::async_runtime::spawn_blocking(move || scroll::capture(scroll::Job { rect })).await;
 
     out.map_err(|e| anyhow!("scrolling capture task failed: {e}"))?
 }
@@ -323,7 +355,10 @@ pub struct AlreadyScrolling;
 
 impl std::fmt::Display for AlreadyScrolling {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "A scrolling capture is already running — Esc finishes it.")
+        write!(
+            f,
+            "A scrolling capture is already running — Esc finishes it."
+        )
     }
 }
 
@@ -391,11 +426,16 @@ pub fn finish(app: &AppHandle, shot: Shot, mode: &str, delivery: Delivery) -> an
         captured_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         silent,
     };
-    *app.state::<AppState>().pending_capture.lock().unwrap() = Some(pending);
+    let session_id = app
+        .state::<AppState>()
+        .capture_deliveries
+        .lock()
+        .unwrap()
+        .complete(DeliveryRoute::from_silent(silent), pending);
     if silent {
-        crate::windows::run_silent_capture(app)
+        crate::windows::run_silent_capture(app, session_id.as_str())
     } else {
-        crate::windows::open(app, "editor")
+        crate::windows::open_editor_session(app, session_id.as_str())
     }
 }
 

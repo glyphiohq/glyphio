@@ -4,7 +4,6 @@
 // engine's config, which hot-reloads. Rich snippets use the engine's native rich injection.
 
 import { icon } from '../shared/icons.js';
-import { resolveSettings } from '../config.js';
 import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 
@@ -96,6 +95,12 @@ const CAPTURE_SECTIONS = [
     ['shortcutCaptureScroll', 'hotkeys', 'Scrolling area', 'shortcutCaptureScrollSilent'],
     ['shortcutCaptureScrollPage', 'hotkeys', 'Scrolling page (frontmost window)', 'shortcutCaptureScrollPageSilent'],
     ['shortcutOpenHistory', 'text', 'Open capture history'],
+  ]},
+];
+
+const GENERAL_SECTIONS = [
+  { title: 'Startup', fields: [
+    ['launchAtLogin', 'toggle', 'Launch Glyphio at login'],
   ]},
 ];
 
@@ -694,7 +699,7 @@ function bannerMeta(item) {
 async function exportDataUrl(item) {
   const dataUrl = await invoke('read_capture_data_url', { id: item.id });
   if (item.bannerBaked || item.bannerEnabled === false) return dataUrl;
-  const settings = resolveSettings(state.settings || {});
+  const settings = state.settings;
   const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
   const cvs = document.createElement('canvas');
   compositeBanner(cvs, bmp, {
@@ -711,7 +716,7 @@ async function exportDataUrl(item) {
 // preview matches what Open/Copy/Save produce (timestamp strip included).
 async function bannerizeThumb(item, img) {
   if (item.bannerBaked || item.bannerEnabled === false || !item.thumbPath) return;
-  const settings = resolveSettings(state.settings || {});
+  const settings = state.settings;
   const thumb = new Image();
   await new Promise((resolve, reject) => {
     thumb.onload = resolve;
@@ -2259,6 +2264,7 @@ async function wireSync() {
 }
 
 const SETTINGS_TABS = [
+  ['general', 'General'],
   ['capture', 'Capture'],
   ['snippets', 'Snippets'],
   ['clipboard', 'Clipboard'],
@@ -2280,6 +2286,7 @@ function renderSettings(main) {
   }));
   const form = main.querySelector('#settings-form');
   switch (state.settingsTab) {
+    case 'general': renderSections(form, GENERAL_SECTIONS); break;
     case 'snippets': renderSnippetsTab(form); break;
     case 'clipboard': renderClipboardTab(form); break;
     case 'sync': renderSyncSection(form); break;

@@ -18,7 +18,7 @@ node --check ui/settings/settings.js
 - **Don't touch `espanso/` internals** unless the change genuinely belongs in the engine.
   The fork is deliberately thin so upstream security fixes rebase cleanly; app-level
   behavior belongs in `src-tauri/` or `ui/`. Any fork deviation must be documented in
-  `docs/PHASE1.md`.
+  `docs/ARCHITECTURE.md`.
 - **Wire-protocol changes** (`src-tauri/crates/sync-proto`, `docs/SYNC-PROTOCOL.md`) are
   breaking for every third-party server — additive within `/v1/`, path bump otherwise.
 - **Secrets discipline**: no tenant IDs, endpoints, or tokens anywhere in the tree — only

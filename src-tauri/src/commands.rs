@@ -71,7 +71,12 @@ pub fn create_group(app: AppHandle, state: State<AppState>, group: NewGroup) -> 
 }
 
 #[tauri::command]
-pub fn update_group(app: AppHandle, state: State<AppState>, id: String, patch: GroupUpdate) -> CmdResult<()> {
+pub fn update_group(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    patch: GroupUpdate,
+) -> CmdResult<()> {
     state.snippets.update_group(&id, patch).map_err(err)?;
     let _ = app.emit("groups-changed", ());
     Ok(())
@@ -88,7 +93,7 @@ pub fn delete_group(app: AppHandle, state: State<AppState>, id: String) -> CmdRe
 
 /// Export snippets (all, or one group) to a Glyphio JSON file at a user-chosen path.
 ///
-/// Org export policy (server-attested via `/v1/me`, see docs/PHASE4-PLAN §E3) gates
+/// Org export policy (server-attested via `/v1/me`, see `docs/ARCHITECTURE.md`) gates
 /// **team-shared** content: `open` (anyone), `managers` (manager+ of that team), `disabled`.
 /// Personal snippets always export. A full export silently excludes unpermitted team groups;
 /// exporting a specific unpermitted group errors so the user learns why.
@@ -103,7 +108,10 @@ pub fn export_snippets(
     let (roles, policy) = match &status.identity {
         Some(me) => (
             me.roles.clone(),
-            me.policy.as_ref().map(|p| p.export_team_groups.clone()).unwrap_or_default(),
+            me.policy
+                .as_ref()
+                .map(|p| p.export_team_groups.clone())
+                .unwrap_or_default(),
         ),
         None => (Default::default(), String::new()),
     };
@@ -114,7 +122,12 @@ pub fn export_snippets(
     };
 
     if let Some(gid) = &group_id {
-        if let Some(team) = state.snippets.get_group(gid).map_err(err)?.and_then(|g| g.team) {
+        if let Some(team) = state
+            .snippets
+            .get_group(gid)
+            .map_err(err)?
+            .and_then(|g| g.team)
+        {
             if !allow_team(&team) {
                 return Err(format!(
                     "Export of team-shared groups is restricted by your organization \
@@ -123,7 +136,10 @@ pub fn export_snippets(
             }
         }
     }
-    let json = state.snippets.export_json(group_id.as_deref(), &allow_team).map_err(err)?;
+    let json = state
+        .snippets
+        .export_json(group_id.as_deref(), &allow_team)
+        .map_err(err)?;
     std::fs::write(&path, json).map_err(err)
 }
 
@@ -143,8 +159,14 @@ fn read_import(path: &str) -> CmdResult<snippet_store::ParsedImport> {
 /// answer up front: which snippets are new, which are already here byte-for-byte, and which
 /// triggers collide with different content and so need the user's decision.
 #[tauri::command]
-pub fn preview_import(state: State<AppState>, path: String) -> CmdResult<snippet_store::ImportPlan> {
-    state.snippets.plan_import(&read_import(&path)?).map_err(err)
+pub fn preview_import(
+    state: State<AppState>,
+    path: String,
+) -> CmdResult<snippet_store::ImportPlan> {
+    state
+        .snippets
+        .plan_import(&read_import(&path)?)
+        .map_err(err)
 }
 
 /// Import snippets. `options` carries the destination group (all snippets land there,
@@ -174,6 +196,7 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
+    crate::autostart::set_enabled(&app, settings.launch_at_login).map_err(err)?;
     settings.save(&state.paths.settings_json).map_err(err)?;
     let wants_worker = settings.wants_silent_worker();
     *state.settings.lock().unwrap() = settings;
@@ -202,8 +225,12 @@ pub fn save_capture(
     thumb_png_base64: String,
 ) -> CmdResult<CaptureMeta> {
     let engine = base64::engine::general_purpose::STANDARD;
-    let full = engine.decode(strip_data_url(&full_png_base64)).map_err(err)?;
-    let thumb = engine.decode(strip_data_url(&thumb_png_base64)).map_err(err)?;
+    let full = engine
+        .decode(strip_data_url(&full_png_base64))
+        .map_err(err)?;
+    let thumb = engine
+        .decode(strip_data_url(&thumb_png_base64))
+        .map_err(err)?;
     let (max_count, max_bytes) = {
         let s = state.settings.lock().unwrap();
         (s.history_max_count, s.history_max_bytes)
@@ -247,7 +274,11 @@ pub fn list_captures(state: State<AppState>) -> CmdResult<Vec<CaptureMeta>> {
 /// Returns the full PNG as a base64 data URL (used by history Open/Copy/Download).
 #[tauri::command]
 pub fn read_capture_data_url(state: State<AppState>, id: String) -> CmdResult<String> {
-    let meta = state.history.get(&id).map_err(err)?.ok_or("capture not found")?;
+    let meta = state
+        .history
+        .get(&id)
+        .map_err(err)?
+        .ok_or("capture not found")?;
     let bytes = std::fs::read(&meta.full_path).map_err(err)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:image/png;base64,{b64}"))
@@ -340,7 +371,13 @@ pub fn trigger_capture(app: AppHandle, mode: String, silent: Option<bool>) -> Cm
 /// A frontend's `silent` flag as a delivery choice; `None` means "as configured".
 fn delivery(silent: Option<bool>) -> Option<crate::capture::Delivery> {
     use crate::capture::Delivery;
-    silent.map(|s| if s { Delivery::Silent } else { Delivery::Editor })
+    silent.map(|s| {
+        if s {
+            Delivery::Silent
+        } else {
+            Delivery::Editor
+        }
+    })
 }
 
 /// The scrolling-capture overlay reports the selected rect (window-logical px == points,
@@ -701,15 +738,29 @@ pub async fn form_submit(app: AppHandle, request_id: String, text: String) {
 /// The form window was cancelled (Esc / closed) — the expansion aborts cleanly.
 #[tauri::command]
 pub fn form_cancel(app: AppHandle, state: State<AppState>, request_id: String) {
-    state.bridge.resolve(&request_id, crate::bridge::FormReply::Cancelled);
+    state
+        .bridge
+        .resolve(&request_id, crate::bridge::FormReply::Cancelled);
     if let Some(win) = app.get_webview_window("form") {
         let _ = win.close();
     }
 }
 
 #[tauri::command]
-pub fn take_pending_capture(app: AppHandle) -> Option<crate::capture::PendingCapture> {
-    app.state::<AppState>().pending_capture.lock().unwrap().take()
+pub fn take_pending_capture(
+    app: AppHandle,
+    session_id: String,
+    silent: bool,
+) -> Option<crate::capture::PendingCapture> {
+    let session_id = crate::capture::delivery::DeliverySessionId::parse(session_id)?;
+    app.state::<AppState>()
+        .capture_deliveries
+        .lock()
+        .unwrap()
+        .consume(
+            &session_id,
+            crate::capture::delivery::DeliveryRoute::from_silent(silent),
+        )
 }
 
 /// A silent capture is finished with. Tell the user something happened — a capture with no
@@ -736,7 +787,9 @@ pub async fn check_for_update(app: AppHandle) -> crate::updates::Status {
 /// Install the update the user just agreed to, then relaunch into it.
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> CmdResult<()> {
-    crate::updates::install(&app).await.map_err(|e| format!("{e:#}"))
+    crate::updates::install(&app)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 fn strip_data_url(s: &str) -> &str {

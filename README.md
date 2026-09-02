@@ -99,7 +99,7 @@ ui/               webview frontend (snippet manager, capture editor, history)
 server/           reference sync backend (Apache-2.0; axum, SQLite/DynamoDB)
 infra/            Terraform for the AWS reference deployment (Apache-2.0)
 packaging/        Homebrew cask (source of truth for the tap)
-docs/             INSTALL.md, SYNC-PROTOCOL.md, SECURITY.md, PHASE*.md
+docs/             maintained architecture, roadmap, security, install, and protocol docs
 SETUP.md          operator / self-hosting guide
 ```
 
@@ -109,4 +109,5 @@ SETUP.md          operator / self-hosting guide
 carve-outs for the sync protocol types, reference server, and infra — so you can build
 compatible servers/clients without copyleft obligations. Details in [NOTICES.md](NOTICES.md).
 
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The full documentation map is
+in [docs/README.md](docs/README.md).

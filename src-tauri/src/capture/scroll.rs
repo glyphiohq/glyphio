@@ -46,6 +46,8 @@ const POINTER_SLACK: f64 = 24.0;
 const PAUSE_LIMIT: Duration = Duration::from_secs(30);
 /// Granularity of every wait in the loop, so an Esc lands well inside one frame time.
 const TICK: Duration = Duration::from_millis(40);
+/// Keep synthetic wheel deltas in the range accepted consistently by macOS clients.
+const MAX_SCROLL_DELTA: i32 = 10;
 
 /// Set by [`request_stop`], cleared at the start of every capture.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -66,12 +68,31 @@ fn stopping() -> bool {
 /// after the key is live throws away a press made in between, and "I hit Esc immediately and it
 /// kept going" is the one failure this control cannot have.
 pub fn clear_stop() {
+    STOP.store(false, Ordering::SeqCst);
 }
 
 /// One scrolling capture.
 pub struct Job {
     /// Region to photograph, in global points (top-left origin).
     pub rect: (f64, f64, f64, f64),
+}
+
+/// Pixel capture and scroll dispatch used by the feedback loop.
+pub trait ScrollDriver {
+    fn capture(&mut self, rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)>;
+    fn scroll(&mut self, delta: i32) -> anyhow::Result<()>;
+}
+
+struct QuartzDriver;
+
+impl ScrollDriver for QuartzDriver {
+    fn capture(&mut self, rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+        super::backend::capture_rect_image(rect.0, rect.1, rect.2, rect.3)
+    }
+
+    fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
+        post_scroll(delta)
+    }
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -128,33 +149,13 @@ pub fn capture(job: Job) -> anyhow::Result<Shot> {
     warp_cursor(CGPoint::new(x + w / 2.0, y + h / 2.0));
     std::thread::sleep(Duration::from_millis(120));
 
-    let mut frames: Vec<RgbaImage> = Vec::new();
-    let mut capture_dpr = 1.0;
-    let mut scroll_px_points = (h * SCROLL_FRACTION).round();
-    let result = (|| -> anyhow::Result<()> {
-        loop {
-            let (frame, frame_dpr) = super::backend::capture_rect_image(x, y, w, h)?;
-            capture_dpr = frame_dpr;
-            if let Some(prev) = frames.last() {
-                if frames_identical(prev, &frame) {
-                    break; // nothing moved — bottom (or an end of the scroller) reached
-                }
-            }
-            frames.push(frame);
-            if frames.len() >= MAX_FRAMES {
-                log::info!("scrolling capture reached the {MAX_FRAMES}-frame cap");
-                break;
-            }
-            if stopping() || !wait_for_pointer(&job, frames.len()) {
-                break;
-            }
-            post_scroll(-(scroll_px_points as i32))?;
-            if !nap(SETTLE) {
-                break;
-            }
-        }
-        Ok(())
-    })();
+    let mut driver = QuartzDriver;
+    let result = capture_loop(
+        &job,
+        &mut driver,
+        |frames| !stopping() && wait_for_pointer(&job, frames),
+        || nap(SETTLE),
+    );
     // Give the pointer back where we found it — but only if it is still where we put it. If the
     // user has moved it themselves (that's what pauses the capture), yanking it back would be
     // the rudest possible ending.
@@ -163,24 +164,80 @@ pub fn capture(job: Job) -> anyhow::Result<Shot> {
             warp_cursor(p);
         }
     }
-    result?;
+    result
+}
 
-    let first = frames.first().ok_or_else(|| anyhow!("no frames captured"))?;
-    // Pixels per point from the capture itself (the rect may have been clamped to a
-    // display, so first.width()/w would be wrong for oversized selections).
-    let dpr = capture_dpr;
-    scroll_px_points *= dpr; // expected overlap works in pixels below
-    let expected_overlap = first.height() as i64 - scroll_px_points as i64;
+/// Run the feedback loop with a replaceable pixel/scroll adapter.
+///
+/// The production entry point adds permission, pointer, and Escape policy around this seam.
+pub fn capture_with_driver<D: ScrollDriver>(job: Job, driver: &mut D) -> anyhow::Result<Shot> {
+    let (_, _, w, h) = job.rect;
+    if w < 40.0 || h < 40.0 {
+        anyhow::bail!("selection too small");
+    }
+    capture_loop(&job, driver, |_| true, || true)
+}
+
+fn capture_loop<D, W, S>(
+    job: &Job,
+    driver: &mut D,
+    mut before_scroll: W,
+    mut settle: S,
+) -> anyhow::Result<Shot>
+where
+    D: ScrollDriver,
+    W: FnMut(usize) -> bool,
+    S: FnMut() -> bool,
+{
+    let mut frames: Vec<RgbaImage> = Vec::new();
+    let mut capture_dpr;
+    loop {
+        let (frame, frame_dpr) = driver.capture(job.rect)?;
+        capture_dpr = frame_dpr;
+        if let Some(prev) = frames.last() {
+            if frames_identical(prev, &frame) {
+                break;
+            }
+        }
+        frames.push(frame);
+        if frames.len() >= MAX_FRAMES {
+            log::info!("scrolling capture reached the {MAX_FRAMES}-frame cap");
+            break;
+        }
+        if !before_scroll(frames.len()) {
+            break;
+        }
+        let delta = -((job.rect.3 * SCROLL_FRACTION * frame_dpr).round() as i32);
+        dispatch_scroll(driver, delta)?;
+        if !settle() {
+            break;
+        }
+    }
+
+    let first = frames
+        .first()
+        .ok_or_else(|| anyhow!("no frames captured"))?;
+    let expected_scroll = (job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i64;
+    let expected_overlap = first.height() as i64 - expected_scroll;
     let stitched = stitch(frames, expected_overlap);
     let (width, height) = stitched.dimensions();
     Ok(Shot {
         rgba: stitched.into_raw(),
         width,
         height,
-        dpr,
+        dpr: capture_dpr,
         title: String::new(),
         browser: Default::default(),
     })
+}
+
+fn dispatch_scroll<D: ScrollDriver>(driver: &mut D, mut delta: i32) -> anyhow::Result<()> {
+    while delta != 0 {
+        let step = delta.clamp(-MAX_SCROLL_DELTA, MAX_SCROLL_DELTA);
+        driver.scroll(step)?;
+        delta -= step;
+    }
+    Ok(())
 }
 
 /// Whether the pointer is still over the region — i.e. whether the capture may scroll. A wheel
@@ -398,5 +455,84 @@ mod tests {
             c.put_pixel(16, y, image::Rgba([200, 0, 0, 255]));
         }
         assert!(!frames_identical(&a, &c));
+    }
+
+    struct SyntheticPage {
+        page: RgbaImage,
+        offset: u32,
+        view_h: u32,
+        scrolls: usize,
+    }
+
+    impl ScrollDriver for SyntheticPage {
+        fn capture(&mut self, _rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+            Ok((
+                image::imageops::crop_imm(
+                    &self.page,
+                    0,
+                    self.offset,
+                    self.page.width(),
+                    self.view_h,
+                )
+                .to_image(),
+                1.0,
+            ))
+        }
+
+        fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
+            assert!(delta.abs() <= MAX_SCROLL_DELTA);
+            self.scrolls += 1;
+            let distance = delta.unsigned_abs();
+            self.offset = (self.offset + distance).min(self.page.height() - self.view_h);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn scrolling_feedback_loop_advances_a_selected_page() {
+        let (w, page_h, view_h) = (64u32, 600u32, 200u32);
+        let mut page = RgbaImage::new(w, page_h);
+        for y in 0..page_h {
+            for x in 0..w {
+                let v = ((x * 11 + y * 17) % 251) as u8;
+                page.put_pixel(x, y, image::Rgba([v, v.wrapping_mul(3), v ^ 0x5a, 255]));
+            }
+        }
+        let expected = page.clone();
+        let mut driver = SyntheticPage {
+            page,
+            offset: 0,
+            view_h,
+            scrolls: 0,
+        };
+
+        let shot = capture_with_driver(
+            Job {
+                rect: (0.0, 0.0, w as f64, view_h as f64),
+            },
+            &mut driver,
+        )
+        .expect("synthetic capture should complete");
+
+        assert!(driver.scrolls > 0);
+        assert!(shot.height > view_h, "capture must advance beyond its first frame");
+        assert_eq!(shot.height, page_h, "end-of-content must not duplicate a frame band");
+        let stitched = RgbaImage::from_raw(shot.width, shot.height, shot.rgba)
+            .expect("shot pixels should have the reported dimensions");
+        for y in (0..page_h).step_by(11) {
+            for x in (0..w).step_by(7) {
+                assert_eq!(stitched.get_pixel(x, y), expected.get_pixel(x, y));
+            }
+        }
+    }
+
+    #[test]
+    fn escape_only_stops_the_current_capture() {
+        request_stop();
+        assert!(stopping());
+
+        clear_stop();
+
+        assert!(!stopping());
     }
 }

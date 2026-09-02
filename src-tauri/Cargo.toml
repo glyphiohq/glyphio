@@ -47,6 +47,7 @@ core-foundation = "0.10"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-opener = "2.5.4"
+tauri-plugin-autostart = "2.5.1"
 
 [dev-dependencies]
 tempfile = "3"

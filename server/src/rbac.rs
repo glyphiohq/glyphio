@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Role resolution + access checks (capability matrix in the app repo's PHASE3 plan).
+//! Role resolution and access checks for the sync service.
 //!
 //! Resolution precedence, per identity and team:
 //! 1. an explicit role row (`roles` storage) always wins;

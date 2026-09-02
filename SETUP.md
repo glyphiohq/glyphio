@@ -145,7 +145,8 @@ Save → **Sign in with SSO** → share a snippet group with a team (⇅ next to
 
 - Production Okta app registration (same shape as 2a, prod org + change control).
 - Code signing + notarization of the app and the `glyphio-engine` sidecar.
-- the reference enterprise deployment OSS/legal sign-off for public release of the GPL fork (see `docs/PHASE2-PLAN.md` §0).
+- the reference enterprise deployment OSS/legal sign-off for public release of the GPL fork (see
+  `docs/ROADMAP.md`, REL-01).
 
 ---
 

@@ -1,10 +1,10 @@
 // preview/preview.js
 // Preview tab: reads the stitched content PNG from Cache Storage, composes a
 // banner (timestamp + URL + note) on top, and offers Copy / Download / Retry.
-// Loaded as an ES module so we can share config.js with the rest of the
-// extension.
+// Loaded as an ES module so the editor can share its presentation defaults.
 
-import { config, resolveSettings, DEFAULT_SHORTCUTS } from '../config.js';
+import { DEFAULT_EDITOR_SHORTCUTS, PRODUCT_NAME } from '../shared/presentation.js';
+import { EditableCaptureArtifact } from './artifact.mjs';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
 import { icon } from '../shared/icons.js';
@@ -68,6 +68,7 @@ const canvasWrap = document.getElementById('canvas-wrap');
 
 const urlParams = new URLSearchParams(location.search);
 const historyId = urlParams.get('history') || '';
+const deliverySessionId = urlParams.get('session') || '';
 const isHistoryMode = Boolean(historyId);
 // Silent capture: this page is running in a window that is never shown. It composites,
 // copies, saves to history and reports back — see `windows::open_silent_editor`.
@@ -81,7 +82,8 @@ let meta = null;            // json meta (from cache or history row)
 // and history persists the content separately from the banner.
 let contentCanvas = null;
 let contentCtx = null;
-let settings = null;        // merged user settings + defaults
+let artifact = null;
+let settings = null;        // native Settings snapshot
 let currentBlob = null;     // current composited (banner+content) PNG Blob
 let bannerEnabled = true;   // per-capture banner on/off (persisted on history rows)
 let lastBannerPxH = 0;      // banner height of the last composite, for overlay→content coords
@@ -126,7 +128,7 @@ async function init() {
   // capture waiting: it sits idle until a capture reloads it. See `ensure_silent_editor`.
   if (isSilent && !(await loadPayload({ optional: true }))) return;
   if (!isSilent) await loadPayload();
-  document.title = `${config.name} — ${meta.title || meta.windowTitle}`;
+  document.title = `${PRODUCT_NAME} — ${meta.title || meta.windowTitle}`;
 
   if (isSilent) {
     await render({ autoCopy: false });
@@ -163,8 +165,7 @@ async function init() {
 }
 
 async function loadSettings() {
-  const stored = await invoke('get_settings');
-  return resolveSettings(stored);
+  return invoke('get_settings');
 }
 
 // Tell the app the silent capture is over; it closes this window and either acknowledges the
@@ -204,7 +205,14 @@ async function loadPayload({ optional = false } = {}) {
     };
     await setContentFromBlob(await dataUrlToBlob(dataUrl));
   } else {
-    const p = await invoke('take_pending_capture');
+    if (!deliverySessionId) {
+      if (optional) return false;
+      throw new Error('No delivery session. Trigger a capture from the tray or a hotkey.');
+    }
+    const p = await invoke('take_pending_capture', {
+      sessionId: deliverySessionId,
+      silent: isSilent,
+    });
     if (!p) {
       if (optional) return false;
       throw new Error('No pending capture. Trigger a capture from the tray or a hotkey.');
@@ -235,6 +243,7 @@ async function loadPayload({ optional = false } = {}) {
 function releaseCapture() {
   contentCanvas = null;
   contentCtx = null;
+  artifact = null;
   currentBlob = null;
   canvas.width = canvas.height = 0;
 }
@@ -248,6 +257,26 @@ async function setContentFromBlob(blob) {
   contentCtx = contentCanvas.getContext('2d');
   contentCtx.drawImage(bmp, 0, 0);
   bmp.close?.();
+  artifact = new EditableCaptureArtifact({
+    content: contentCanvas,
+    metadata: meta,
+    banner: {
+      note: meta.note || '',
+      enabled: meta.bannerEnabled !== false,
+      baked: Boolean(meta.bannerBaked),
+    },
+  });
+}
+
+function artifactState() {
+  if (!artifact || !contentCanvas) return null;
+  artifact.replaceContent(contentCanvas);
+  artifact.setBanner({
+    note: noteInput.value.trim(),
+    enabled: bannerEnabled,
+    baked: bannerBaked,
+  });
+  return artifact.persistence();
 }
 
 // Legacy history row: the stored PNG already contains the banner, so draw it straight
@@ -258,6 +287,7 @@ async function displayStored() {
   ctx.drawImage(contentCanvas, 0, 0);
   currentBlob = await canvasToPngBlob(canvas);
   bannerBaked = true;
+  artifactState();
 }
 
 function wireEvents() {
@@ -400,7 +430,7 @@ function wireEvents() {
 function onKeyDown(e) {
   const tag = e.target?.tagName;
   const inField = tag === 'INPUT' || tag === 'TEXTAREA';
-  const s = settings.shortcuts || DEFAULT_SHORTCUTS;
+  const s = DEFAULT_EDITOR_SHORTCUTS;
 
   // In crop mode, Esc cancels the crop and Enter applies it, regardless of
   // what `close`/other bindings are set to.
@@ -495,7 +525,7 @@ function onKeyDown(e) {
 }
 
 function renderShortcutHint() {
-  const s = settings.shortcuts || DEFAULT_SHORTCUTS;
+  const s = DEFAULT_EDITOR_SHORTCUTS;
   const entries = [
     [s.copy, 'copy'],
     [s.save, 'save'],
@@ -522,17 +552,20 @@ function renderShortcutHint() {
 // --- Rendering ------------------------------------------------------------
 
 async function render({ autoCopy }) {
-  if (!contentCanvas || !meta) return;
+  const state = artifactState();
+  if (!state) return;
   // Legacy history rows never re-render — the stored PNG (banner baked in) is the image.
-  if (bannerBaked) return;
+  if (state.banner.baked) return;
 
   // Recompositing changes the canvas geometry — a live OCR overlay would misalign.
   if (ocrModeActive) exitOcrMode();
 
-  const note = noteInput.value.trim();
-  lastBannerPxH = compositeBanner(canvas, contentCanvas, {
-    meta, settings, note, enabled: bannerEnabled,
-  });
+  lastBannerPxH = artifact.render(({ content, metadata, banner }) => compositeBanner(canvas, content, {
+    meta: metadata,
+    settings,
+    note: banner.note,
+    enabled: banner.enabled,
+  }));
 
   currentBlob = await canvasToPngBlob(canvas);
 
@@ -1565,24 +1598,27 @@ async function downloadPng() {
 // captured_at timestamp is preserved verbatim.
 async function saveToHistoryOnce() {
   if (historySaved || isHistoryMode || !settings.historyEnabled || !contentCanvas) return;
+  const state = artifactState();
+  if (!state) return;
   historySaved = true;
   try {
-    const contentBlob = await canvasToPngBlob(contentCanvas);
+    const contentBlob = await canvasToPngBlob(state.content);
     const fullDataUrl = await blobToDataUrl(contentBlob);
     const thumbDataUrl = await makeThumbnailDataUrl(contentBlob, 320);
     const row = await invoke('save_capture', {
       meta: {
-        url: meta.windowTitle || '',
-        title: meta.title || '',
-        pageTitle: meta.pageTitle || '',
-        pageUrl: meta.pageUrl || '',
-        profile: meta.profile || '',
-        mode: meta.mode || '',
-        imageWidthPx: contentCanvas.width,
-        imageHeightPx: contentCanvas.height,
-        dpr: meta.dpr || 1,
-        note: noteInput.value.trim(),
-        bannerEnabled,
+        capturedAt: state.metadata.capturedAt,
+        url: state.metadata.windowTitle || '',
+        title: state.metadata.title || '',
+        pageTitle: state.metadata.pageTitle || '',
+        pageUrl: state.metadata.pageUrl || '',
+        profile: state.metadata.profile || '',
+        mode: state.metadata.mode || '',
+        imageWidthPx: state.content.width,
+        imageHeightPx: state.content.height,
+        dpr: state.metadata.dpr || 1,
+        note: state.banner.note,
+        bannerEnabled: state.banner.enabled,
       },
       fullPngBase64: fullDataUrl,
       thumbPngBase64: thumbDataUrl,
@@ -1598,10 +1634,12 @@ async function saveToHistoryOnce() {
 // session that has already saved once). No-op otherwise — the eventual save picks them up.
 async function persistMeta() {
   if (!savedId || bannerBaked) return;
+  const state = artifactState();
+  if (!state) return;
   try {
     await invoke('update_capture', {
       id: savedId,
-      patch: { note: noteInput.value.trim(), bannerEnabled },
+      patch: { note: state.banner.note, bannerEnabled: state.banner.enabled },
     });
   } catch (err) {
     console.warn('history meta update failed:', err);
@@ -1611,15 +1649,17 @@ async function persistMeta() {
 // Push an edited content PNG (crop/redact/draw/text) to the stored history row.
 async function persistContent() {
   if (!savedId || bannerBaked || !contentCanvas) return;
+  const state = artifactState();
+  if (!state) return;
   try {
-    const contentBlob = await canvasToPngBlob(contentCanvas);
+    const contentBlob = await canvasToPngBlob(state.content);
     await invoke('update_capture', {
       id: savedId,
       patch: {
-        note: noteInput.value.trim(),
-        bannerEnabled,
-        imageWidthPx: contentCanvas.width,
-        imageHeightPx: contentCanvas.height,
+        note: state.banner.note,
+        bannerEnabled: state.banner.enabled,
+        imageWidthPx: state.content.width,
+        imageHeightPx: state.content.height,
       },
       fullPngBase64: await blobToDataUrl(contentBlob),
       thumbPngBase64: await makeThumbnailDataUrl(contentBlob, 320),
@@ -1642,8 +1682,7 @@ async function retry() {
   setStatus('Re-capturing…', 'info');
   // Re-taking a capture from the editor lands in the editor, whatever the default delivery.
   await invoke('trigger_capture', { mode: meta.mode, silent: false });
-  // The capture flow refreshes the pending payload; reload to pick it up.
-  location.reload();
+  // The native adapter navigates this window to the new delivery-session id.
 }
 
 // Discard the current capture: remove it from history (if it was saved) and close the window.

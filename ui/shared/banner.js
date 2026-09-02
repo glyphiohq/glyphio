@@ -3,7 +3,7 @@
 // composited at view/export time, always from the row's immutable capturedAt — so the
 // banner can be added or removed later without ever losing the original capture time.
 
-import { config } from '../config.js';
+import { BANNER_PRESENTATION } from './presentation.js';
 
 /**
  * The banner's lines, top to bottom, for one capture. Everything downstream — the height the
@@ -43,7 +43,7 @@ function bannerLines(settings, meta, note) {
 
 /** CSS px of a line's text, by role. */
 function lineHeight(role) {
-  const b = config.banner;
+  const b = BANNER_PRESENTATION;
   if (role === 'timestamp') return b.timestampFontPx;
   return role === 'note' ? b.noteFontPx : b.urlFontPx;
 }
@@ -55,7 +55,7 @@ export function hasAnyBannerContent(settings, meta, note) {
 export function computeBannerCssHeight(settings, meta, note) {
   const lines = bannerLines(settings, meta, note);
   if (!lines.length) return 0;
-  const b = config.banner;
+  const b = BANNER_PRESENTATION;
   const text = lines.reduce((h, line) => h + lineHeight(line.role), 0);
   return b.paddingPx * 2 + text + b.lineGapPx * (lines.length - 1);
 }
@@ -193,7 +193,7 @@ function truncateToWidth(ctx, text, maxW) {
 }
 
 function drawBannerLines(ctx, canvasWidth, scale, settings, meta, note) {
-  const b = config.banner;
+  const b = BANNER_PRESENTATION;
   ctx.textBaseline = 'top';
   const x = b.paddingPx * scale;
   const avail = canvasWidth - 2 * x;

@@ -1,6 +1,7 @@
 //! Glyphio Tauri application: wires the snippet store + engine sidecar, capture/edit/history,
 //! settings, the tray, and global hotkeys into one shell.
 
+mod autostart;
 mod bridge;
 pub mod capture;
 mod clipboard;
@@ -11,6 +12,7 @@ mod logging;
 mod paths;
 mod settings;
 mod shortcuts;
+mod startup;
 mod sync;
 mod tray;
 mod updates;
@@ -21,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 use crate::capture::PendingCapture;
-use crate::engine::Supervisor;
 use crate::clipboard::ClipStore;
+use crate::engine::Supervisor;
 use crate::history::HistoryStore;
 use crate::paths::AppPaths;
 use crate::settings::Settings;
@@ -41,7 +43,8 @@ pub struct AppState {
     pub palette_view: Mutex<String>,
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
-    pub pending_capture: Mutex<Option<PendingCapture>>,
+    /// Capture results awaiting acknowledgement by their named delivery session.
+    pub capture_deliveries: Mutex<capture::delivery::CaptureDeliverySessions<PendingCapture>>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
     pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
@@ -53,6 +56,8 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init();
+
+    let open_settings_on_start = startup::should_open_settings(std::env::args());
 
     let paths = AppPaths::resolve().expect("resolve app paths");
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
@@ -73,7 +78,7 @@ pub fn run() {
         clips,
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
-        pending_capture: Mutex::new(None),
+        capture_deliveries: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
@@ -88,13 +93,17 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![startup::LOGIN_LAUNCH_ARGUMENT]),
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(shortcuts::handler)
                 .build(),
         )
         .manage(state)
-        .setup(|app| {
+        .setup(move |app| {
             // Start as a menu-bar agent; opening a window promotes us to a regular app and
             // closing the last one demotes us again (windows::sync_activation_policy).
             #[cfg(target_os = "macos")]
@@ -106,6 +115,16 @@ pub fn run() {
 
             tray::build(app.handle())?;
             shortcuts::register(app.handle())?;
+
+            let launch_at_login = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .unwrap()
+                .launch_at_login;
+            if let Err(e) = autostart::set_enabled(app.handle(), launch_at_login) {
+                log::warn!("could not update Launch at Login: {e}");
+            }
 
             // Notify open windows on store changes. Remote-origin changes (applied by the sync
             // engine, bypassing the command layer) must also regenerate the engine's config here.
@@ -158,9 +177,10 @@ pub fn run() {
                 });
             }
 
-            // Show the settings/snippets window on launch — which also flips us to a regular,
-            // Dock-visible app for as long as it's open (see windows::sync_activation_policy).
-            windows::open(app.handle(), "settings")?;
+            // A login launch keeps Glyphio in the menu bar; an ordinary launch opens Settings.
+            if open_settings_on_start {
+                windows::open(app.handle(), "settings")?;
+            }
 
             // The palette is deliberately NOT built ahead of time: a macOS window can only be
             // shown on the Space it was created on, so a pre-built one is invisible the moment
@@ -168,7 +188,13 @@ pub fn run() {
 
             // Park the silent-capture worker while we're launching anyway: creating its
             // window activates the app, and a capture is the wrong moment for that.
-            if app.state::<AppState>().settings.lock().unwrap().wants_silent_worker() {
+            if app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .unwrap()
+                .wants_silent_worker()
+            {
                 if let Err(e) = windows::ensure_silent_editor(app.handle()) {
                     log::warn!("could not park the silent capture worker: {e}");
                 }
@@ -295,8 +321,10 @@ pub fn run() {
             // the initial focus race (macOS hands focus back to the previously active app
             // while we're still launching). Re-assert once launch completes.
             tauri::RunEvent::Ready => {
-                if let Some(win) = app_handle.get_webview_window("settings") {
-                    let _ = win.set_focus();
+                if startup::should_open_settings(std::env::args()) {
+                    if let Some(win) = app_handle.get_webview_window("settings") {
+                        let _ = win.set_focus();
+                    }
                 }
             }
             // Belt-and-suspenders: should every window still end up closed, keep the process

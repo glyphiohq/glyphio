@@ -12,7 +12,7 @@ use screencapturekit::stream::content_filter::SCContentFilter;
 fn black_fraction(rgba: &[u8]) -> f64 {
     let mut black = 0usize;
     let total = rgba.len() / 4;
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if px[0] < 8 && px[1] < 8 && px[2] < 8 {
             black += 1;
         }

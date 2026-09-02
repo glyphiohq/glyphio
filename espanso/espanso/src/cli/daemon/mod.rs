@@ -88,7 +88,7 @@ fn daemon_main(args: CliModuleArgs) -> i32 {
         return DAEMON_ALREADY_RUNNING;
     }
 
-    // GLYPHIO DEVIATION (documented in docs/PHASE1.md): the daemon never gated on macOS
+    // GLYPHIO DEVIATION (documented in docs/ARCHITECTURE.md): the daemon never gated on macOS
     // Accessibility — that lived only in the launcher GUI, which Glyphio doesn't build (headless,
     // no modulo). Without it the worker's keystroke event-tap silently no-ops, so expansions never
     // fire. Check and prompt here (fulfils the TODO) so the same binary path gets added to the
@@ -162,7 +162,7 @@ fn daemon_main(args: CliModuleArgs) -> i32 {
     ipc::initialize_and_spawn(&paths.runtime, exit_notify.clone())
         .expect("unable to initialize ipc server for daemon");
 
-    // GLYPHIO DEVIATION (docs/PHASE1.md): periodically re-check macOS Accessibility so granting it
+    // GLYPHIO DEVIATION (docs/ARCHITECTURE.md): periodically re-check macOS Accessibility so granting it
     // *after* launch takes effect without the user restarting the app. The worker's keystroke
     // event-tap is created when the worker spawns and does NOT start working retroactively once
     // trust is granted, so on a not-granted -> granted transition we (a) log the status line the

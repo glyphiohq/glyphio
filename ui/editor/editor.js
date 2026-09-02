@@ -5,6 +5,7 @@
 
 import { DEFAULT_EDITOR_SHORTCUTS, PRODUCT_NAME } from '../shared/presentation.js';
 import { EditableCaptureArtifact } from './artifact.mjs';
+import { discardCapture as discardAndClose } from './discard.mjs';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
 import { icon } from '../shared/icons.js';
@@ -1690,13 +1691,10 @@ async function retry() {
 async function discardCapture() {
   if (!confirm('Delete this capture? This cannot be undone.')) return;
   try {
-    if (savedId) await invoke('delete_capture', { id: savedId });
+    await discardAndClose(savedId, invoke);
   } catch (err) {
     setStatus(`Could not delete: ${err.message || err}`, 'err');
-    return;
   }
-  try { window.close(); } catch { /* fall back to a status note */ }
-  setStatus('Capture deleted.', 'ok');
 }
 
 function canvasToPngBlob(cvs) {

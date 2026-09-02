@@ -353,6 +353,14 @@ pub fn delete_capture(state: State<AppState>, id: String) -> CmdResult<()> {
     state.history.delete(&id).map_err(err)
 }
 
+/// Close the capture editor after its artifact has been discarded.
+#[tauri::command]
+pub fn close_editor(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("editor") {
+        let _ = window.close();
+    }
+}
+
 #[tauri::command]
 pub fn clear_captures(state: State<AppState>) -> CmdResult<()> {
     state.history.clear().map_err(err)

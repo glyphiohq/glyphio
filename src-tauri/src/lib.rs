@@ -227,6 +227,7 @@ pub fn run() {
             commands::copy_image_to_clipboard,
             commands::ocr_image,
             commands::delete_capture,
+            commands::close_editor,
             commands::clear_captures,
             commands::trigger_capture,
             commands::scroll_capture_run,

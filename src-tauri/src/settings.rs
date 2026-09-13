@@ -343,4 +343,20 @@ mod tests {
         settings.save(&path).unwrap();
         assert!(!Settings::load(&path).launch_at_login);
     }
+
+    #[test]
+    fn recorded_and_cleared_capture_shortcuts_survive_a_settings_file_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let settings = Settings {
+            shortcut_capture_full: "Command+Shift+S".into(),
+            shortcut_capture_full_silent: String::new(),
+            ..Settings::default()
+        };
+
+        settings.save(&path).unwrap();
+        let loaded = Settings::load(&path);
+        assert_eq!(loaded.shortcut_capture_full, "Command+Shift+S");
+        assert!(loaded.shortcut_capture_full_silent.is_empty());
+    }
 }

@@ -294,13 +294,39 @@
   gap: 8px;
   max-width: 520px;
 }
-.hotkey-pair input { width: 100%; }
+.shortcut-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 4px;
+}
+.shortcut-recorder {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 10px;
+  overflow: hidden;
+  border-color: var(--border-strong);
+  background: var(--inset);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shortcut-recorder:hover { border-color: rgba(255, 255, 255, 0.25); }
+.shortcut-recorder[data-recording="yes"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+.shortcut-actions { display: inline-flex; }
+.shortcut-action { padding: 3px 5px; font-size: 10px; }
 .hotkey-caption {
+  grid-column: 1 / -1;
   display: block;
   margin-top: 2px;
   font-size: 11px;
   color: var(--text-secondary);
 }
+.shortcut-error { grid-column: 1 / -1; }
 
 .field-error { margin: 4px 0 0; color: var(--danger); font-size: 11px; }
 .field-error:empty { display: none; }

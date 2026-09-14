@@ -18,6 +18,78 @@ const STOP_KEY: &str = "Escape";
 /// Escape to something of their own still gets their binding the rest of the time.
 static STOP_KEY_ARMED: AtomicBool = AtomicBool::new(false);
 
+/// Validate shortcuts at the same boundary that persists them. The recorder catches these
+/// mistakes immediately, while this guard keeps another caller of `save_settings` from writing
+/// a binding that the global-shortcut plugin will later ignore or dispatch ambiguously.
+pub fn validate_settings(settings: &crate::settings::Settings) -> anyhow::Result<()> {
+    let capture_labels = [
+        "Visible area",
+        "Region (snip)",
+        "Full window",
+        "Frontmost window",
+        "Browser page",
+        "Scrolling area",
+        "Scrolling page",
+        "Visible area (clipboard)",
+        "Region (clipboard)",
+        "Full window (clipboard)",
+        "Frontmost window (clipboard)",
+        "Browser page (clipboard)",
+        "Scrolling area (clipboard)",
+        "Scrolling page (clipboard)",
+    ];
+    let captures = settings.capture_shortcuts();
+    let mut configured: Vec<(&str, Shortcut)> = Vec::new();
+
+    for ((accelerator, _, _), label) in captures.iter().zip(capture_labels) {
+        validate_one(accelerator, label, true, &mut configured)?;
+    }
+    for (accelerator, label) in [
+        (&settings.shortcut_open_history, "Open capture history"),
+        (&settings.shortcut_open_palette, "Snippet search"),
+        (&settings.shortcut_open_clipboard, "Open clipboard history"),
+    ] {
+        validate_one(accelerator, label, false, &mut configured)?;
+    }
+    Ok(())
+}
+
+fn validate_one<'a>(
+    accelerator: &'a str,
+    label: &'a str,
+    is_capture: bool,
+    configured: &mut Vec<(&'a str, Shortcut)>,
+) -> anyhow::Result<()> {
+    if accelerator.trim().is_empty() {
+        return Ok(());
+    }
+    let shortcut = Shortcut::from_str(accelerator)
+        .map_err(|error| anyhow::anyhow!("{label}: invalid shortcut {accelerator:?}: {error}"))?;
+    if is_capture {
+        for (reserved, reason) in [
+            ("Command+Space", "reserved for Spotlight"),
+            ("Command+Tab", "reserved for switching applications"),
+            ("Command+Shift+3", "reserved for macOS screenshots"),
+            ("Command+Shift+4", "reserved for macOS screenshots"),
+            (
+                "Command+Shift+5",
+                "reserved for macOS screenshots and recording",
+            ),
+            ("Control+Command+Q", "reserved for locking your Mac"),
+            ("Alt+Command+Escape", "reserved for Force Quit"),
+        ] {
+            if Shortcut::from_str(reserved).is_ok_and(|value| value == shortcut) {
+                anyhow::bail!("{label}: {accelerator} is {reason}");
+            }
+        }
+    }
+    if let Some((other, _)) = configured.iter().find(|(_, value)| *value == shortcut) {
+        anyhow::bail!("{label}: {accelerator} is already used by {other}");
+    }
+    configured.push((label, shortcut));
+    Ok(())
+}
+
 /// Borrow Escape for the duration of a scrolling capture — the one way to stop one early.
 ///
 /// Best-effort, and worth logging when it fails: if the system won't hand Escape over, the
@@ -138,4 +210,48 @@ fn dispatch_capture(app: AppHandle, mode: &'static str, silent: bool) {
         let delivery = silent.then_some(crate::capture::Delivery::Silent);
         crate::capture::trigger_or_report(&inner, mode, delivery);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_settings;
+    use crate::settings::Settings;
+
+    #[test]
+    fn accepts_a_recorded_command_shift_chord() {
+        let mut settings = Settings::default();
+        settings.shortcut_capture_full = "Command+Shift+S".into();
+        validate_settings(&settings).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_reserved_and_colliding_capture_shortcuts() {
+        let mut invalid = Settings::default();
+        invalid.shortcut_capture_full = "Command+DefinitelyNotAKey".into();
+        assert!(validate_settings(&invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid"));
+
+        let mut reserved = Settings::default();
+        reserved.shortcut_capture_full = "Shift+Command+4".into();
+        assert!(validate_settings(&reserved)
+            .unwrap_err()
+            .to_string()
+            .contains("macOS screenshots"));
+
+        let mut colliding = Settings::default();
+        colliding.shortcut_capture_visible = "Shift+Option+KeyS".into();
+        assert!(validate_settings(&colliding)
+            .unwrap_err()
+            .to_string()
+            .contains("already used by Visible area"));
+    }
+
+    #[test]
+    fn an_empty_capture_shortcut_is_a_deliberate_clear() {
+        let mut settings = Settings::default();
+        settings.shortcut_capture_full.clear();
+        validate_settings(&settings).unwrap();
+    }
 }

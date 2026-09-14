@@ -196,6 +196,7 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
+    crate::shortcuts::validate_settings(&settings).map_err(err)?;
     crate::autostart::set_enabled(&app, settings.launch_at_login).map_err(err)?;
     settings.save(&state.paths.settings_json).map_err(err)?;
     let wants_worker = settings.wants_silent_worker();

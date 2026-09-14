@@ -6,6 +6,12 @@
 import { icon } from '../shared/icons.js';
 import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
+import {
+  acceleratorFromKeyboardEvent,
+  CAPTURE_SHORTCUT_DEFAULTS,
+  formatAccelerator,
+  validateAccelerator,
+} from './shortcut-recorder.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -85,8 +91,8 @@ const CAPTURE_SECTIONS = [
     ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
     ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
   ]},
-  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `The second key takes the same shot
-    straight to the clipboard. Leave it blank if you don't want one.`, fields: [
+  { title: 'Capture shortcuts', hint: `Select a shortcut, then press its keys together. The
+    second shortcut takes the same shot straight to the clipboard.`, fields: [
     ['shortcutCaptureFull', 'hotkeys', 'Full window', 'shortcutCaptureFullSilent'],
     ['shortcutCaptureVisible', 'hotkeys', 'Visible area', 'shortcutCaptureVisibleSilent'],
     ['shortcutCaptureSnip', 'hotkeys', 'Region (snip)', 'shortcutCaptureSnipSilent'],
@@ -2485,7 +2491,7 @@ function renderField(key, type, label, opts) {
   // A capture mode's two keys, side by side: one opens the editor, one goes straight to the
   // clipboard. Seeing them together is what makes the second one discoverable at all.
   if (type === 'hotkeys') {
-    field.append(hotkeyPair(key, opts));
+    field.append(hotkeyPair(key, opts, label));
     return field;
   }
   let input;
@@ -2506,19 +2512,128 @@ function renderField(key, type, label, opts) {
 }
 
 /** The editor key and the straight-to-clipboard key for one capture mode. */
-function hotkeyPair(key, silentKey) {
+function hotkeyPair(key, silentKey, label) {
   const wrap = el('div', { className: 'hotkey-pair' });
   const one = (k, caption, placeholder) => {
-    const box = el('div');
-    const input = el('input', { type: 'text', placeholder });
+    const box = el('div', { className: 'shortcut-box' });
+    const input = el('input', { type: 'hidden' });
     input.value = state.settings[k] ?? '';
     input.dataset.key = k;
     input.dataset.type = 'text';
-    box.append(input, el('span', { className: 'hotkey-caption', textContent: caption }));
+    input.dataset.label = `${label} (${caption})`;
+
+    const record = el('button', {
+      type: 'button',
+      className: 'shortcut-recorder',
+      textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
+      title: `Record ${label.toLowerCase()} shortcut ${caption}`,
+    });
+    record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
+    const error = el('span', { className: 'field-error shortcut-error' });
+    error.setAttribute('role', 'alert');
+
+    const showValue = () => {
+      record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
+      record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
+      delete record.dataset.recording;
+    };
+    const showError = (message) => { error.textContent = message; };
+    const beginRecording = () => {
+      record.dataset.recording = 'yes';
+      record.textContent = 'Press shortcut…';
+      record.setAttribute('aria-label', `${label}, ${caption}: press a shortcut. Escape cancels.`);
+      showError('Press the keys together. Escape cancels.');
+    };
+
+    record.addEventListener('click', () => {
+      if (record.dataset.recording === 'yes') {
+        showValue();
+        showError('');
+      } else beginRecording();
+    });
+    record.addEventListener('blur', () => {
+      if (record.dataset.recording === 'yes') {
+        showValue();
+        showError('');
+      }
+    });
+    record.addEventListener('keydown', (event) => {
+      if (record.dataset.recording !== 'yes') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'Escape') {
+        showValue();
+        showError('');
+        return;
+      }
+      const recorded = acceleratorFromKeyboardEvent(event);
+      if (recorded.error) {
+        showError(recorded.error);
+        return;
+      }
+      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(k));
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      input.value = recorded.accelerator;
+      showValue();
+      showError('');
+    });
+
+    const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
+    clear.addEventListener('click', () => {
+      input.value = '';
+      showValue();
+      showError('');
+    });
+    const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
+    reset.addEventListener('click', () => {
+      input.value = CAPTURE_SHORTCUT_DEFAULTS[k] ?? '';
+      showValue();
+      const result = validateAccelerator(input.value, configuredShortcuts(k));
+      showError(result.ok ? '' : result.error);
+    });
+    const actions = el('span', { className: 'shortcut-actions' });
+    actions.append(clear, reset);
+    box.append(input, record, actions,
+      el('span', { className: 'hotkey-caption', textContent: caption }), error);
     return box;
   };
   wrap.append(one(key, 'opens the editor', ''), one(silentKey, 'to the clipboard', 'not set'));
   return wrap;
+}
+
+/** Current values for every other Glyphio shortcut, including fields on other settings tabs. */
+function configuredShortcuts(exceptKey) {
+  const values = new Map(Object.entries(state.settings ?? {})
+    .filter(([key]) => key.startsWith('shortcut'))
+    .map(([key, value]) => [key, { key, value, label: shortcutLabel(key) }]));
+  document.querySelectorAll('#settings-form [data-key]').forEach((input) => {
+    const key = input.dataset.key;
+    if (key.startsWith('shortcut')) {
+      values.set(key, { key, value: input.value, label: input.dataset.label || shortcutLabel(key) });
+    }
+  });
+  values.delete(exceptKey);
+  return [...values.values()];
+}
+
+function shortcutLabel(key) {
+  const words = key.replace(/^shortcut/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  return words || 'another Glyphio shortcut';
+}
+
+function validateCaptureRecorders() {
+  let valid = true;
+  document.querySelectorAll('#settings-form .shortcut-box').forEach((box) => {
+    const input = box.querySelector('input[data-key]');
+    const error = box.querySelector('.shortcut-error');
+    const result = validateAccelerator(input.value, configuredShortcuts(input.dataset.key));
+    error.textContent = result.ok ? '' : result.error;
+    if (!result.ok) valid = false;
+  });
+  return valid;
 }
 
 /**
@@ -2613,6 +2728,10 @@ function deviceLocale() {
 }
 
 async function saveSettings() {
+  if (!validateCaptureRecorders()) {
+    setStatus('Fix the highlighted capture shortcuts before saving.', 'err');
+    return;
+  }
   const next = { ...state.settings };
   document.querySelectorAll('#settings-form [data-key]').forEach((el) => {
     const { key, type } = el.dataset;

@@ -41,6 +41,27 @@
 
 /* --- Permission banners -------------------------------------------------------- */
 
+.permission-panel {
+  margin: 12px 20px 0;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+}
+.permission-panel[hidden] { display: none; }
+.permission-panel-title {
+  padding: 3px 2px 5px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.permission-panel .perm-row { padding: 8px 2px; }
+.permission-panel .perm-actions { min-width: 182px; text-align: right; }
+.permission-panel .perm-actions button { white-space: nowrap; padding: 6px 12px; font-size: 12px; }
+
 .ax-banner {
   display: none;
   align-items: center;
@@ -712,8 +733,12 @@
   text-transform: uppercase; padding: 2px 9px; border-radius: 99px;
   border: 1px solid var(--border-strong); color: var(--text-muted);
 }
-.perm-state[data-ok="yes"] { color: var(--success); border-color: rgba(134, 192, 122, 0.4); }
-.perm-state[data-ok="no"] { color: var(--danger); border-color: rgba(224, 96, 79, 0.4); }
+.perm-state[data-phase="granted"] { color: var(--success); border-color: rgba(134, 192, 122, 0.4); }
+.perm-state[data-phase="promptable"],
+.perm-state[data-phase="settings-only"],
+.perm-state[data-phase="relaunch-required"] {
+  color: var(--danger); border-color: rgba(224, 96, 79, 0.4);
+}
 .managed-note {
   background: var(--accent-ghost); border: 1px solid rgba(217, 165, 74, 0.3);
   border-radius: var(--radius-sm); padding: 10px 12px; margin: 8px 0 4px;

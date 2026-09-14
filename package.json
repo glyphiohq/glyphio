@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "tauri": "tauri",
+    "test": "node --test ui/**/*.test.mjs",
     "engine": "bash scripts/build-engine.sh",
     "engine:release": "bash scripts/build-engine.sh --release",
     "sign": "bash scripts/dev-sign.sh",

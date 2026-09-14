@@ -80,6 +80,15 @@ jobs:
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
 
+      - name: UI behavioral tests
+        run: npm test
+
+      - name: Expansion engine configuration lint
+        run: cargo clippy --manifest-path espanso/Cargo.toml -p espanso-config --all-targets -- -D warnings
+
+      - name: Expansion engine configuration tests
+        run: cargo test --manifest-path espanso/Cargo.toml -p espanso-config
+
       # The library, not the bundle: `tauri build` needs the signing identity, which lives only
       # in the maintainer's keychain.
       - name: Build

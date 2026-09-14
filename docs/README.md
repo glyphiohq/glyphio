@@ -10,6 +10,7 @@ setup guides.
 | Plan work or turn a proposal into a spec and implementation tickets | [Roadmap and delivery map](ROADMAP.md) |
 | Install a released macOS build | [Installation](INSTALL.md) |
 | Assess product and deployment security | [Security posture](SECURITY.md) |
+| Verify capture and input behavior on a signed macOS build | [macOS release verification](VERIFICATION.md) |
 | Implement a compatible sync service or client | [Sync protocol v1](SYNC-PROTOCOL.md) |
 | Scope a Windows port | [Windows port](WINDOWS.md) |
 

@@ -87,6 +87,40 @@ const RESERVED = new Map([
 
 const MODIFIER_ORDER = ['Control', 'Alt', 'Shift', 'Command'];
 
+/**
+ * Own the one active shortcut-recording session at document scope.
+ *
+ * macOS WebKit does not reliably focus a button after a pointer click. Listening on the
+ * document keeps physical keyboard input observable even when focus remains on the page.
+ */
+export function createShortcutCaptureController(eventTarget) {
+  let activeSession = null;
+  const onKeydown = (event) => {
+    if (!activeSession) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activeSession.handleKeydown(event);
+  };
+
+  eventTarget.addEventListener('keydown', onKeydown, true);
+  return {
+    start(session) {
+      if (activeSession === session) return;
+      const previousSession = activeSession;
+      activeSession = session;
+      previousSession?.cancel?.();
+    },
+    stop(session) {
+      if (activeSession === session) activeSession = null;
+    },
+    destroy() {
+      activeSession?.cancel?.();
+      activeSession = null;
+      eventTarget.removeEventListener('keydown', onKeydown, true);
+    },
+  };
+}
+
 function canonicalKey(raw) {
   const token = raw.trim();
   const lower = token.toLowerCase();

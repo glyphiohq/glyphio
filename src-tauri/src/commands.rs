@@ -20,9 +20,10 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 // Every mutation regenerates the engine config; its file-watcher hot-reloads it.
 
 fn regen_yaml(state: &AppState) -> CmdResult<()> {
+    let policy = state.settings.lock().unwrap().expansion_policy();
     state
         .snippets
-        .render_yaml(&state.paths.engine_config)
+        .render_yaml_with_policy(&state.paths.engine_config, &policy)
         .map_err(err)
 }
 
@@ -200,6 +201,9 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings)
     settings.save(&state.paths.settings_json).map_err(err)?;
     let wants_worker = settings.wants_silent_worker();
     *state.settings.lock().unwrap() = settings;
+    // Delivery preferences are engine configuration, not only UI state. Regenerate immediately;
+    // the managed engine's watcher hot-reloads the changed default/app-specific files.
+    regen_yaml(&state)?;
     // Re-register global hotkeys so shortcut edits take effect immediately.
     crate::shortcuts::register(&app).map_err(err)?;
     // Park (or dismiss) the silent-capture worker now, while the user is looking at this
@@ -544,7 +548,10 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
 pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
     let state = app.state::<AppState>();
     *state.settings.lock().unwrap() = Settings::load(&state.paths.settings_json);
-    state.snippets.render_yaml(&state.paths.engine_config)?;
+    let policy = state.settings.lock().unwrap().expansion_policy();
+    state
+        .snippets
+        .render_yaml_with_policy(&state.paths.engine_config, &policy)?;
     crate::shortcuts::register(app)?;
     state.supervisor.restart(app, &state.paths)?;
     let _ = app.emit("snippets-changed", ());

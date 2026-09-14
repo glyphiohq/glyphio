@@ -305,6 +305,25 @@
 .field-error { margin: 4px 0 0; color: var(--danger); font-size: 11px; }
 .field-error:empty { display: none; }
 
+.delivery-app-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 18px 0 8px;
+  font-size: 12px;
+}
+.delivery-app-head span { color: var(--text-secondary); }
+.delivery-apps { display: flex; flex-direction: column; gap: 7px; margin-bottom: 8px; }
+.delivery-app-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 680px;
+}
+.delivery-app-row input { font-family: var(--font-mono); font-size: 12px; }
+.delivery-error { margin-bottom: 8px; }
+
 .mono { font-family: var(--font-mono); font-size: 12px; }
 .sm { font-size: 12px; }
 .link { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; }

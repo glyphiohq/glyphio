@@ -68,7 +68,7 @@ pub fn run() {
 
     // Reflect current snippets into the engine config before the daemon starts.
     snippets
-        .render_yaml(&paths.engine_config)
+        .render_yaml_with_policy(&paths.engine_config, &settings.expansion_policy())
         .expect("initial engine config render");
 
     let state = AppState {
@@ -135,7 +135,13 @@ pub fn run() {
                 let engine_config = state.paths.engine_config.clone();
                 state.snippets.add_change_listener(move |ev| {
                     if ev.origin == ChangeOrigin::Remote && ev.entity == ChangeEntity::Snippet {
-                        if let Err(e) = store.render_yaml(&engine_config) {
+                        let policy = handle
+                            .state::<AppState>()
+                            .settings
+                            .lock()
+                            .unwrap()
+                            .expansion_policy();
+                        if let Err(e) = store.render_yaml_with_policy(&engine_config, &policy) {
                             log::error!("YAML regen after remote sync failed: {e}");
                         }
                     }

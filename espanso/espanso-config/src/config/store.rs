@@ -45,6 +45,16 @@ impl ConfigStore for DefaultConfigStore {
         Arc::clone(&self.default)
     }
 
+    fn active_match_paths(&self, app: &super::AppProperties) -> HashSet<String> {
+        let mut paths: HashSet<String> = self.default.match_paths().iter().cloned().collect();
+        for custom in &self.customs {
+            if custom.is_match(app) {
+                paths.extend(custom.match_paths().iter().cloned());
+            }
+        }
+        paths
+    }
+
     fn configs(&self) -> Vec<Arc<dyn Config>> {
         let mut configs = vec![Arc::clone(&self.default)];
 
@@ -94,9 +104,16 @@ impl DefaultConfigStore {
 
         // Then the others
         let mut customs: Vec<Arc<dyn Config>> = Vec::new();
-        for entry in std::fs::read_dir(config_dir).map_err(ConfigStoreError::IOError)? {
-            let entry = entry?;
-            let config_file = entry.path();
+        // The first matching config controls behavior. Sort by file name so generated
+        // `00_delivery_*` rules reliably precede snippet-scope configs on every filesystem.
+        let mut config_files: Vec<_> = std::fs::read_dir(config_dir)
+            .map_err(ConfigStoreError::IOError)?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entry| entry.path())
+            .collect();
+        config_files.sort();
+        for config_file in config_files {
             let extension = config_file
                 .extension()
                 .unwrap_or_default()
@@ -193,6 +210,47 @@ mod tests {
                 })
                 .label(),
             "default"
+        );
+    }
+
+    #[test]
+    fn all_matching_configs_contribute_match_paths() {
+        let mut default = new_mock("default", false);
+        default
+            .expect_match_paths()
+            .return_const(vec!["global.yml".to_string()]);
+        let mut delivery = new_mock("delivery", true);
+        delivery
+            .expect_match_paths()
+            .return_const(vec!["global.yml".to_string()]);
+        let mut scoped = new_mock("scoped snippets", true);
+        scoped
+            .expect_match_paths()
+            .return_const(vec!["global.yml".to_string(), "slack.yml".to_string()]);
+
+        let store = DefaultConfigStore {
+            default: Arc::new(default),
+            customs: vec![Arc::new(delivery), Arc::new(scoped)],
+        };
+        let paths = store.active_match_paths(&crate::config::AppProperties {
+            title: None,
+            class: Some("com.tinyspeck.slackmacgap"),
+            exec: None,
+        });
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains("global.yml"));
+        assert!(paths.contains("slack.yml"));
+        assert_eq!(
+            store
+                .active(&crate::config::AppProperties {
+                    title: None,
+                    class: Some("com.tinyspeck.slackmacgap"),
+                    exec: None,
+                })
+                .label(),
+            "delivery",
+            "the first matching config still controls injection behavior"
         );
     }
 }

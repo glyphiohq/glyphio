@@ -110,6 +110,11 @@ const SNIPPET_SECTIONS = [
   ]},
 ];
 
+const EXPANSION_DELIVERY_OPTIONS = () => [
+  { value: 'paste', label: 'Paste from clipboard (recommended)' },
+  { value: 'keys', label: 'Type individual keys' },
+];
+
 const CLIPBOARD_SECTIONS = [
   { title: 'Clipboard history', hint: `Kept on this device, never synced. Content a password
     manager marks as concealed is never recorded.`, fields: [
@@ -2317,6 +2322,7 @@ function renderSections(form, sections, tail) {
 }
 
 function renderSnippetsTab(form) {
+  form.append(renderExpansionDeliverySection());
   const div = document.createElement('div');
   div.className = 'form-section';
   div.innerHTML = `
@@ -2332,6 +2338,81 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
   renderSections(form, SNIPPET_SECTIONS);
+}
+
+/**
+ * Expansion output is one general policy plus explicit exceptions. Bundle identifiers are
+ * intentionally shown and stored here: display names are mutable and fuzzy matching could send
+ * a typed-key exception to the wrong application.
+ */
+function renderExpansionDeliverySection() {
+  const div = el('div', { className: 'form-section' });
+  div.append(el('h3', { textContent: 'Expansion delivery' }));
+  div.append(el('p', {
+    className: 'adv-hint',
+    textContent: 'Paste reliably handles long, formatted, and international text while restoring what was previously on your clipboard. Add an application only when it needs typed-key delivery.',
+  }));
+  div.append(renderField(
+    'expansionDelivery',
+    'select',
+    'General delivery method',
+    EXPANSION_DELIVERY_OPTIONS,
+  ));
+
+  const heading = el('div', { className: 'delivery-app-head' });
+  heading.append(
+    el('strong', { textContent: 'Application overrides' }),
+    el('span', { textContent: 'Apps not listed keep the general method.' }),
+  );
+  div.append(heading);
+
+  const rows = el('div', { className: 'delivery-apps' });
+  const problem = el('p', { className: 'field-error delivery-error' });
+
+  const addRow = (bundleId = '', delivery = 'keys') => {
+    const row = el('div', { className: 'delivery-app-row' });
+    const bundle = el('input', {
+      type: 'text',
+      value: bundleId,
+      placeholder: 'com.example.Application',
+      spellcheck: false,
+      ariaLabel: 'Application bundle identifier',
+    });
+    bundle.dataset.deliveryBundle = '';
+    const mode = el('select', { ariaLabel: `Delivery method for ${bundleId || 'application'}` });
+    for (const option of EXPANSION_DELIVERY_OPTIONS()) {
+      mode.append(el('option', { value: option.value, textContent: option.label }));
+    }
+    mode.value = delivery;
+    mode.dataset.deliveryMode = '';
+    const remove = el('button', {
+      type: 'button',
+      className: 'ghost sm',
+      textContent: 'Remove',
+      ariaLabel: `Remove ${bundleId || 'application'} override`,
+    });
+    remove.addEventListener('click', () => row.remove());
+    bundle.addEventListener('input', () => { problem.textContent = ''; });
+    row.append(bundle, mode, remove);
+    rows.append(row);
+  };
+
+  for (const [bundleId, delivery] of Object.entries(state.settings.expansionAppOverrides || {})
+    .sort(([a], [b]) => a.localeCompare(b))) {
+    addRow(bundleId, delivery);
+  }
+  div.append(rows, problem);
+  const add = el('button', {
+    type: 'button',
+    className: 'secondary sm',
+    textContent: 'Add application override',
+  });
+  add.addEventListener('click', () => {
+    addRow();
+    rows.lastElementChild?.querySelector('input')?.focus();
+  });
+  div.append(add);
+  return div;
 }
 
 function renderClipboardTab(form) {
@@ -2623,6 +2704,28 @@ async function saveSettings() {
     }
     else next[key] = el.value;
   });
+  const deliveryError = document.querySelector('.delivery-error');
+  // Other Settings tabs share this save function. Only replace the override mapping while its
+  // editor is mounted; saving Capture or Clipboard must not erase app exceptions.
+  if (deliveryError) {
+    const appOverrides = {};
+    for (const row of document.querySelectorAll('.delivery-app-row')) {
+      const bundleId = row.querySelector('[data-delivery-bundle]').value.trim();
+      const delivery = row.querySelector('[data-delivery-mode]').value;
+      if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(bundleId)) {
+        deliveryError.textContent = 'Enter a bundle identifier such as com.apple.TextEdit.';
+        row.querySelector('[data-delivery-bundle]').focus();
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(appOverrides, bundleId)) {
+        deliveryError.textContent = `${bundleId} is already listed.`;
+        row.querySelector('[data-delivery-bundle]').focus();
+        return;
+      }
+      appOverrides[bundleId] = delivery;
+    }
+    next.expansionAppOverrides = appOverrides;
+  }
   try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }
   catch (e) { setStatus(String(e), 'err'); }
 }

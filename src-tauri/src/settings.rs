@@ -2,9 +2,11 @@
 //! Keys mirror Checkpoint's `userSettingsShape` (camelCase) so the ported editor/history JS
 //! consumes them unchanged.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use snippet_store::{ExpansionDelivery, ExpansionPolicy};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -72,6 +74,14 @@ pub struct Settings {
     /// listing; this is for everything else a user would rather not keep.
     pub clipboard_ignore_apps: Vec<String>,
 
+    // ---- text expansion delivery ----
+    /// General policy for expansion output. Clipboard paste is reliable for long, Unicode,
+    /// and rich replacements; individual key injection remains available for apps that need it.
+    pub expansion_delivery: ExpansionDelivery,
+    /// Explicit overrides keyed by exact macOS bundle identifier. This deliberately does not
+    /// reuse the fuzzy, user-facing app names used by clipboard history exclusions.
+    pub expansion_app_overrides: BTreeMap<String, ExpansionDelivery>,
+
     // ---- global capture hotkeys (Tauri accelerator syntax) ----
     pub shortcut_capture_visible: String,
     pub shortcut_capture_snip: String,
@@ -135,6 +145,8 @@ impl Default for Settings {
             clipboard_max_items: 200,
             clipboard_max_mb: 100,
             clipboard_ignore_apps: Vec::new(),
+            expansion_delivery: ExpansionDelivery::Paste,
+            expansion_app_overrides: BTreeMap::new(),
             // Alt+Shift+S/V/X mirrors Checkpoint; H opens history.
             shortcut_capture_full: "Alt+Shift+S".into(),
             shortcut_capture_visible: "Alt+Shift+V".into(),
@@ -168,6 +180,13 @@ impl Settings {
     /// has an opinion about.
     pub fn clipboard_max_bytes(&self) -> u64 {
         self.clipboard_max_mb.saturating_mul(1024 * 1024)
+    }
+
+    pub fn expansion_policy(&self) -> ExpansionPolicy {
+        ExpansionPolicy {
+            default_delivery: self.expansion_delivery,
+            app_overrides: self.expansion_app_overrides.clone(),
+        }
     }
 
     /// Whether the silent-capture worker should be parked in advance: the user has either
@@ -229,6 +248,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::Settings;
+    use snippet_store::ExpansionDelivery;
 
     /// `showUrl` was the window/app title before there was a real URL to show. A settings
     /// file written by an older build still means it.
@@ -342,5 +362,42 @@ mod tests {
 
         settings.save(&path).unwrap();
         assert!(!Settings::load(&path).launch_at_login);
+    }
+
+    #[test]
+    fn expansion_delivery_defaults_to_paste_and_round_trips_bundle_overrides() {
+        let older: Settings = serde_json::from_str(r#"{"showTimestamp": true}"#).unwrap();
+        assert_eq!(older.expansion_delivery, ExpansionDelivery::Paste);
+        assert!(older.expansion_app_overrides.is_empty());
+        let future: Settings =
+            serde_json::from_str(r#"{"expansionDelivery":"future-mode","showTimestamp":false}"#)
+                .unwrap();
+        assert_eq!(future.expansion_delivery, ExpansionDelivery::Paste);
+        assert!(!future.show_timestamp, "one unknown preference must not reset the file");
+
+        let stored: Settings = serde_json::from_str(
+            r#"{"expansionDelivery":"keys","expansionAppOverrides":{
+                "com.apple.TextEdit":"paste","com.example.Legacy":"keys"
+            }}"#,
+        )
+        .unwrap();
+        let policy = stored.expansion_policy();
+        assert_eq!(
+            policy.delivery_for_bundle_id("com.apple.TextEdit"),
+            ExpansionDelivery::Paste
+        );
+        assert_eq!(
+            policy.delivery_for_bundle_id("com.example.Legacy"),
+            ExpansionDelivery::Keys
+        );
+        assert_eq!(
+            policy.delivery_for_bundle_id("com.apple.Safari"),
+            ExpansionDelivery::Keys,
+            "apps without an override retain the general policy"
+        );
+
+        let json = serde_json::to_string(&stored).unwrap();
+        assert!(json.contains(r#""expansionDelivery":"keys""#));
+        assert!(json.contains(r#""com.apple.TextEdit":"paste""#));
     }
 }

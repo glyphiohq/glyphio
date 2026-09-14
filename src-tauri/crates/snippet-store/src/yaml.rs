@@ -139,6 +139,22 @@ pub(crate) fn render_app_config_yaml(scope: &str, match_file: &str) -> Result<St
     Ok(format!("{HEADER}{}", serde_yaml::to_string(&Value::Mapping(root))?))
 }
 
+/// Render an app-specific delivery override. On macOS the expansion engine reports the
+/// frontmost application's bundle identifier as `class`, so this is an exact stable-identity
+/// match rather than the fuzzy executable-name match used by legacy snippet scopes.
+pub(crate) fn render_delivery_config_yaml(
+    bundle_id: &str,
+    delivery: crate::ExpansionDelivery,
+) -> Result<String> {
+    let mut root = Mapping::new();
+    root.insert(
+        Value::from("filter_class"),
+        Value::from(format!("^{}$", regex_escape(bundle_id))),
+    );
+    root.insert(Value::from("backend"), Value::from(delivery.engine_backend()));
+    Ok(format!("{HEADER}{}", serde_yaml::to_string(&Value::Mapping(root))?))
+}
+
 /// Escape regex metacharacters so a bare scope value matches literally.
 fn regex_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

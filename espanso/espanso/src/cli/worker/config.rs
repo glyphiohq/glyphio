@@ -56,9 +56,15 @@ impl<'a> ConfigManager<'a> {
     }
 
     pub fn active_context(&'_ self) -> (Arc<dyn Config>, MatchSet<'_>) {
-        let config = self.active();
-        let match_paths = config.match_paths();
-        (config.clone(), self.match_store.query(match_paths))
+        let current_app = self.app_info_provider.get_info();
+        let info = to_app_properties(&current_app);
+        let config = self.config_store.active(&info);
+        let match_paths: Vec<String> = self
+            .config_store
+            .active_match_paths(&info)
+            .into_iter()
+            .collect();
+        (config, self.match_store.query(&match_paths))
     }
 
     pub fn default(&self) -> Arc<dyn Config> {

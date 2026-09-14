@@ -88,19 +88,18 @@ fn daemon_main(args: CliModuleArgs) -> i32 {
         return DAEMON_ALREADY_RUNNING;
     }
 
-    // GLYPHIO DEVIATION (documented in docs/ARCHITECTURE.md): the daemon never gated on macOS
-    // Accessibility — that lived only in the launcher GUI, which Glyphio doesn't build (headless,
-    // no modulo). Without it the worker's keystroke event-tap silently no-ops, so expansions never
-    // fire. Check and prompt here (fulfils the TODO) so the same binary path gets added to the
-    // Accessibility list; the worker (same binary) is then trusted too.
+    // GLYPHIO DEVIATION (documented in docs/ARCHITECTURE.md): report Accessibility here, but
+    // never prompt from the headless sidecar. Glyphio owns the one user-facing prompt and the
+    // follow-up System Settings guidance; competing prompts make its action stale before it is
+    // clicked. TCC attributes this bundled child process to its responsible app, so Glyphio's
+    // single grant covers the worker too.
     #[cfg(target_os = "macos")]
     {
         if espanso_mac_utils::check_accessibility() {
             info!("macOS Accessibility permission is granted");
         } else {
             error!("macOS Accessibility permission is NOT granted — keystroke detection is disabled until you grant it");
-            espanso_mac_utils::prompt_accessibility();
-            error!("Grant Glyphio Accessibility permission in System Settings > Privacy & Security > Accessibility, then restart Glyphio");
+            error!("Grant Glyphio Accessibility permission in System Settings > Privacy & Security > Accessibility; expansion starts automatically after the grant");
         }
     }
 

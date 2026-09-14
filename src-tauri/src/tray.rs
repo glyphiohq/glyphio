@@ -108,20 +108,25 @@ pub fn capture_delivery_finished(
     app: &AppHandle,
     session_id: &str,
     silent: bool,
+    history_id: Option<String>,
     error: Option<String>,
 ) {
     let route = if silent {
-        ResultRoute::History
+        history_id
+            .clone()
+            .map(ResultRoute::History)
+            .unwrap_or(ResultRoute::Editor)
     } else {
         ResultRoute::Editor
     };
+    let recovery = error.as_ref().and(history_id.map(ResultRoute::History));
     let revision = app
         .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
         .lifecycle
-        .finish_delivery(session_id, route, error);
+        .finish_delivery(session_id, route, error, recovery);
     if let Some(revision) = revision {
         apply(app, presentation(app));
         schedule_reset(app, revision);
@@ -202,9 +207,9 @@ fn activate_capture_status(app: &AppHandle) {
                 log::warn!("could not reveal capture result: {e}");
             }
         }
-        Action::OpenResult(ResultRoute::History) => {
-            if let Err(e) = crate::commands::open_history_view(app.clone()) {
-                log::warn!("could not open capture history: {e}");
+        Action::OpenResult(ResultRoute::History(id)) => {
+            if let Err(e) = crate::windows::open_capture(app, &id) {
+                log::warn!("could not open saved capture: {e}");
             }
         }
         Action::ShowError(message) => {

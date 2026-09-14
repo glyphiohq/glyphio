@@ -9,6 +9,7 @@ import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared
 import {
   acceleratorFromKeyboardEvent,
   CAPTURE_SHORTCUT_DEFAULTS,
+  createShortcutCaptureController,
   formatAccelerator,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
@@ -26,6 +27,7 @@ const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const app = document.getElementById('app');
+const shortcutCaptureController = createShortcutCaptureController(document);
 
 const PROMPTED_KEY = {
   [PERMISSION_KIND.ACCESSIBILITY]: 'glyphio-accessibility-prompted',
@@ -2632,6 +2634,7 @@ function hotkeyPair(key, silentKey, label) {
     error.setAttribute('role', 'alert');
 
     const showValue = () => {
+      shortcutCaptureController.stop(recorderSession);
       record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
       record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
       delete record.dataset.recording;
@@ -2642,6 +2645,35 @@ function hotkeyPair(key, silentKey, label) {
       record.textContent = 'Press shortcut…';
       record.setAttribute('aria-label', `${label}, ${caption}: press a shortcut. Escape cancels.`);
       showError('Press the keys together. Escape cancels.');
+      shortcutCaptureController.start(recorderSession);
+      record.focus({ preventScroll: true });
+    };
+
+    const recorderSession = {
+      cancel() {
+        showValue();
+        showError('');
+      },
+      handleKeydown(event) {
+        if (event.code === 'Escape') {
+          showValue();
+          showError('');
+          return;
+        }
+        const recorded = acceleratorFromKeyboardEvent(event);
+        if (recorded.error) {
+          showError(recorded.error);
+          return;
+        }
+        const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey));
+        if (!result.ok) {
+          showError(result.error);
+          return;
+        }
+        input.value = recorded.accelerator;
+        showValue();
+        showError('');
+      },
     };
 
     record.addEventListener('click', () => {
@@ -2655,29 +2687,6 @@ function hotkeyPair(key, silentKey, label) {
         showValue();
         showError('');
       }
-    });
-    record.addEventListener('keydown', (event) => {
-      if (record.dataset.recording !== 'yes') return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.code === 'Escape') {
-        showValue();
-        showError('');
-        return;
-      }
-      const recorded = acceleratorFromKeyboardEvent(event);
-      if (recorded.error) {
-        showError(recorded.error);
-        return;
-      }
-      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey));
-      if (!result.ok) {
-        showError(result.error);
-        return;
-      }
-      input.value = recorded.accelerator;
-      showValue();
-      showError('');
     });
 
     const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });

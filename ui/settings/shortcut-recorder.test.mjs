@@ -3,11 +3,61 @@ import test from 'node:test';
 
 import {
   acceleratorFromKeyboardEvent,
+  createShortcutCaptureController,
   formatAccelerator,
   normalizeAccelerator,
   parseAccelerator,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
+
+function keydown(code, key, modifiers = {}) {
+  const event = new Event('keydown', { cancelable: true });
+  Object.defineProperties(event, {
+    code: { value: code },
+    key: { value: key },
+    ctrlKey: { value: Boolean(modifiers.ctrlKey) },
+    altKey: { value: Boolean(modifiers.altKey) },
+    shiftKey: { value: Boolean(modifiers.shiftKey) },
+    metaKey: { value: Boolean(modifiers.metaKey) },
+  });
+  return event;
+}
+
+test('captures a chord at document scope when the recorder button is not focused', () => {
+  const documentTarget = new EventTarget();
+  const controller = createShortcutCaptureController(documentTarget);
+  let accelerator = null;
+  const session = {
+    handleKeydown(event) {
+      accelerator = acceleratorFromKeyboardEvent(event).accelerator;
+    },
+  };
+
+  controller.start(session);
+  const event = keydown('KeyJ', 'j', { altKey: true, shiftKey: true });
+  documentTarget.dispatchEvent(event);
+
+  assert.equal(accelerator, 'Alt+Shift+J');
+  assert.equal(event.defaultPrevented, true);
+  controller.destroy();
+});
+
+test('starting another recorder cancels the previous document-scoped session', () => {
+  const documentTarget = new EventTarget();
+  const controller = createShortcutCaptureController(documentTarget);
+  let firstCancelled = 0;
+  let secondEvents = 0;
+  const first = { handleKeydown() {}, cancel() { firstCancelled += 1; } };
+  const second = { handleKeydown() { secondEvents += 1; } };
+
+  controller.start(first);
+  controller.start(second);
+  documentTarget.dispatchEvent(keydown('KeyK', 'k', { metaKey: true }));
+
+  assert.equal(firstCancelled, 1);
+  assert.equal(secondEvents, 1);
+  controller.destroy();
+});
 
 test('records a keyboard chord as a Tauri accelerator', () => {
   assert.deepEqual(acceleratorFromKeyboardEvent({

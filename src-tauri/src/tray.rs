@@ -1,30 +1,221 @@
 //! Menu-bar (tray) presence. This is Glyphio's user-facing surface — engine's own tray is
 //! disabled in the generated config, so only this one appears.
 
-use tauri::menu::{IconMenuItem, Menu, PredefinedMenuItem};
+use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+
+use crate::capture::lifecycle::{
+    Action, CaptureInProgress, CaptureToken, Lifecycle, Presentation, ResultRoute,
+};
 
 const TRAY_ID: &str = "glyphio-tray";
+const CAPTURE_STATUS_ID: &str = "capture-status";
+const FEEDBACK_DURATION: std::time::Duration = std::time::Duration::from_millis(3200);
+
+/// Capture feedback's platform-independent state plus the native menu row that exposes the
+/// current result. The icon/title and tooltip are updated from the same presentation.
+#[derive(Default)]
+pub struct CaptureFeedback {
+    lifecycle: Lifecycle,
+    status_item: Option<MenuItem<tauri::Wry>>,
+}
+
+fn presentation(app: &AppHandle) -> Presentation {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .presentation()
+}
+
+fn apply(app: &AppHandle, value: Presentation) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(tray) = app.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        let _ = tray.set_title(Some(value.title));
+        let _ = tray.set_tooltip(Some(&value.tooltip));
+        let item = app
+            .state::<crate::AppState>()
+            .capture_feedback
+            .lock()
+            .unwrap()
+            .status_item
+            .clone();
+        if let Some(item) = item {
+            let _ = item.set_text(&value.menu_text);
+            let _ = item.set_enabled(value.menu_enabled);
+        }
+    });
+}
+
+fn schedule_reset(app: &AppHandle, revision: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(FEEDBACK_DURATION).await;
+        let expired = app
+            .state::<crate::AppState>()
+            .capture_feedback
+            .lock()
+            .unwrap()
+            .lifecycle
+            .expire(revision);
+        if expired {
+            apply(&app, presentation(&app));
+        }
+    });
+}
+
+/// Begin the one capture currently represented by the menu-bar icon.
+pub fn capture_started(
+    app: &AppHandle,
+    mode: &str,
+) -> Result<CaptureToken, CaptureInProgress> {
+    let token = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .begin(mode)?;
+    apply(app, presentation(app));
+    Ok(token)
+}
+
+pub fn active_capture(app: &AppHandle) -> Option<CaptureToken> {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .active_token()
+}
+
+/// Tie the active icon state to the editor/worker session that will acknowledge delivery.
+pub fn capture_delivery_started(app: &AppHandle, token: CaptureToken, session_id: &str) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .bind_delivery(token, session_id);
+}
+
+pub fn capture_delivery_finished(
+    app: &AppHandle,
+    session_id: &str,
+    silent: bool,
+    error: Option<String>,
+) {
+    let route = if silent {
+        ResultRoute::History
+    } else {
+        ResultRoute::Editor
+    };
+    let revision = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .finish_delivery(session_id, route, error);
+    if let Some(revision) = revision {
+        apply(app, presentation(app));
+        schedule_reset(app, revision);
+    }
+}
+
+pub fn capture_failed(app: &AppHandle, token: CaptureToken, message: String) {
+    let revision = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .fail(token, message);
+    if let Some(revision) = revision {
+        apply(app, presentation(app));
+        schedule_reset(app, revision);
+    }
+}
+
+pub fn capture_failed_current(app: &AppHandle, message: String) {
+    let revision = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .fail_current(message);
+    if let Some(revision) = revision {
+        apply(app, presentation(app));
+        schedule_reset(app, revision);
+    }
+}
+
+pub fn capture_cancelled(app: &AppHandle) {
+    let changed = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .cancel_current();
+    if changed {
+        apply(app, presentation(app));
+    }
+}
 
 /// Acknowledge something that finished without opening a window: a checkmark beside the
 /// menu-bar icon for a moment. A shortcut that copies to the clipboard and shows nothing is
 /// indistinguishable from one that didn't fire.
 pub fn flash_ack(app: &AppHandle) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
-    let _ = tray.set_title(Some("✓"));
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        let inner = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Some(tray) = inner.tray_by_id(TRAY_ID) {
-                // An empty title, not `None`: clearing it with `None` leaves the checkmark
-                // sitting in the menu bar for good.
-                let _ = tray.set_title(Some(""));
+    let revision = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .acknowledge();
+    if let Some(revision) = revision {
+        apply(app, presentation(app));
+        schedule_reset(app, revision);
+    }
+}
+
+fn activate_capture_status(app: &AppHandle) {
+    let action = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .lifecycle
+        .presentation()
+        .action;
+    match action {
+        Action::None => {}
+        Action::OpenResult(ResultRoute::Editor) => {
+            if let Err(e) = crate::windows::reveal_capture_editor(app) {
+                log::warn!("could not reveal capture result: {e}");
             }
-        });
-    });
+        }
+        Action::OpenResult(ResultRoute::History) => {
+            if let Err(e) = crate::commands::open_history_view(app.clone()) {
+                log::warn!("could not open capture history: {e}");
+            }
+        }
+        Action::ShowError(message) => {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+            app.dialog()
+                .message(message)
+                .title("Glyphio — capture failed")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+        }
+    }
 }
 
 /// Brass, not black, and not left to macOS to tint.
@@ -66,10 +257,25 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let reload = item("reload", "Reload", include_bytes!("../icons/menu/menu-reload.png"))?;
     let quit = PredefinedMenuItem::quit(app, Some("Quit Glyphio"))?;
+    let capture_status = MenuItem::with_id(
+        app,
+        CAPTURE_STATUS_ID,
+        "Capture status: Ready",
+        false,
+        None::<&str>,
+    )?;
+
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .status_item = Some(capture_status.clone());
 
     let menu = Menu::with_items(
         app,
         &[
+            &capture_status,
+            &PredefinedMenuItem::separator(app)?,
             &open,
             &PredefinedMenuItem::separator(app)?,
             &history,
@@ -87,6 +293,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let id = event.id().as_ref().to_string();
             let inner = app.clone();
             let _ = app.run_on_main_thread(move || match id.as_str() {
+                CAPTURE_STATUS_ID => activate_capture_status(&inner),
                 "open" => { let _ = crate::windows::toggle_palette(&inner, None); }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }

@@ -81,6 +81,13 @@ impl ConfigStore for PatchedConfigStore {
         }
     }
 
+    fn active_match_paths(
+        &self,
+        app: &espanso_config::config::AppProperties,
+    ) -> std::collections::HashSet<String> {
+        self.config_store.active_match_paths(app)
+    }
+
     fn configs(&self) -> Vec<Arc<dyn Config>> {
         self.config_store.configs()
     }

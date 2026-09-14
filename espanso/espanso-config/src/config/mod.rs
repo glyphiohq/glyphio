@@ -296,6 +296,12 @@ pub trait Config: Send + Sync {
 pub trait ConfigStore: Send {
     fn default(&self) -> Arc<dyn Config>;
     fn active(&self, app: &AppProperties) -> Arc<dyn Config>;
+    /// Match files from every app-specific config that applies to the focused application.
+    /// Delivery overrides and snippet scopes can both match; the first controls behavior while
+    /// all matching scopes contribute their snippets.
+    fn active_match_paths(&self, app: &AppProperties) -> HashSet<String> {
+        self.active(app).match_paths().iter().cloned().collect()
+    }
     fn configs(&self) -> Vec<Arc<dyn Config>>;
 
     fn get_all_match_paths(&self) -> HashSet<String>;

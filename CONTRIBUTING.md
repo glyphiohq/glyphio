@@ -10,6 +10,7 @@ npm run engine                      # espanso-fork sidecar (headless build + dev
 npm run dev                         # run the app
 cd src-tauri && cargo test          # snippet-store, sync-proto, sync-client tests
 cd server && cargo test             # reference backend tests
+npm test                            # frontend behavioral tests
 node --check ui/settings/settings.js
 ```
 

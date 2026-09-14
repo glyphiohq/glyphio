@@ -219,29 +219,37 @@ mod tests {
 
     #[test]
     fn accepts_a_recorded_command_shift_chord() {
-        let mut settings = Settings::default();
-        settings.shortcut_capture_full = "Command+Shift+S".into();
+        let settings = Settings {
+            shortcut_capture_full: "Command+Shift+S".into(),
+            ..Settings::default()
+        };
         validate_settings(&settings).unwrap();
     }
 
     #[test]
     fn rejects_invalid_reserved_and_colliding_capture_shortcuts() {
-        let mut invalid = Settings::default();
-        invalid.shortcut_capture_full = "Command+DefinitelyNotAKey".into();
+        let invalid = Settings {
+            shortcut_capture_full: "Command+DefinitelyNotAKey".into(),
+            ..Settings::default()
+        };
         assert!(validate_settings(&invalid)
             .unwrap_err()
             .to_string()
             .contains("invalid"));
 
-        let mut reserved = Settings::default();
-        reserved.shortcut_capture_full = "Shift+Command+4".into();
+        let reserved = Settings {
+            shortcut_capture_full: "Shift+Command+4".into(),
+            ..Settings::default()
+        };
         assert!(validate_settings(&reserved)
             .unwrap_err()
             .to_string()
             .contains("macOS screenshots"));
 
-        let mut colliding = Settings::default();
-        colliding.shortcut_capture_visible = "Shift+Option+KeyS".into();
+        let colliding = Settings {
+            shortcut_capture_visible: "Shift+Option+KeyS".into(),
+            ..Settings::default()
+        };
         assert!(validate_settings(&colliding)
             .unwrap_err()
             .to_string()
@@ -250,8 +258,10 @@ mod tests {
 
     #[test]
     fn an_empty_capture_shortcut_is_a_deliberate_clear() {
-        let mut settings = Settings::default();
-        settings.shortcut_capture_full.clear();
+        let settings = Settings {
+            shortcut_capture_full: String::new(),
+            ..Settings::default()
+        };
         validate_settings(&settings).unwrap();
     }
 }

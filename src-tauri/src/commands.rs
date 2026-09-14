@@ -400,6 +400,8 @@ pub async fn scroll_capture_run(
     h: f64,
     silent: Option<bool>,
 ) -> CmdResult<()> {
+    let activity = crate::tray::active_capture(&app)
+        .ok_or_else(|| "the scrolling capture is no longer active".to_string())?;
     let (gx, gy) = {
         let win = app
             .get_webview_window("scroll-overlay")
@@ -418,12 +420,15 @@ pub async fn scroll_capture_run(
     let outcome = match crate::capture::run_scrolling(&app, (gx, gy, w, h)).await {
         Ok(shot) => {
             let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
-            crate::capture::finish(&app, shot, "scrolling", delivery)
+            crate::capture::finish(&app, shot, "scrolling", delivery, activity)
         }
         Err(e) => Err(e),
     };
     if let Err(e) = outcome {
-        crate::capture::report_failure(&app, "capture (scrolling)", &e);
+        log::error!("capture (scrolling) failed: {e}");
+        if e.downcast_ref::<crate::capture::AlreadyScrolling>().is_none() {
+            crate::tray::capture_failed(&app, activity, format!("{e:#}"));
+        }
     }
     Ok(())
 }
@@ -431,6 +436,7 @@ pub async fn scroll_capture_run(
 #[tauri::command]
 pub fn scroll_capture_cancel(app: AppHandle) {
     crate::windows::close_scroll_overlay(&app);
+    crate::tray::capture_cancelled(&app);
 }
 
 /// Whether the APP holds Accessibility. One grant covers both expansion (the engine is a
@@ -771,19 +777,16 @@ pub fn take_pending_capture(
         )
 }
 
-/// A silent capture is finished with. Tell the user something happened — a capture with no
-/// window of its own is otherwise indistinguishable from a hotkey that didn't fire. Failures
-/// get the same dialog as any other capture; there is no editor left open to notice them in.
-///
-/// The worker window stays parked for the next one (see `windows::ensure_silent_editor`).
+/// The visible editor and invisible worker acknowledge the exact delivery session they loaded.
+/// This is the terminal edge of the menu-bar capture lifecycle.
 #[tauri::command]
-pub fn capture_done_silently(app: AppHandle, error: Option<String>) {
-    match error {
-        Some(message) => {
-            crate::capture::report_failure(&app, "silent capture", &anyhow::anyhow!(message))
-        }
-        None => crate::tray::flash_ack(&app),
-    }
+pub fn capture_delivery_finished(
+    app: AppHandle,
+    session_id: String,
+    silent: bool,
+    error: Option<String>,
+) {
+    crate::tray::capture_delivery_finished(&app, &session_id, silent, error);
 }
 
 /// Ask GitHub whether a newer Glyphio exists. Read-only — nothing is downloaded.

@@ -103,10 +103,10 @@ let ocrLines = [];          // recognized lines of the current OCR pass ({text,x
 
 fillIcons();
 init().catch((err) => {
-  // A silent capture has no window to show an error in — hand it back to the app, which
-  // reports it the same way any other failed capture is reported.
-  if (isSilent) reportSilent(err.message || String(err));
-  else setStatus(err.message, 'err');
+  // A delivery page always settles the menu-bar lifecycle it belongs to. The visible editor
+  // can additionally explain the error inline; the silent worker has no surface of its own.
+  if (!isHistoryMode && deliverySessionId) void reportCaptureDelivery(err.message || String(err));
+  if (!isSilent) setStatus(err.message, 'err');
 });
 
 // Populate every [data-ico] control from the shared icon set. Icon-only buttons (.iconbtn)
@@ -135,7 +135,7 @@ async function init() {
     await render({ autoCopy: false });
     await writeBlobToClipboard(currentBlob);
     await saveToHistoryOnce();
-    reportSilent(null);
+    await reportCaptureDelivery(null);
     releaseCapture();
     return;
   }
@@ -163,17 +163,21 @@ async function init() {
     // to the row automatically.
     await saveToHistoryOnce();
   }
+  if (!isHistoryMode) await reportCaptureDelivery(null);
 }
 
 async function loadSettings() {
   return invoke('get_settings');
 }
 
-// Tell the app the silent capture is over; it closes this window and either acknowledges the
-// capture in the menu bar or shows the error. Best-effort: if the call itself fails there is
-// nothing left to try, and the window has a watchdog behind it.
-function reportSilent(error) {
-  invoke('capture_done_silently', { error }).catch((e) => console.error('silent report failed', e));
+// Acknowledge the exact delivery session this page loaded. Best-effort: if the call itself
+// fails there is nothing left to try, and the silent window has a watchdog behind it.
+function reportCaptureDelivery(error) {
+  return invoke('capture_delivery_finished', {
+    sessionId: deliverySessionId,
+    silent: isSilent,
+    error,
+  }).catch((e) => console.error('capture delivery report failed', e));
 }
 
 /**

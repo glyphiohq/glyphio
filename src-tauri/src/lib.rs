@@ -45,6 +45,8 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     /// Capture results awaiting acknowledgement by their named delivery session.
     pub capture_deliveries: Mutex<capture::delivery::CaptureDeliverySessions<PendingCapture>>,
+    /// The menu-bar representation of the capture currently in flight (and its brief result).
+    pub capture_feedback: Mutex<tray::CaptureFeedback>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
     pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
@@ -79,6 +81,7 @@ pub fn run() {
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         capture_deliveries: Mutex::new(Default::default()),
+        capture_feedback: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
@@ -240,7 +243,7 @@ pub fn run() {
             commands::take_pending_capture,
             commands::check_for_update,
             commands::install_update,
-            commands::capture_done_silently,
+            commands::capture_delivery_finished,
             commands::take_pending_payload,
             commands::list_clips,
             commands::palette_view,

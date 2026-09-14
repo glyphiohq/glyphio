@@ -527,6 +527,73 @@ mod tests {
     }
 
     #[test]
+    fn an_early_stop_keeps_the_frames_already_captured() {
+        let (w, page_h, view_h) = (64u32, 400u32, 200u32);
+        let page = RgbaImage::from_fn(w, page_h, |x, y| {
+            image::Rgba([(x % 255) as u8, (y % 255) as u8, ((x + y) % 255) as u8, 255])
+        });
+        let expected_first = image::imageops::crop_imm(&page, 0, 0, w, view_h).to_image();
+        let mut driver = SyntheticPage {
+            page,
+            offset: 0,
+            view_h,
+            scrolls: 0,
+        };
+
+        // `before_scroll` is the same seam through which the production Escape flag stops the
+        // loop. It is deliberately a finish, not a cancellation: the first frame is returned.
+        let shot = capture_loop(
+            &Job {
+                rect: (0.0, 0.0, w as f64, view_h as f64),
+            },
+            &mut driver,
+            |_| false,
+            || true,
+        )
+        .expect("an early stop should still produce the captured content");
+
+        assert_eq!(driver.scrolls, 0);
+        assert_eq!((shot.width, shot.height), (w, view_h));
+        assert_eq!(
+            RgbaImage::from_raw(shot.width, shot.height, shot.rgba).unwrap(),
+            expected_first
+        );
+    }
+
+    struct FailingScrollDriver {
+        frame: RgbaImage,
+    }
+
+    impl ScrollDriver for FailingScrollDriver {
+        fn capture(&mut self, _rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+            Ok((self.frame.clone(), 1.0))
+        }
+
+        fn scroll(&mut self, _delta: i32) -> anyhow::Result<()> {
+            anyhow::bail!("injected scroll failure")
+        }
+    }
+
+    #[test]
+    fn a_scroll_failure_is_reported_instead_of_returning_partial_success() {
+        let mut driver = FailingScrollDriver {
+            frame: RgbaImage::from_pixel(64, 64, image::Rgba([20, 40, 60, 255])),
+        };
+
+        let error = match capture_with_driver(
+            Job {
+                rect: (0.0, 0.0, 64.0, 64.0),
+            },
+            &mut driver,
+        ) {
+            Ok(_) => panic!("a scroll failure must not return a successful capture"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "injected scroll failure");
+    }
+
+    #[test]
     fn escape_only_stops_the_current_capture() {
         request_stop();
         assert!(stopping());

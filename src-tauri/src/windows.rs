@@ -424,6 +424,17 @@ pub fn open_editor_session(app: &AppHandle, session_id: &str) -> anyhow::Result<
     Ok(())
 }
 
+/// Reveal the live capture editor without reloading it. The status row uses this after the
+/// editor has acknowledged its delivery session; reloading here would consume an already
+/// consumed session and replace the result with an error.
+pub fn reveal_capture_editor(app: &AppHandle) -> anyhow::Result<()> {
+    if let Some(win) = app.get_webview_window("editor") {
+        return present(app, &win);
+    }
+    crate::commands::open_history_view(app.clone())
+        .map_err(|message| anyhow::anyhow!(message))
+}
+
 /// The window that runs a silent capture: the editor page, never shown.
 pub const SILENT_EDITOR: &str = "editor-silent";
 

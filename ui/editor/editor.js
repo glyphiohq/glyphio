@@ -6,6 +6,7 @@
 import { DEFAULT_EDITOR_SHORTCUTS, PRODUCT_NAME } from '../shared/presentation.js';
 import { EditableCaptureArtifact } from './artifact.mjs';
 import { discardCapture as discardAndClose } from './discard.mjs';
+import { deliverCapture, deliveryReport } from './delivery.mjs';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
 import { icon } from '../shared/icons.js';
@@ -89,7 +90,6 @@ let currentBlob = null;     // current composited (banner+content) PNG Blob
 let bannerEnabled = true;   // per-capture banner on/off (persisted on history rows)
 let lastBannerPxH = 0;      // banner height of the last composite, for overlay→content coords
 let savedId = '';           // history row id once saved — later edits update it in place
-let autoCopyDone = false;
 let noteTimer = null;
 // Legacy history rows only (saved before the content/banner split): the stored PNG has the
 // banner baked in, so banner + note edits are locked and edits are view-only (not persisted).
@@ -103,10 +103,10 @@ let ocrLines = [];          // recognized lines of the current OCR pass ({text,x
 
 fillIcons();
 init().catch((err) => {
-  // A silent capture has no window to show an error in — hand it back to the app, which
-  // reports it the same way any other failed capture is reported.
-  if (isSilent) reportSilent(err.message || String(err));
-  else setStatus(err.message, 'err');
+  // A delivery page always settles the menu-bar lifecycle it belongs to. The visible editor
+  // can additionally explain the error inline; the silent worker has no surface of its own.
+  if (!isHistoryMode && deliverySessionId) void reportCaptureDelivery(err.message || String(err));
+  if (!isSilent) setStatus(err.message, 'err');
 });
 
 // Populate every [data-ico] control from the shared icon set. Icon-only buttons (.iconbtn)
@@ -133,9 +133,7 @@ async function init() {
 
   if (isSilent) {
     await render({ autoCopy: false });
-    await writeBlobToClipboard(currentBlob);
-    await saveToHistoryOnce();
-    reportSilent(null);
+    await deliverInitialCapture();
     releaseCapture();
     return;
   }
@@ -157,11 +155,10 @@ async function init() {
     // Legacy row: stored image already has the banner baked in — display it directly.
     await displayStored();
   } else {
-    await render({ autoCopy: !isHistoryMode && settings.autoCopyOnOpen });
-    // Every capture lands in history as soon as it exists (when history is enabled) —
-    // not only after a manual Copy/Download. Note, banner and edit changes then persist
-    // to the row automatically.
-    await saveToHistoryOnce();
+    await render({ autoCopy: false });
+    // Every capture lands in history and on the clipboard before delivery is acknowledged.
+    // Note, banner and edit changes then persist to the row automatically.
+    if (!isHistoryMode) await deliverInitialCapture();
   }
 }
 
@@ -169,11 +166,33 @@ async function loadSettings() {
   return invoke('get_settings');
 }
 
-// Tell the app the silent capture is over; it closes this window and either acknowledges the
-// capture in the menu bar or shows the error. Best-effort: if the call itself fails there is
-// nothing left to try, and the window has a watchdog behind it.
-function reportSilent(error) {
-  invoke('capture_done_silently', { error }).catch((e) => console.error('silent report failed', e));
+// Acknowledge the exact delivery session this page loaded. Best-effort: if the call itself
+// fails there is nothing left to try, and the silent window has a watchdog behind it.
+function reportCaptureDelivery(error, historyId = null) {
+  return invoke('capture_delivery_finished', {
+    sessionId: deliverySessionId,
+    silent: isSilent,
+    error,
+    historyId,
+  }).catch((e) => console.error('capture delivery report failed', e));
+}
+
+async function deliverInitialCapture() {
+  const outcome = await deliverCapture({
+    saveToHistory: saveToHistoryOnce,
+    copyToClipboard: () => writeBlobToClipboard(currentBlob),
+  });
+  const report = deliveryReport(outcome);
+  if (report.error) {
+    if (!isSilent) {
+      const recovery = report.historyId ? ' The capture is saved; use Copy to try again.' : '';
+      setStatus(`${report.error}${recovery}`, 'err');
+    }
+  } else if (!isSilent) {
+    setStatus('Saved to history and copied to clipboard.', 'ok');
+  }
+  await reportCaptureDelivery(report.error, report.historyId);
+  return outcome;
 }
 
 /**
@@ -552,7 +571,7 @@ function renderShortcutHint() {
 
 // --- Rendering ------------------------------------------------------------
 
-async function render({ autoCopy }) {
+async function render(_options = {}) {
   const state = artifactState();
   if (!state) return;
   // Legacy history rows never re-render — the stored PNG (banner baked in) is the image.
@@ -570,15 +589,6 @@ async function render({ autoCopy }) {
 
   currentBlob = await canvasToPngBlob(canvas);
 
-  if (autoCopy && !autoCopyDone) {
-    autoCopyDone = true;
-    try {
-      await writeBlobToClipboard(currentBlob);
-      setStatus('Copied to clipboard.', 'ok');
-    } catch (err) {
-      setStatus(`Ready. Click "Copy to clipboard" (copy failed: ${err.message || err})`, 'info');
-    }
-  }
 }
 
 // Banner layout/drawing lives in ../shared/banner.js (shared with the history list).
@@ -1598,7 +1608,9 @@ async function downloadPng() {
 // the banner is composited at view/export time, so it stays editable and the original
 // captured_at timestamp is preserved verbatim.
 async function saveToHistoryOnce() {
-  if (historySaved || isHistoryMode || !settings.historyEnabled || !contentCanvas) return;
+  if (historySaved) return savedId;
+  if (isHistoryMode) return historyId;
+  if (!contentCanvas) throw new Error('No capture content to save');
   const state = artifactState();
   if (!state) return;
   historySaved = true;
@@ -1625,9 +1637,11 @@ async function saveToHistoryOnce() {
       thumbPngBase64: thumbDataUrl,
     });
     savedId = row?.id || '';
+    if (!savedId) throw new Error('History did not return a capture id');
+    return savedId;
   } catch (err) {
     historySaved = false; // allow a retry on the next action
-    console.warn('save to history failed:', err);
+    throw err;
   }
 }
 

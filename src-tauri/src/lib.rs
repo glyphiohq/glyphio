@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
 
-use crate::capture::PendingCapture;
 use crate::clipboard::ClipStore;
 use crate::engine::Supervisor;
 use crate::history::HistoryStore;
@@ -43,8 +42,9 @@ pub struct AppState {
     pub palette_view: Mutex<String>,
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
-    /// Capture results awaiting acknowledgement by their named delivery session.
-    pub capture_deliveries: Mutex<capture::delivery::CaptureDeliverySessions<PendingCapture>>,
+    /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
+    /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
+    pub capture_feedback: Mutex<tray::CaptureFeedback>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
     pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
@@ -68,7 +68,7 @@ pub fn run() {
 
     // Reflect current snippets into the engine config before the daemon starts.
     snippets
-        .render_yaml(&paths.engine_config)
+        .render_yaml_with_policy(&paths.engine_config, &settings.expansion_policy())
         .expect("initial engine config render");
 
     let state = AppState {
@@ -78,7 +78,7 @@ pub fn run() {
         clips,
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
-        capture_deliveries: Mutex::new(Default::default()),
+        capture_feedback: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
@@ -135,7 +135,13 @@ pub fn run() {
                 let engine_config = state.paths.engine_config.clone();
                 state.snippets.add_change_listener(move |ev| {
                     if ev.origin == ChangeOrigin::Remote && ev.entity == ChangeEntity::Snippet {
-                        if let Err(e) = store.render_yaml(&engine_config) {
+                        let policy = handle
+                            .state::<AppState>()
+                            .settings
+                            .lock()
+                            .unwrap()
+                            .expansion_policy();
+                        if let Err(e) = store.render_yaml_with_policy(&engine_config, &policy) {
                             log::error!("YAML regen after remote sync failed: {e}");
                         }
                     }
@@ -240,7 +246,7 @@ pub fn run() {
             commands::take_pending_capture,
             commands::check_for_update,
             commands::install_update,
-            commands::capture_done_silently,
+            commands::capture_delivery_finished,
             commands::take_pending_payload,
             commands::list_clips,
             commands::palette_view,

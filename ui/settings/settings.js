@@ -6,11 +6,38 @@
 import { icon } from '../shared/icons.js';
 import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
+import {
+  acceleratorFromKeyboardEvent,
+  CAPTURE_SHORTCUT_DEFAULTS,
+  formatAccelerator,
+  validateAccelerator,
+} from './shortcut-recorder.mjs';
+import {
+  afterPermissionPrompt,
+  initialPermissionState,
+  PERMISSION_KIND,
+  PERMISSION_REMEDY,
+  permissionSurface,
+  shouldShowPermissionBanner,
+  withNativePermissionStatus,
+} from './permissions.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const app = document.getElementById('app');
+
+const PROMPTED_KEY = {
+  [PERMISSION_KIND.ACCESSIBILITY]: 'glyphio-accessibility-prompted',
+  [PERMISSION_KIND.SCREEN_RECORDING]: 'glyphio-screen-recording-prompted',
+};
+const PERMISSION_GUIDANCE_MIGRATED_KEY = 'glyphio-permission-guidance-v1';
+
+const permissionState = {
+  [PERMISSION_KIND.ACCESSIBILITY]: initialPermissionState({ promptAvailable: false }),
+  [PERMISSION_KIND.SCREEN_RECORDING]: initialPermissionState({ promptAvailable: false }),
+};
+let permissionGuidanceReady = false;
 
 const state = {
   snippets: [],
@@ -59,8 +86,6 @@ const CAPTURE_SECTIONS = [
     clipboard — <kbd>⌘↩</kbd> in the palette does one on demand. Either way it lands in
     History.`, fields: [
     ['silentCapture', 'toggle', 'Make every capture silent by default'],
-    ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
-    ['historyEnabled', 'toggle', 'Save captures to history'],
     ['historyMaxCount', 'number', 'Max captures kept'],
     ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
   ]},
@@ -85,8 +110,8 @@ const CAPTURE_SECTIONS = [
     ['enableCrop', 'toggle', 'Crop'], ['enableRedact', 'toggle', 'Redact'],
     ['enableDraw', 'toggle', 'Draw'], ['enableText', 'toggle', 'Text labels'],
   ]},
-  { title: 'Capture hotkeys (e.g. Alt+Shift+S)', hint: `The second key takes the same shot
-    straight to the clipboard. Leave it blank if you don't want one.`, fields: [
+  { title: 'Capture shortcuts', hint: `Select a shortcut, then press its keys together. The
+    second shortcut takes the same shot straight to the clipboard.`, fields: [
     ['shortcutCaptureFull', 'hotkeys', 'Full window', 'shortcutCaptureFullSilent'],
     ['shortcutCaptureVisible', 'hotkeys', 'Visible area', 'shortcutCaptureVisibleSilent'],
     ['shortcutCaptureSnip', 'hotkeys', 'Region (snip)', 'shortcutCaptureSnipSilent'],
@@ -110,6 +135,11 @@ const SNIPPET_SECTIONS = [
   ]},
 ];
 
+const EXPANSION_DELIVERY_OPTIONS = () => [
+  { value: 'paste', label: 'Paste from clipboard (recommended)' },
+  { value: 'keys', label: 'Type individual keys' },
+];
+
 const CLIPBOARD_SECTIONS = [
   { title: 'Clipboard history', hint: `Kept on this device, never synced. Content a password
     manager marks as concealed is never recorded.`, fields: [
@@ -129,8 +159,9 @@ init().catch((e) => setStatus(e.message, 'err'));
 async function init() {
   renderShell();
   await reloadAll();
-  wireAccessibility();
-  wireScreenRecording();
+  initializePermissionGuidance();
+  await wirePermissionGuidance();
+  await wireSecureInput();
   await wireSync();
   wireInvites();
   maybeShowWelcome();
@@ -157,28 +188,10 @@ function renderShell() {
       <h1>Glyphio</h1>
       <div class="spacer"></div>
     </header>
-    <div class="ax-banner" id="ax-banner">
-      <div class="ax-text">
-        <strong>Text expansion is off — grant Accessibility to Glyphio.</strong>
-        <p>Click <strong>Grant access…</strong> and toggle <strong>Glyphio</strong> on in the dialog that opens — macOS adds the entry for you (never use the “+” button; old <em>glyphio-engine</em> entries can be removed, they do nothing). Expansion turns on by itself within a couple of seconds.</p>
-      </div>
-      <div class="ax-actions">
-        <button class="primary" id="ax-grant">Grant access…</button>
-        <button class="secondary" id="ax-open">Open Accessibility settings</button>
-        <button class="ghost" id="ax-restart">Restart engine</button>
-      </div>
-    </div>
-    <div class="ax-banner" id="sr-banner">
-      <div class="ax-text">
-        <strong>Screen capture is off — grant macOS Screen Recording.</strong>
-        <p>Click <strong>Grant access…</strong> and allow <strong>Glyphio</strong> in the dialog — macOS adds the entry for you. Then click <strong>Relaunch Glyphio</strong>: macOS applies this permission on the next launch. (Old or duplicate Glyphio rows in the settings list can be removed with “−”.)</p>
-      </div>
-      <div class="ax-actions">
-        <button class="primary" id="sr-grant">Grant access…</button>
-        <button class="secondary" id="sr-relaunch">Relaunch Glyphio</button>
-        <button class="ghost" id="sr-open">Open settings</button>
-      </div>
-    </div>
+    <section class="permission-panel" id="permission-panel" aria-label="macOS permissions" hidden>
+      <div class="permission-panel-title">macOS permissions</div>
+      <div data-permission-rows></div>
+    </section>
     <div class="ax-banner" id="si-banner">
       <div class="ax-text">
         <strong>Expansion paused — <span id="si-holder">another app</span> is holding macOS Secure Input.</strong>
@@ -191,41 +204,116 @@ function renderShell() {
     </div>
     <div class="status-line" id="status"></div>
   `;
-  document.getElementById('ax-grant').addEventListener('click', () => { invoke('request_accessibility'); startAxPolling(); });
-  document.getElementById('ax-open').addEventListener('click', () => { invoke('open_accessibility_settings'); startAxPolling(); });
-  document.getElementById('ax-restart').addEventListener('click', async () => {
-    await invoke('restart_engine'); setStatus('Engine restarted.', 'ok'); startAxPolling();
+  document.getElementById('permission-panel').addEventListener('click', handlePermissionAction);
+}
+
+// --- Permission guidance ----------------------------------------------------
+
+function initializePermissionGuidance() {
+  // On the first build with unified guidance, classify established installs as having already
+  // used macOS's one-shot prompts. A genuinely new install keeps each prompt available across
+  // restarts until that specific action is clicked.
+  if (!localStorage.getItem(PERMISSION_GUIDANCE_MIGRATED_KEY)) {
+    const establishedInstall = Boolean(
+      localStorage.getItem('glyphio-welcomed') || state.syncConfig?.enabled || state.snippets.length > 2,
+    );
+    if (establishedInstall) {
+      for (const key of Object.values(PROMPTED_KEY)) localStorage.setItem(key, '1');
+    }
+    localStorage.setItem(PERMISSION_GUIDANCE_MIGRATED_KEY, '1');
+  }
+  for (const kind of Object.values(PERMISSION_KIND)) {
+    permissionState[kind] = initialPermissionState({
+      promptAvailable: !localStorage.getItem(PROMPTED_KEY[kind]),
+    });
+  }
+  permissionGuidanceReady = true;
+}
+
+function renderPermissionGuidance() {
+  const panel = document.getElementById('permission-panel');
+  if (!panel || !permissionGuidanceReady) return;
+
+  const surface = permissionSurface(permissionState);
+  // Keep the global guidance quiet once both capabilities work. The same two rows remain
+  // inspectable under Settings → General, so "no banner" never means "unknown status".
+  const inspectingInSettings = state.selected === 'settings' && state.settingsTab === 'general';
+  panel.hidden = !shouldShowPermissionBanner(surface, inspectingInSettings);
+  const markup = surface.rows.map(([kind, row]) => `
+    <div class="perm-row" data-kind="${kind}">
+      <div class="perm-info"><strong>${row.name}</strong>
+        <span class="perm-sub">${row.description}</span></div>
+      <span class="perm-state" data-phase="${row.phase}" role="status" aria-live="polite">${row.status}</span>
+      <div class="perm-actions">${row.actions.map((action) =>
+        `<button type="button" class="${action.style}" data-permission-action="${action.id}">${action.label}</button>`).join('')}</div>
+    </div>`).join('');
+  document.querySelectorAll('[data-permission-rows]').forEach((rows) => { rows.innerHTML = markup; });
+}
+
+async function refreshPermissionGuidance() {
+  try {
+    const [accessibility, screenRecording] = await Promise.all([
+      invoke('accessibility_status'),
+      invoke('screen_recording_status'),
+    ]);
+    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
+      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(accessibility),
+    );
+    // A successful first prompt still needs the relaunch it promised, even when preflight starts
+    // returning true. On the next process launch this in-memory remedy is gone and granted wins.
+    if (permissionState[PERMISSION_KIND.SCREEN_RECORDING].remedy !== PERMISSION_REMEDY.RELAUNCH) {
+      permissionState[PERMISSION_KIND.SCREEN_RECORDING] = withNativePermissionStatus(
+        permissionState[PERMISSION_KIND.SCREEN_RECORDING], Boolean(screenRecording),
+      );
+    }
+    renderPermissionGuidance();
+  } catch { /* window closing */ }
+}
+
+async function handlePermissionAction(event) {
+  const button = event.target.closest('[data-permission-action]');
+  if (!button) return;
+  const row = button.closest('[data-kind]');
+  const kind = row?.dataset.kind;
+  const action = button.dataset.permissionAction;
+  if (!kind) return;
+
+  button.disabled = true;
+  try {
+    if (action === 'request') {
+      localStorage.setItem(PROMPTED_KEY[kind], '1');
+      const command = kind === PERMISSION_KIND.ACCESSIBILITY
+        ? 'request_accessibility' : 'request_screen_recording';
+      const accepted = Boolean(await invoke(command));
+      permissionState[kind] = afterPermissionPrompt(kind, accepted);
+      renderPermissionGuidance();
+    } else if (action === 'settings') {
+      const command = kind === PERMISSION_KIND.ACCESSIBILITY
+        ? 'open_accessibility_settings' : 'open_screen_recording_settings';
+      await invoke(command);
+    } else if (action === 'relaunch') {
+      await invoke('relaunch_app');
+    }
+  } catch (error) {
+    setStatus(String(error), 'err');
+    button.disabled = false;
+  }
+}
+
+async function wirePermissionGuidance() {
+  renderPermissionGuidance();
+  await listen('accessibility-status', (event) => {
+    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
+      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(event.payload),
+    );
+    renderPermissionGuidance();
   });
-  document.getElementById('sr-grant').addEventListener('click', async () => {
-    const granted = await invoke('request_screen_recording');
-    applySr(granted);
-    if (!granted) setStatus('After allowing in the dialog, click “Relaunch Glyphio” to apply the permission.', 'ok');
+  await refreshPermissionGuidance();
+  // System Settings returns focus/visibility to the existing page; refresh both rows in place.
+  window.addEventListener('focus', refreshPermissionGuidance);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshPermissionGuidance();
   });
-  document.getElementById('sr-open').addEventListener('click', () => invoke('open_screen_recording_settings'));
-  document.getElementById('sr-relaunch').addEventListener('click', () => invoke('relaunch_app'));
-}
-
-// --- Accessibility status ---------------------------------------------------
-// The engine re-checks Accessibility every ~2s and auto-restarts its worker on a grant, emitting
-// `accessibility-status`. We also poll/re-query here so the banner clears promptly when the user
-// returns from System Settings (macOS doesn't notify the app of a permission change).
-
-let axPollTimer = null;
-
-function applyAx(granted) {
-  const banner = document.getElementById('ax-banner');
-  if (banner) banner.classList.toggle('show', !granted);
-  if (granted) stopAxPolling();
-}
-async function recheckAx() {
-  try { applyAx(await invoke('accessibility_status')); } catch { /* window closing */ }
-}
-function startAxPolling() {
-  if (axPollTimer) return;
-  axPollTimer = setInterval(recheckAx, 2000);
-}
-function stopAxPolling() {
-  if (axPollTimer) { clearInterval(axPollTimer); axPollTimer = null; }
 }
 
 // Secure Input: while ANY app holds it (password fields, a stale lock-screen grab), no
@@ -237,39 +325,9 @@ function applySecureInput(holder) {
   if (holder) document.getElementById('si-holder').textContent = holder;
 }
 
-async function wireAccessibility() {
-  const granted = await invoke('accessibility_status');
-  applyAx(granted);
-  if (!granted) startAxPolling();
-  await listen('accessibility-status', (e) => applyAx(Boolean(e.payload)));
+async function wireSecureInput() {
   applySecureInput(await invoke('secure_input_status'));
   await listen('secure-input-status', (e) => applySecureInput(e.payload));
-  // Returning from System Settings re-focuses the window — re-check then.
-  window.addEventListener('focus', recheckAx);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) recheckAx(); });
-}
-
-// --- Screen Recording status --------------------------------------------------
-// Checked via CGPreflightScreenCaptureAccess (no prompt). Unlike Accessibility, macOS only
-// applies a Screen Recording grant on the app's next launch, so the banner mainly guides the
-// user through request → allow → relaunch.
-
-let srPollTimer = null;
-
-function applySr(granted) {
-  const banner = document.getElementById('sr-banner');
-  if (banner) banner.classList.toggle('show', !granted);
-  if (granted && srPollTimer) { clearInterval(srPollTimer); srPollTimer = null; }
-  if (!granted && !srPollTimer) {
-    srPollTimer = setInterval(async () => {
-      try { applySr(await invoke('screen_recording_status')); } catch { /* window closing */ }
-    }, 3000);
-  }
-}
-
-async function wireScreenRecording() {
-  applySr(await invoke('screen_recording_status'));
-  window.addEventListener('focus', async () => applySr(await invoke('screen_recording_status')));
 }
 
 // --- Sidebar ----------------------------------------------------------------
@@ -439,6 +497,7 @@ function renderTeamNav(item) {
 // --- Main pane --------------------------------------------------------------
 
 function renderMain() {
+  renderPermissionGuidance();
   const main = document.getElementById('main');
   if (state.selected === 'settings') { renderSettings(main); return; }
   if (state.selected === 'history') { renderHistory(main); return; }
@@ -2269,7 +2328,6 @@ const SETTINGS_TABS = [
   ['snippets', 'Snippets'],
   ['clipboard', 'Clipboard'],
   ['sync', 'Sync'],
-  ['permissions', 'Permissions'],
   ['about', 'About'],
 ];
 
@@ -2286,14 +2344,26 @@ function renderSettings(main) {
   }));
   const form = main.querySelector('#settings-form');
   switch (state.settingsTab) {
-    case 'general': renderSections(form, GENERAL_SECTIONS); break;
+    case 'general': renderGeneralTab(form); break;
     case 'snippets': renderSnippetsTab(form); break;
     case 'clipboard': renderClipboardTab(form); break;
     case 'sync': renderSyncSection(form); break;
-    case 'permissions': renderPermissionsTab(form); break;
     case 'about': renderAboutTab(form); break;
     default: renderSections(form, CAPTURE_SECTIONS);
   }
+}
+
+function renderGeneralTab(form) {
+  const permissions = document.createElement('section');
+  permissions.className = 'form-section permission-settings';
+  permissions.setAttribute('aria-label', 'macOS permission status');
+  permissions.innerHTML = `
+    <h3>macOS permissions</h3>
+    <p class="adv-hint">Current access for Glyphio. Actions appear only when macOS needs one.</p>
+    <div data-permission-rows></div>`;
+  permissions.addEventListener('click', handlePermissionAction);
+  renderSections(form, GENERAL_SECTIONS, permissions);
+  renderPermissionGuidance();
 }
 
 /// Render setting sections plus the Save button they share. Every input carries its key, so
@@ -2317,6 +2387,7 @@ function renderSections(form, sections, tail) {
 }
 
 function renderSnippetsTab(form) {
+  form.append(renderExpansionDeliverySection());
   const div = document.createElement('div');
   div.className = 'form-section';
   div.innerHTML = `
@@ -2332,6 +2403,81 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
   renderSections(form, SNIPPET_SECTIONS);
+}
+
+/**
+ * Expansion output is one general policy plus explicit exceptions. Bundle identifiers are
+ * intentionally shown and stored here: display names are mutable and fuzzy matching could send
+ * a typed-key exception to the wrong application.
+ */
+function renderExpansionDeliverySection() {
+  const div = el('div', { className: 'form-section' });
+  div.append(el('h3', { textContent: 'Expansion delivery' }));
+  div.append(el('p', {
+    className: 'adv-hint',
+    textContent: 'Paste reliably handles long, formatted, and international text while restoring what was previously on your clipboard. Add an application only when it needs typed-key delivery.',
+  }));
+  div.append(renderField(
+    'expansionDelivery',
+    'select',
+    'General delivery method',
+    EXPANSION_DELIVERY_OPTIONS,
+  ));
+
+  const heading = el('div', { className: 'delivery-app-head' });
+  heading.append(
+    el('strong', { textContent: 'Application overrides' }),
+    el('span', { textContent: 'Apps not listed keep the general method.' }),
+  );
+  div.append(heading);
+
+  const rows = el('div', { className: 'delivery-apps' });
+  const problem = el('p', { className: 'field-error delivery-error' });
+
+  const addRow = (bundleId = '', delivery = 'keys') => {
+    const row = el('div', { className: 'delivery-app-row' });
+    const bundle = el('input', {
+      type: 'text',
+      value: bundleId,
+      placeholder: 'com.example.Application',
+      spellcheck: false,
+      ariaLabel: 'Application bundle identifier',
+    });
+    bundle.dataset.deliveryBundle = '';
+    const mode = el('select', { ariaLabel: `Delivery method for ${bundleId || 'application'}` });
+    for (const option of EXPANSION_DELIVERY_OPTIONS()) {
+      mode.append(el('option', { value: option.value, textContent: option.label }));
+    }
+    mode.value = delivery;
+    mode.dataset.deliveryMode = '';
+    const remove = el('button', {
+      type: 'button',
+      className: 'ghost sm',
+      textContent: 'Remove',
+      ariaLabel: `Remove ${bundleId || 'application'} override`,
+    });
+    remove.addEventListener('click', () => row.remove());
+    bundle.addEventListener('input', () => { problem.textContent = ''; });
+    row.append(bundle, mode, remove);
+    rows.append(row);
+  };
+
+  for (const [bundleId, delivery] of Object.entries(state.settings.expansionAppOverrides || {})
+    .sort(([a], [b]) => a.localeCompare(b))) {
+    addRow(bundleId, delivery);
+  }
+  div.append(rows, problem);
+  const add = el('button', {
+    type: 'button',
+    className: 'secondary sm',
+    textContent: 'Add application override',
+  });
+  add.addEventListener('click', () => {
+    addRow();
+    rows.lastElementChild?.querySelector('input')?.focus();
+  });
+  div.append(add);
+  return div;
 }
 
 function renderClipboardTab(form) {
@@ -2351,47 +2497,6 @@ function renderClipboardTab(form) {
     catch (e) { setStatus(String(e), 'err'); }
   });
   renderSections(form, CLIPBOARD_SECTIONS, div);
-}
-
-/// No "Grant access…" here, deliberately.
-///
-/// That button called `AXIsProcessTrustedWithOptions` with the prompt option, which shows the
-/// system dialog *only* while the app hasn't yet been added to the Accessibility list. By the
-/// time anyone is reading this tab they have already answered that dialog once, so the call
-/// returns the current state and displays nothing — a button that does nothing every time
-/// after the first. The first-run banner still offers it, which is the one moment it works.
-///
-/// Screen Recording already had only "System Settings", so this also makes the two rows read
-/// the same way.
-function renderPermissionsTab(form) {
-  const div = document.createElement('div');
-  div.className = 'form-section';
-  div.innerHTML = `
-    <h3>macOS permissions</h3>
-    <div class="perm-row" id="perm-ax">
-      <div class="perm-info"><strong>Accessibility</strong>
-        <span class="perm-sub">One grant to “Glyphio” covers text expansion and scrolling capture.</span></div>
-      <span class="perm-state" data-ok="">checking…</span>
-      <button class="ghost" data-act="ax-settings">System Settings</button>
-    </div>
-    <div class="perm-row" id="perm-sr">
-      <div class="perm-info"><strong>Screen Recording</strong>
-        <span class="perm-sub">Required for captures. Granted on first capture; applies after relaunch.</span></div>
-      <span class="perm-state" data-ok="">checking…</span>
-      <button class="ghost" data-act="sr-settings">System Settings</button>
-      <button class="ghost" data-act="relaunch">Relaunch</button>
-    </div>`;
-  const setState = (rowId, ok) => {
-    const el = div.querySelector(`#${rowId} .perm-state`);
-    el.textContent = ok ? 'granted' : 'not granted';
-    el.dataset.ok = ok ? 'yes' : 'no';
-  };
-  invoke('app_accessibility_status').then((ok) => setState('perm-ax', ok));
-  invoke('screen_recording_status').then((ok) => setState('perm-sr', ok));
-  div.querySelector('[data-act="ax-settings"]').addEventListener('click', () => invoke('open_accessibility_settings'));
-  div.querySelector('[data-act="sr-settings"]').addEventListener('click', () => invoke('open_screen_recording_settings'));
-  div.querySelector('[data-act="relaunch"]').addEventListener('click', () => invoke('relaunch_app'));
-  form.append(div);
 }
 
 async function renderAboutTab(form) {
@@ -2485,7 +2590,7 @@ function renderField(key, type, label, opts) {
   // A capture mode's two keys, side by side: one opens the editor, one goes straight to the
   // clipboard. Seeing them together is what makes the second one discoverable at all.
   if (type === 'hotkeys') {
-    field.append(hotkeyPair(key, opts));
+    field.append(hotkeyPair(key, opts, label));
     return field;
   }
   let input;
@@ -2506,19 +2611,131 @@ function renderField(key, type, label, opts) {
 }
 
 /** The editor key and the straight-to-clipboard key for one capture mode. */
-function hotkeyPair(key, silentKey) {
+function hotkeyPair(key, silentKey, label) {
   const wrap = el('div', { className: 'hotkey-pair' });
-  const one = (k, caption, placeholder) => {
-    const box = el('div');
-    const input = el('input', { type: 'text', placeholder });
-    input.value = state.settings[k] ?? '';
-    input.dataset.key = k;
+  const buildRecorder = (settingsKey, caption, placeholder) => {
+    const box = el('div', { className: 'shortcut-box' });
+    const input = el('input', { type: 'hidden' });
+    input.value = state.settings[settingsKey] ?? '';
+    input.dataset.key = settingsKey;
     input.dataset.type = 'text';
-    box.append(input, el('span', { className: 'hotkey-caption', textContent: caption }));
+    input.dataset.label = `${label} (${caption})`;
+
+    const record = el('button', {
+      type: 'button',
+      className: 'shortcut-recorder',
+      textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
+      title: `Record ${label.toLowerCase()} shortcut ${caption}`,
+    });
+    record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
+    const error = el('span', { className: 'field-error shortcut-error' });
+    error.setAttribute('role', 'alert');
+
+    const showValue = () => {
+      record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
+      record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
+      delete record.dataset.recording;
+    };
+    const showError = (message) => { error.textContent = message; };
+    const beginRecording = () => {
+      record.dataset.recording = 'yes';
+      record.textContent = 'Press shortcut…';
+      record.setAttribute('aria-label', `${label}, ${caption}: press a shortcut. Escape cancels.`);
+      showError('Press the keys together. Escape cancels.');
+    };
+
+    record.addEventListener('click', () => {
+      if (record.dataset.recording === 'yes') {
+        showValue();
+        showError('');
+      } else beginRecording();
+    });
+    record.addEventListener('blur', () => {
+      if (record.dataset.recording === 'yes') {
+        showValue();
+        showError('');
+      }
+    });
+    record.addEventListener('keydown', (event) => {
+      if (record.dataset.recording !== 'yes') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'Escape') {
+        showValue();
+        showError('');
+        return;
+      }
+      const recorded = acceleratorFromKeyboardEvent(event);
+      if (recorded.error) {
+        showError(recorded.error);
+        return;
+      }
+      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey));
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      input.value = recorded.accelerator;
+      showValue();
+      showError('');
+    });
+
+    const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
+    clear.addEventListener('click', () => {
+      input.value = '';
+      showValue();
+      showError('');
+    });
+    const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
+    reset.addEventListener('click', () => {
+      input.value = CAPTURE_SHORTCUT_DEFAULTS[settingsKey] ?? '';
+      showValue();
+      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey));
+      showError(result.ok ? '' : result.error);
+    });
+    const actions = el('span', { className: 'shortcut-actions' });
+    actions.append(clear, reset);
+    box.append(input, record, actions,
+      el('span', { className: 'hotkey-caption', textContent: caption }), error);
     return box;
   };
-  wrap.append(one(key, 'opens the editor', ''), one(silentKey, 'to the clipboard', 'not set'));
+  wrap.append(
+    buildRecorder(key, 'opens the editor', ''),
+    buildRecorder(silentKey, 'to the clipboard', 'not set'),
+  );
   return wrap;
+}
+
+/** Current values for every other Glyphio shortcut, including fields on other settings tabs. */
+function configuredShortcuts(exceptKey) {
+  const values = new Map(Object.entries(state.settings ?? {})
+    .filter(([key]) => key.startsWith('shortcut'))
+    .map(([key, value]) => [key, { key, value, label: shortcutLabel(key) }]));
+  document.querySelectorAll('#settings-form [data-key]').forEach((input) => {
+    const key = input.dataset.key;
+    if (key.startsWith('shortcut')) {
+      values.set(key, { key, value: input.value, label: input.dataset.label || shortcutLabel(key) });
+    }
+  });
+  values.delete(exceptKey);
+  return [...values.values()];
+}
+
+function shortcutLabel(key) {
+  const words = key.replace(/^shortcut/, '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  return words || 'another Glyphio shortcut';
+}
+
+function validateCaptureRecorders() {
+  let valid = true;
+  document.querySelectorAll('#settings-form .shortcut-box').forEach((box) => {
+    const input = box.querySelector('input[data-key]');
+    const error = box.querySelector('.shortcut-error');
+    const result = validateAccelerator(input.value, configuredShortcuts(input.dataset.key));
+    error.textContent = result.ok ? '' : result.error;
+    if (!result.ok) valid = false;
+  });
+  return valid;
 }
 
 /**
@@ -2613,6 +2830,10 @@ function deviceLocale() {
 }
 
 async function saveSettings() {
+  if (!validateCaptureRecorders()) {
+    setStatus('Fix the highlighted capture shortcuts before saving.', 'err');
+    return;
+  }
   const next = { ...state.settings };
   document.querySelectorAll('#settings-form [data-key]').forEach((el) => {
     const { key, type } = el.dataset;
@@ -2623,6 +2844,28 @@ async function saveSettings() {
     }
     else next[key] = el.value;
   });
+  const deliveryError = document.querySelector('.delivery-error');
+  // Other Settings tabs share this save function. Only replace the override mapping while its
+  // editor is mounted; saving Capture or Clipboard must not erase app exceptions.
+  if (deliveryError) {
+    const appOverrides = {};
+    for (const row of document.querySelectorAll('.delivery-app-row')) {
+      const bundleId = row.querySelector('[data-delivery-bundle]').value.trim();
+      const delivery = row.querySelector('[data-delivery-mode]').value;
+      if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(bundleId)) {
+        deliveryError.textContent = 'Enter a bundle identifier such as com.apple.TextEdit.';
+        row.querySelector('[data-delivery-bundle]').focus();
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(appOverrides, bundleId)) {
+        deliveryError.textContent = `${bundleId} is already listed.`;
+        row.querySelector('[data-delivery-bundle]').focus();
+        return;
+      }
+      appOverrides[bundleId] = delivery;
+    }
+    next.expansionAppOverrides = appOverrides;
+  }
   try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }
   catch (e) { setStatus(String(e), 'err'); }
 }

@@ -22,6 +22,8 @@ mod ax;
 mod backend;
 pub mod delivery;
 pub mod diag;
+pub mod lifecycle;
+pub mod orchestration;
 pub mod scroll;
 
 use anyhow::anyhow;
@@ -31,6 +33,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::AppState;
 use delivery::DeliveryRoute;
+use lifecycle::CaptureMode;
 
 /// Undo any accessibility opt-in still outstanding on a browser we captured from — called on
 /// app exit, since the cooldown thread that normally does it dies with us.
@@ -155,21 +158,33 @@ impl Delivery {
 /// `delivery` is where the result should go; `None` follows the user's setting. It is settled
 /// here, once, so a capture that takes a while can't change its mind halfway through.
 pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyhow::Result<()> {
+    let mode = CaptureMode::try_from(mode).map_err(anyhow::Error::msg)?;
+    trigger_mode(app, mode, delivery)
+}
+
+fn trigger_mode(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delivery: Option<Delivery>,
+) -> anyhow::Result<()> {
+    // This is deliberately before any picker, browser-tree lookup, or pixel work: a global
+    // shortcut must visibly acknowledge that it fired before capture can become slow.
+    let activity = crate::tray::capture_started(app, mode)?;
     let delivery = Delivery::resolve(app, delivery);
-    if mode == "scrolling" {
+    if mode == CaptureMode::Scrolling {
         // The region is dragged first; the overlay carries the decision back with the rect.
-        return crate::windows::open_scroll_overlay(app, delivery);
+        return crate::windows::open_scroll_overlay(app, delivery).inspect_err(|e| {
+            report_failure_for(app, activity, "scrolling capture selection", e);
+        });
     }
-    if mode == "pageOnly" || mode == "scrollingPage" {
+    if matches!(mode, CaptureMode::PageOnly | CaptureMode::ScrollingPage) {
         // Both walk the AX tree (possible Chromium opt-in retry) and, for scrollingPage,
         // scroll + settle per frame — never block the main thread.
-        let mode = mode.to_string();
         let app2 = app.clone();
         let details = wants_browser_details(app);
         tauri::async_runtime::spawn(async move {
-            let m = mode.clone();
             let target =
-                tauri::async_runtime::spawn_blocking(move || page_target(&m, details)).await;
+                tauri::async_runtime::spawn_blocking(move || page_target(mode, details)).await;
             let result = match target {
                 // scrollingPage runs off the main thread so its capture loop never blocks the app.
                 Ok(Ok(PageTarget::Scroll {
@@ -188,20 +203,30 @@ pub fn trigger(app: &AppHandle, mode: &str, delivery: Option<Delivery>) -> anyho
             match result {
                 Ok(shot) => {
                     let app3 = app2.clone();
-                    let mode2 = mode.clone();
-                    let _ = app2.run_on_main_thread(move || {
-                        if let Err(e) = finish(&app3, shot, &mode2, delivery) {
-                            report_failure(&app3, "page capture", &e);
+                    if let Err(e) = app2.run_on_main_thread(move || {
+                        if let Err(e) = finish(&app3, shot, mode, delivery, activity) {
+                            report_failure_for(&app3, activity, "page capture", &e);
                         }
-                    });
+                    }) {
+                        report_failure_for(
+                            &app2,
+                            activity,
+                            "scheduling page capture delivery",
+                            &anyhow!(e),
+                        );
+                    }
                 }
-                Err(e) => report_failure(&app2, "page capture", &e),
+                Err(e) => report_failure_for(&app2, activity, "page capture", &e),
             }
         });
         return Ok(());
     }
-    let shot = backend::capture(app, mode)?;
-    finish(app, shot, mode, delivery)
+    let shot = backend::capture(app, mode.as_str()).inspect_err(|e| {
+        report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
+    })?;
+    finish(app, shot, mode, delivery, activity).inspect_err(|e| {
+        report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
+    })
 }
 
 /// How long to wait for a browser that builds its accessibility tree on demand.
@@ -234,7 +259,7 @@ enum PageTarget {
 /// Geometry comes from the AX tree when possible: CGWindowList ordering is unreliable on
 /// modern macOS (Safari's toolbar strip is its own window), and `AXWebArea` alone reports
 /// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
-fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTarget> {
+fn page_target(mode: CaptureMode, with_browser_details: bool) -> anyhow::Result<PageTarget> {
     let win = backend::frontmost_window_bounds()?;
     let geometry = if scroll::app_accessibility_trusted() {
         ax::page_geometry(win.pid, PAGE_TREE_BUDGET)
@@ -248,7 +273,7 @@ fn page_target(mode: &str, with_browser_details: bool) -> anyhow::Result<PageTar
     } else {
         Default::default()
     };
-    if mode == "pageOnly" {
+    if mode == CaptureMode::PageOnly {
         if !scroll::app_accessibility_trusted() {
             anyhow::bail!(
                 "Browser page capture needs Accessibility permission for Glyphio \
@@ -377,19 +402,29 @@ impl Drop for ScrollingSession {
     }
 }
 
-/// Log a capture failure AND put it in front of the user — captures fire from global
-/// shortcuts and the tray, where a silent log line reads as "nothing happened".
+/// Log a capture failure and expose it through the non-activating menu-bar feedback surface.
+/// The details dialog is shown only if the user chooses "Show details" from that menu.
 pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    log::error!("{context} failed: {e}");
+    if e.downcast_ref::<AlreadyScrolling>().is_some()
+        || e.downcast_ref::<lifecycle::CaptureInProgress>().is_some()
+    {
+        return; // changing the feedback would spoil the capture that IS running
+    }
+    crate::tray::capture_failed_current(app, format!("{e:#}"));
+}
+
+fn report_failure_for(
+    app: &AppHandle,
+    activity: lifecycle::CaptureToken,
+    context: &str,
+    e: &anyhow::Error,
+) {
     log::error!("{context} failed: {e}");
     if e.downcast_ref::<AlreadyScrolling>().is_some() {
-        return; // see AlreadyScrolling: a dialog here would spoil the capture that IS running
+        return;
     }
-    app.dialog()
-        .message(format!("{e:#}"))
-        .title("Glyphio — capture failed")
-        .kind(MessageDialogKind::Error)
-        .show(|_| {});
+    crate::tray::capture_failed(app, activity, format!("{e:#}"));
 }
 
 /// [`trigger`] + user-visible error reporting; the fire-and-forget entry point used by the
@@ -406,7 +441,13 @@ pub fn trigger_or_report(app: &AppHandle, mode: &str, delivery: Option<Delivery>
 /// that is never shown, so the banner, the clipboard write and the history row are produced
 /// by exactly one implementation either way, and a silent capture is still a capture you can
 /// open and annotate afterwards.
-pub fn finish(app: &AppHandle, shot: Shot, mode: &str, delivery: Delivery) -> anyhow::Result<()> {
+pub fn finish(
+    app: &AppHandle,
+    shot: Shot,
+    mode: CaptureMode,
+    delivery: Delivery,
+    activity: lifecycle::CaptureToken,
+) -> anyhow::Result<()> {
     let png = encode_png(&shot)?;
     let data_url = format!(
         "data:image/png;base64,{}",
@@ -418,7 +459,7 @@ pub fn finish(app: &AppHandle, shot: Shot, mode: &str, delivery: Delivery) -> an
         width: shot.width,
         height: shot.height,
         dpr: shot.dpr,
-        mode: mode.to_string(),
+        mode: mode.as_str().to_string(),
         title: shot.title,
         page_title: shot.browser.page_title,
         page_url: shot.browser.url,
@@ -426,12 +467,8 @@ pub fn finish(app: &AppHandle, shot: Shot, mode: &str, delivery: Delivery) -> an
         captured_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         silent,
     };
-    let session_id = app
-        .state::<AppState>()
-        .capture_deliveries
-        .lock()
-        .unwrap()
-        .complete(DeliveryRoute::from_silent(silent), pending);
+    let session_id =
+        crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
     if silent {
         crate::windows::run_silent_capture(app, session_id.as_str())
     } else {

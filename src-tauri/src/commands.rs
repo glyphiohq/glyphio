@@ -20,9 +20,10 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 // Every mutation regenerates the engine config; its file-watcher hot-reloads it.
 
 fn regen_yaml(state: &AppState) -> CmdResult<()> {
+    let policy = state.settings.lock().unwrap().expansion_policy();
     state
         .snippets
-        .render_yaml(&state.paths.engine_config)
+        .render_yaml_with_policy(&state.paths.engine_config, &policy)
         .map_err(err)
 }
 
@@ -196,10 +197,14 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
+    crate::shortcuts::validate_settings(&settings).map_err(err)?;
     crate::autostart::set_enabled(&app, settings.launch_at_login).map_err(err)?;
     settings.save(&state.paths.settings_json).map_err(err)?;
     let wants_worker = settings.wants_silent_worker();
     *state.settings.lock().unwrap() = settings;
+    // Delivery preferences are engine configuration, not only UI state. Regenerate immediately;
+    // the managed engine's watcher hot-reloads the changed default/app-specific files.
+    regen_yaml(&state)?;
     // Re-register global hotkeys so shortcut edits take effect immediately.
     crate::shortcuts::register(&app).map_err(err)?;
     // Park (or dismiss) the silent-capture worker now, while the user is looking at this
@@ -400,6 +405,8 @@ pub async fn scroll_capture_run(
     h: f64,
     silent: Option<bool>,
 ) -> CmdResult<()> {
+    let activity = crate::tray::active_capture(&app)
+        .ok_or_else(|| "the scrolling capture is no longer active".to_string())?;
     let (gx, gy) = {
         let win = app
             .get_webview_window("scroll-overlay")
@@ -418,12 +425,21 @@ pub async fn scroll_capture_run(
     let outcome = match crate::capture::run_scrolling(&app, (gx, gy, w, h)).await {
         Ok(shot) => {
             let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
-            crate::capture::finish(&app, shot, "scrolling", delivery)
+            crate::capture::finish(
+                &app,
+                shot,
+                crate::capture::lifecycle::CaptureMode::Scrolling,
+                delivery,
+                activity,
+            )
         }
         Err(e) => Err(e),
     };
     if let Err(e) = outcome {
-        crate::capture::report_failure(&app, "capture (scrolling)", &e);
+        log::error!("capture (scrolling) failed: {e}");
+        if e.downcast_ref::<crate::capture::AlreadyScrolling>().is_none() {
+            crate::tray::capture_failed(&app, activity, format!("{e:#}"));
+        }
     }
     Ok(())
 }
@@ -431,6 +447,7 @@ pub async fn scroll_capture_run(
 #[tauri::command]
 pub fn scroll_capture_cancel(app: AppHandle) {
     crate::windows::close_scroll_overlay(&app);
+    crate::tray::capture_cancelled(&app);
 }
 
 /// Whether the APP holds Accessibility. One grant covers both expansion (the engine is a
@@ -544,7 +561,10 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
 pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
     let state = app.state::<AppState>();
     *state.settings.lock().unwrap() = Settings::load(&state.paths.settings_json);
-    state.snippets.render_yaml(&state.paths.engine_config)?;
+    let policy = state.settings.lock().unwrap().expansion_policy();
+    state
+        .snippets
+        .render_yaml_with_policy(&state.paths.engine_config, &policy)?;
     crate::shortcuts::register(app)?;
     state.supervisor.restart(app, &state.paths)?;
     let _ = app.emit("snippets-changed", ());
@@ -761,29 +781,24 @@ pub fn take_pending_capture(
     silent: bool,
 ) -> Option<crate::capture::PendingCapture> {
     let session_id = crate::capture::delivery::DeliverySessionId::parse(session_id)?;
-    app.state::<AppState>()
-        .capture_deliveries
-        .lock()
-        .unwrap()
-        .consume(
-            &session_id,
-            crate::capture::delivery::DeliveryRoute::from_silent(silent),
-        )
+    crate::tray::take_pending_capture(
+        &app,
+        &session_id,
+        crate::capture::delivery::DeliveryRoute::from_silent(silent),
+    )
 }
 
-/// A silent capture is finished with. Tell the user something happened — a capture with no
-/// window of its own is otherwise indistinguishable from a hotkey that didn't fire. Failures
-/// get the same dialog as any other capture; there is no editor left open to notice them in.
-///
-/// The worker window stays parked for the next one (see `windows::ensure_silent_editor`).
+/// The visible editor and invisible worker acknowledge the exact delivery session they loaded.
+/// This is the terminal edge of the menu-bar capture lifecycle.
 #[tauri::command]
-pub fn capture_done_silently(app: AppHandle, error: Option<String>) {
-    match error {
-        Some(message) => {
-            crate::capture::report_failure(&app, "silent capture", &anyhow::anyhow!(message))
-        }
-        None => crate::tray::flash_ack(&app),
-    }
+pub fn capture_delivery_finished(
+    app: AppHandle,
+    session_id: String,
+    silent: bool,
+    error: Option<String>,
+    history_id: Option<String>,
+) {
+    crate::tray::capture_delivery_finished(&app, &session_id, silent, history_id, error);
 }
 
 /// Ask GitHub whether a newer Glyphio exists. Read-only — nothing is downloaded.

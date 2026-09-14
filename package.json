@@ -1,10 +1,11 @@
 {
   "name": "glyphio",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Glyphio — local-first text expansion + screenshot capture with self-hostable team sync",
   "private": true,
   "scripts": {
     "tauri": "tauri",
+    "test": "node --test ui/**/*.test.mjs",
     "engine": "bash scripts/build-engine.sh",
     "engine:release": "bash scripts/build-engine.sh --release",
     "sign": "bash scripts/dev-sign.sh",

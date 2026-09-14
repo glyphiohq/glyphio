@@ -7,10 +7,79 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureToken(u64);
 
+/// A validated capture kind. Strings enter through Tauri commands and generated shortcut
+/// configuration, but the orchestration core should never have to reinterpret them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureMode {
+    Visible,
+    Snip,
+    FullWindow,
+    FrontWindow,
+    PageOnly,
+    Scrolling,
+    ScrollingPage,
+}
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+            Self::Snip => "snip",
+            Self::FullWindow => "fullWindow",
+            Self::FrontWindow => "frontWindow",
+            Self::PageOnly => "pageOnly",
+            Self::Scrolling => "scrolling",
+            Self::ScrollingPage => "scrollingPage",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Visible => "screen",
+            Self::Snip => "area",
+            Self::FullWindow => "window",
+            Self::FrontWindow => "front window",
+            Self::PageOnly => "browser page",
+            Self::Scrolling => "scrolling area",
+            Self::ScrollingPage => "scrolling page",
+        }
+    }
+}
+
+impl TryFrom<&str> for CaptureMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "visible" => Ok(Self::Visible),
+            "snip" => Ok(Self::Snip),
+            "fullWindow" => Ok(Self::FullWindow),
+            "frontWindow" => Ok(Self::FrontWindow),
+            "pageOnly" => Ok(Self::PageOnly),
+            "scrolling" => Ok(Self::Scrolling),
+            "scrollingPage" => Ok(Self::ScrollingPage),
+            _ => Err(format!("unknown capture mode: {value}")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResultRoute {
     Editor,
     History(String),
+}
+
+/// The terminal report from the editor or silent worker. Keeping its related values together
+/// prevents callers from constructing contradictory route/error/recovery combinations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    Succeeded {
+        route: ResultRoute,
+    },
+    Failed {
+        message: String,
+        recovery: Option<ResultRoute>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,8 +87,9 @@ pub enum Phase {
     Idle,
     Active {
         token: CaptureToken,
-        mode: String,
+        mode: CaptureMode,
         delivery_session: Option<String>,
+        notice: Option<String>,
     },
     Succeeded {
         revision: u64,
@@ -37,16 +107,12 @@ pub enum Phase {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureInProgress {
-    pub mode: String,
+    pub mode: CaptureMode,
 }
 
 impl std::fmt::Display for CaptureInProgress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "A {} capture is already in progress.",
-            mode_label(&self.mode)
-        )
+        write!(f, "A {} capture is already in progress.", self.mode.label())
     }
 }
 
@@ -84,15 +150,20 @@ impl Default for Lifecycle {
 }
 
 impl Lifecycle {
-    pub fn begin(&mut self, mode: &str) -> Result<CaptureToken, CaptureInProgress> {
-        if let Phase::Active { mode, .. } = &self.phase {
-            return Err(CaptureInProgress { mode: mode.clone() });
+    pub fn begin(&mut self, requested: CaptureMode) -> Result<CaptureToken, CaptureInProgress> {
+        if let Phase::Active { mode, notice, .. } = &mut self.phase {
+            *notice = Some(format!(
+                "Already capturing {} — the new request was ignored.",
+                mode.label()
+            ));
+            return Err(CaptureInProgress { mode: *mode });
         }
         let token = CaptureToken(self.take_revision());
         self.phase = Phase::Active {
             token,
-            mode: mode.to_string(),
+            mode: requested,
             delivery_session: None,
+            notice: None,
         };
         Ok(token)
     }
@@ -121,13 +192,7 @@ impl Lifecycle {
 
     /// Settle only the capture whose delivery page is reporting. A delayed old page cannot
     /// acknowledge whichever capture happens to be active now.
-    pub fn finish_delivery(
-        &mut self,
-        session_id: &str,
-        route: ResultRoute,
-        error: Option<String>,
-        recovery: Option<ResultRoute>,
-    ) -> Option<u64> {
+    pub fn finish_delivery(&mut self, session_id: &str, outcome: DeliveryOutcome) -> Option<u64> {
         let matches = matches!(
             &self.phase,
             Phase::Active {
@@ -139,13 +204,13 @@ impl Lifecycle {
             return None;
         }
         let revision = self.take_revision();
-        self.phase = match error {
-            Some(message) => Phase::Failed {
+        self.phase = match outcome {
+            DeliveryOutcome::Failed { message, recovery } => Phase::Failed {
                 revision,
                 message,
                 recovery,
             },
-            None => Phase::Succeeded { revision, route },
+            DeliveryOutcome::Succeeded { route } => Phase::Succeeded { revision, route },
         };
         Some(revision)
     }
@@ -210,10 +275,21 @@ impl Lifecycle {
                 menu_enabled: false,
                 action: Action::None,
             },
+            Phase::Active {
+                mode,
+                notice: Some(notice),
+                ..
+            } => Presentation {
+                title: "●",
+                tooltip: format!("Glyphio — {notice} Capturing {}…", mode.label()),
+                menu_text: notice.clone(),
+                menu_enabled: false,
+                action: Action::None,
+            },
             Phase::Active { mode, .. } => Presentation {
                 title: "●",
-                tooltip: format!("Glyphio — Capturing {}…", mode_label(mode)),
-                menu_text: format!("Capturing {}…", mode_label(mode)),
+                tooltip: format!("Glyphio — Capturing {}…", mode.label()),
+                menu_text: format!("Capturing {}…", mode.label()),
                 menu_enabled: false,
                 action: Action::None,
             },
@@ -261,27 +337,23 @@ impl Lifecycle {
     }
 }
 
-fn mode_label(mode: &str) -> &str {
-    match mode {
-        "visible" => "screen",
-        "snip" => "area",
-        "fullWindow" => "window",
-        "frontWindow" => "front window",
-        "pageOnly" => "browser page",
-        "scrolling" => "scrolling area",
-        "scrollingPage" => "scrolling page",
-        _ => "image",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Action, Lifecycle, Phase, ResultRoute};
+    use super::{Action, CaptureMode, DeliveryOutcome, Lifecycle, Phase, ResultRoute};
+
+    #[test]
+    fn capture_mode_is_validated_once_at_the_string_boundary() {
+        assert_eq!(CaptureMode::try_from("frontWindow"), Ok(CaptureMode::FrontWindow));
+        assert_eq!(
+            CaptureMode::try_from("front-window"),
+            Err("unknown capture mode: front-window".into())
+        );
+    }
 
     #[test]
     fn exposes_the_full_observable_capture_lifecycle() {
         let mut lifecycle = Lifecycle::default();
-        let token = lifecycle.begin("scrollingPage").unwrap();
+        let token = lifecycle.begin(CaptureMode::ScrollingPage).unwrap();
 
         let active = lifecycle.presentation();
         assert_eq!(active.title, "●");
@@ -292,9 +364,9 @@ mod tests {
         let revision = lifecycle
             .finish_delivery(
                 "delivery-1",
-                ResultRoute::History("capture-1".into()),
-                None,
-                None,
+                DeliveryOutcome::Succeeded {
+                    route: ResultRoute::History("capture-1".into()),
+                },
             )
             .unwrap();
         let succeeded = lifecycle.presentation();
@@ -312,14 +384,15 @@ mod tests {
     #[test]
     fn reports_failure_without_losing_its_details() {
         let mut lifecycle = Lifecycle::default();
-        let token = lifecycle.begin("snip").unwrap();
+        let token = lifecycle.begin(CaptureMode::Snip).unwrap();
         assert!(lifecycle.bind_delivery(token, "failed-delivery"));
         let revision = lifecycle
             .finish_delivery(
                 "failed-delivery",
-                ResultRoute::Editor,
-                Some("permission denied".into()),
-                None,
+                DeliveryOutcome::Failed {
+                    message: "permission denied".into(),
+                    recovery: None,
+                },
             )
             .unwrap();
 
@@ -333,28 +406,42 @@ mod tests {
     #[test]
     fn duplicate_request_does_not_disturb_an_active_scrolling_capture() {
         let mut lifecycle = Lifecycle::default();
-        let first = lifecycle.begin("scrolling").unwrap();
+        let first = lifecycle.begin(CaptureMode::Scrolling).unwrap();
 
-        let error = lifecycle.begin("scrolling").unwrap_err();
+        let error = lifecycle.begin(CaptureMode::Scrolling).unwrap_err();
 
-        assert_eq!(error.mode, "scrolling");
+        assert_eq!(error.mode, CaptureMode::Scrolling);
         assert_eq!(lifecycle.active_token(), Some(first));
         assert_eq!(lifecycle.presentation().title, "●");
+        assert_eq!(
+            lifecycle.presentation().menu_text,
+            "Already capturing scrolling area — the new request was ignored."
+        );
     }
 
     #[test]
     fn stale_delivery_and_timeout_cannot_settle_a_new_capture() {
         let mut lifecycle = Lifecycle::default();
-        let first = lifecycle.begin("visible").unwrap();
+        let first = lifecycle.begin(CaptureMode::Visible).unwrap();
         assert!(lifecycle.bind_delivery(first, "old"));
         let old_revision = lifecycle
-            .finish_delivery("old", ResultRoute::Editor, None, None)
+            .finish_delivery(
+                "old",
+                DeliveryOutcome::Succeeded {
+                    route: ResultRoute::Editor,
+                },
+            )
             .unwrap();
-        let second = lifecycle.begin("snip").unwrap();
+        let second = lifecycle.begin(CaptureMode::Snip).unwrap();
         assert!(lifecycle.bind_delivery(second, "new"));
 
         assert_eq!(
-            lifecycle.finish_delivery("old", ResultRoute::Editor, None, None),
+            lifecycle.finish_delivery(
+                "old",
+                DeliveryOutcome::Succeeded {
+                    route: ResultRoute::Editor,
+                },
+            ),
             None
         );
         assert!(!lifecycle.expire(old_revision));
@@ -364,19 +451,23 @@ mod tests {
     #[test]
     fn clipboard_failure_opens_the_exact_saved_capture_for_recovery() {
         let mut lifecycle = Lifecycle::default();
-        let token = lifecycle.begin("snip").unwrap();
+        let token = lifecycle.begin(CaptureMode::Snip).unwrap();
         assert!(lifecycle.bind_delivery(token, "delivery-1"));
 
         lifecycle.finish_delivery(
             "delivery-1",
-            ResultRoute::Editor,
-            Some("Clipboard copy failed: pasteboard unavailable".into()),
-            Some(ResultRoute::History("capture-42".into())),
+            DeliveryOutcome::Failed {
+                message: "Clipboard copy failed: pasteboard unavailable".into(),
+                recovery: Some(ResultRoute::History("capture-42".into())),
+            },
         );
 
         let failed = lifecycle.presentation();
         assert_eq!(failed.title, "!");
-        assert_eq!(failed.menu_text, "Clipboard copy failed — Open saved capture");
+        assert_eq!(
+            failed.menu_text,
+            "Clipboard copy failed — Open saved capture"
+        );
         assert_eq!(
             failed.action,
             Action::OpenResult(ResultRoute::History("capture-42".into()))
@@ -386,7 +477,7 @@ mod tests {
     #[test]
     fn escape_cancellation_returns_the_indicator_to_idle() {
         let mut lifecycle = Lifecycle::default();
-        lifecycle.begin("scrolling").unwrap();
+        lifecycle.begin(CaptureMode::Scrolling).unwrap();
 
         assert!(lifecycle.cancel_current());
         assert_eq!(lifecycle.presentation().title, "");

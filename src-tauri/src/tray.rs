@@ -6,8 +6,10 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
 use crate::capture::lifecycle::{
-    Action, CaptureInProgress, CaptureToken, Lifecycle, Presentation, ResultRoute,
+    Action, CaptureInProgress, CaptureMode, CaptureToken, Presentation, ResultRoute,
 };
+use crate::capture::orchestration::{CaptureOrchestration, DeliveryOutcome};
+use crate::capture::{delivery::DeliveryRoute, PendingCapture};
 
 const TRAY_ID: &str = "glyphio-tray";
 const CAPTURE_STATUS_ID: &str = "capture-status";
@@ -17,7 +19,7 @@ const FEEDBACK_DURATION: std::time::Duration = std::time::Duration::from_millis(
 /// current result. The icon/title and tooltip are updated from the same presentation.
 #[derive(Default)]
 pub struct CaptureFeedback {
-    lifecycle: Lifecycle,
+    orchestration: CaptureOrchestration<PendingCapture>,
     status_item: Option<MenuItem<tauri::Wry>>,
 }
 
@@ -26,7 +28,7 @@ fn presentation(app: &AppHandle) -> Presentation {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .presentation()
 }
 
@@ -61,7 +63,7 @@ fn schedule_reset(app: &AppHandle, revision: u64) {
             .capture_feedback
             .lock()
             .unwrap()
-            .lifecycle
+            .orchestration
             .expire(revision);
         if expired {
             apply(&app, presentation(&app));
@@ -72,17 +74,19 @@ fn schedule_reset(app: &AppHandle, revision: u64) {
 /// Begin the one capture currently represented by the menu-bar icon.
 pub fn capture_started(
     app: &AppHandle,
-    mode: &str,
+    mode: CaptureMode,
 ) -> Result<CaptureToken, CaptureInProgress> {
-    let token = app
+    let result = app
         .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
-        .begin(mode)?;
+        .orchestration
+        .begin(mode);
+    // `begin` also records a duplicate-request notice without replacing the active capture.
+    // Apply it on both paths so the ignored hotkey is visible without activating Glyphio.
     apply(app, presentation(app));
-    Ok(token)
+    result
 }
 
 pub fn active_capture(app: &AppHandle) -> Option<CaptureToken> {
@@ -90,18 +94,37 @@ pub fn active_capture(app: &AppHandle) -> Option<CaptureToken> {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .active_token()
 }
 
-/// Tie the active icon state to the editor/worker session that will acknowledge delivery.
-pub fn capture_delivery_started(app: &AppHandle, token: CaptureToken, session_id: &str) {
+/// Register a completed result and tie its exact-once session to the active icon state.
+pub fn capture_completed(
+    app: &AppHandle,
+    token: CaptureToken,
+    route: DeliveryRoute,
+    pending: PendingCapture,
+) -> anyhow::Result<crate::capture::delivery::DeliverySessionId> {
     app.state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
-        .bind_delivery(token, session_id);
+        .orchestration
+        .complete(token, route, pending)
+        .ok_or_else(|| anyhow::anyhow!("capture completed after its lifecycle had already ended"))
+}
+
+pub fn take_pending_capture(
+    app: &AppHandle,
+    session_id: &crate::capture::delivery::DeliverySessionId,
+    route: DeliveryRoute,
+) -> Option<PendingCapture> {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .consume(session_id, route)
 }
 
 pub fn capture_delivery_finished(
@@ -111,7 +134,7 @@ pub fn capture_delivery_finished(
     history_id: Option<String>,
     error: Option<String>,
 ) {
-    let route = if silent {
+    let result_route = if silent {
         history_id
             .clone()
             .map(ResultRoute::History)
@@ -119,14 +142,22 @@ pub fn capture_delivery_finished(
     } else {
         ResultRoute::Editor
     };
-    let recovery = error.as_ref().and(history_id.map(ResultRoute::History));
+    let outcome = match error {
+        Some(message) => DeliveryOutcome::Failed {
+            message,
+            recovery: history_id.map(ResultRoute::History),
+        },
+        None => DeliveryOutcome::Succeeded {
+            route: result_route,
+        },
+    };
     let revision = app
         .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
-        .finish_delivery(session_id, route, error, recovery);
+        .orchestration
+        .finish_delivery(session_id, outcome);
     if let Some(revision) = revision {
         apply(app, presentation(app));
         schedule_reset(app, revision);
@@ -139,7 +170,7 @@ pub fn capture_failed(app: &AppHandle, token: CaptureToken, message: String) {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .fail(token, message);
     if let Some(revision) = revision {
         apply(app, presentation(app));
@@ -153,7 +184,7 @@ pub fn capture_failed_current(app: &AppHandle, message: String) {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .fail_current(message);
     if let Some(revision) = revision {
         apply(app, presentation(app));
@@ -167,7 +198,7 @@ pub fn capture_cancelled(app: &AppHandle) {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .cancel_current();
     if changed {
         apply(app, presentation(app));
@@ -183,7 +214,7 @@ pub fn flash_ack(app: &AppHandle) {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .acknowledge();
     if let Some(revision) = revision {
         apply(app, presentation(app));
@@ -197,7 +228,7 @@ fn activate_capture_status(app: &AppHandle) {
         .capture_feedback
         .lock()
         .unwrap()
-        .lifecycle
+        .orchestration
         .presentation()
         .action;
     match action {

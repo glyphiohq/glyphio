@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
 
-use crate::capture::PendingCapture;
 use crate::clipboard::ClipStore;
 use crate::engine::Supervisor;
 use crate::history::HistoryStore;
@@ -43,9 +42,8 @@ pub struct AppState {
     pub palette_view: Mutex<String>,
     pub supervisor: Supervisor,
     pub settings: Mutex<Settings>,
-    /// Capture results awaiting acknowledgement by their named delivery session.
-    pub capture_deliveries: Mutex<capture::delivery::CaptureDeliverySessions<PendingCapture>>,
-    /// The menu-bar representation of the capture currently in flight (and its brief result).
+    /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
+    /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
     pub capture_feedback: Mutex<tray::CaptureFeedback>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
@@ -80,7 +78,6 @@ pub fn run() {
         clips,
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
-        capture_deliveries: Mutex::new(Default::default()),
         capture_feedback: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),

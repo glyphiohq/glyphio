@@ -74,6 +74,22 @@ export function permissionPresentation(kind, state) {
   }
 }
 
+/** Both rows always belong to the inspectable Settings surface; only unmet access is a banner. */
+export function permissionSurface(states) {
+  const rows = Object.entries(states).map(([kind, state]) => [
+    kind,
+    permissionPresentation(kind, state),
+  ]);
+  return {
+    rows,
+    bannerVisible: rows.some(([, row]) => row.phase !== 'granted'),
+  };
+}
+
+export function shouldShowPermissionBanner(surface, inspectingInSettings) {
+  return surface.bannerVisible && !inspectingInSettings;
+}
+
 /** Keep an unspent first-prompt path, but never resurrect it after a revocation. */
 export function withNativePermissionStatus(state, granted) {
   if (granted) return { ...state, granted: true };

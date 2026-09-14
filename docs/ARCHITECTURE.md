@@ -67,10 +67,23 @@ the upstream process model and keeps changes rebasing-friendly. Glyphio owns the
 tray, notifications, and configuration generation. The sidecar receives isolated
 `ESPANSO_*_DIR` paths and hot-reloads generated configuration.
 
-The fork has two macOS Accessibility deviations. It suppresses espanso's own permission prompt
-because Glyphio owns permission guidance, and it rechecks trust periodically so granting access
-can restart the worker and recreate its event tap without restarting the app. Keep both changes
-local to `espanso/espanso/src/cli/daemon/mod.rs`.
+The fork has three deliberate deviations from upstream:
+
+- On macOS it suppresses espanso's own Accessibility prompt because Glyphio owns permission
+  guidance, and it rechecks trust periodically so granting access can restart the worker and
+  recreate its event tap without restarting the app. Keep those changes local to
+  `espanso/espanso/src/cli/daemon/mod.rs`.
+- App-specific configuration files are read in file-name order. The first matching config still
+  owns behavioral settings such as the injection backend, which lets generated
+  `00_delivery_*` files give a bundle identifier an explicit paste/keys policy.
+- `ConfigStore::active_match_paths` unions the match files from the default config and every
+  app-specific config that matches the focused application. Upstream couples snippets to the
+  single active config; Glyphio separates those concerns so a delivery-only config can win
+  backend precedence without hiding snippets contributed by another matching scope.
+
+The latter two deviations live in `espanso-config` and the worker config adapter. Keep the
+first-match behavior and all-match-path union covered together: changing either independently can
+silently select the wrong delivery policy or make an application's snippets disappear.
 
 ### Optional sync
 

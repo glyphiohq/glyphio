@@ -425,7 +425,13 @@ pub async fn scroll_capture_run(
     let outcome = match crate::capture::run_scrolling(&app, (gx, gy, w, h)).await {
         Ok(shot) => {
             let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
-            crate::capture::finish(&app, shot, "scrolling", delivery, activity)
+            crate::capture::finish(
+                &app,
+                shot,
+                crate::capture::lifecycle::CaptureMode::Scrolling,
+                delivery,
+                activity,
+            )
         }
         Err(e) => Err(e),
     };
@@ -775,14 +781,11 @@ pub fn take_pending_capture(
     silent: bool,
 ) -> Option<crate::capture::PendingCapture> {
     let session_id = crate::capture::delivery::DeliverySessionId::parse(session_id)?;
-    app.state::<AppState>()
-        .capture_deliveries
-        .lock()
-        .unwrap()
-        .consume(
-            &session_id,
-            crate::capture::delivery::DeliveryRoute::from_silent(silent),
-        )
+    crate::tray::take_pending_capture(
+        &app,
+        &session_id,
+        crate::capture::delivery::DeliveryRoute::from_silent(silent),
+    )
 }
 
 /// The visible editor and invisible worker acknowledge the exact delivery session they loaded.

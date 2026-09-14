@@ -17,7 +17,8 @@ import {
   initialPermissionState,
   PERMISSION_KIND,
   PERMISSION_REMEDY,
-  permissionPresentation,
+  permissionSurface,
+  shouldShowPermissionBanner,
   withNativePermissionStatus,
 } from './permissions.mjs';
 
@@ -36,6 +37,7 @@ const permissionState = {
   [PERMISSION_KIND.ACCESSIBILITY]: initialPermissionState({ promptAvailable: false }),
   [PERMISSION_KIND.SCREEN_RECORDING]: initialPermissionState({ promptAvailable: false }),
 };
+let permissionGuidanceReady = false;
 
 const state = {
   snippets: [],
@@ -188,7 +190,7 @@ function renderShell() {
     </header>
     <section class="permission-panel" id="permission-panel" aria-label="macOS permissions" hidden>
       <div class="permission-panel-title">macOS permissions</div>
-      <div id="permission-rows"></div>
+      <div data-permission-rows></div>
     </section>
     <div class="ax-banner" id="si-banner">
       <div class="ax-text">
@@ -225,21 +227,19 @@ function initializePermissionGuidance() {
       promptAvailable: !localStorage.getItem(PROMPTED_KEY[kind]),
     });
   }
+  permissionGuidanceReady = true;
 }
 
 function renderPermissionGuidance() {
   const panel = document.getElementById('permission-panel');
-  const rows = document.getElementById('permission-rows');
-  if (!panel || !rows) return;
+  if (!panel || !permissionGuidanceReady) return;
 
-  const presentations = Object.entries(permissionState).map(([kind, value]) => [
-    kind,
-    permissionPresentation(kind, value),
-  ]);
-  // Once both capabilities work there is nothing to remediate. Until then, showing both rows
-  // together makes their distinct jobs and states visible without two competing banners.
-  panel.hidden = presentations.every(([, row]) => row.phase === 'granted');
-  rows.innerHTML = presentations.map(([kind, row]) => `
+  const surface = permissionSurface(permissionState);
+  // Keep the global guidance quiet once both capabilities work. The same two rows remain
+  // inspectable under Settings → General, so "no banner" never means "unknown status".
+  const inspectingInSettings = state.selected === 'settings' && state.settingsTab === 'general';
+  panel.hidden = !shouldShowPermissionBanner(surface, inspectingInSettings);
+  const markup = surface.rows.map(([kind, row]) => `
     <div class="perm-row" data-kind="${kind}">
       <div class="perm-info"><strong>${row.name}</strong>
         <span class="perm-sub">${row.description}</span></div>
@@ -247,6 +247,7 @@ function renderPermissionGuidance() {
       <div class="perm-actions">${row.actions.map((action) =>
         `<button type="button" class="${action.style}" data-permission-action="${action.id}">${action.label}</button>`).join('')}</div>
     </div>`).join('');
+  document.querySelectorAll('[data-permission-rows]').forEach((rows) => { rows.innerHTML = markup; });
 }
 
 async function refreshPermissionGuidance() {
@@ -496,6 +497,7 @@ function renderTeamNav(item) {
 // --- Main pane --------------------------------------------------------------
 
 function renderMain() {
+  renderPermissionGuidance();
   const main = document.getElementById('main');
   if (state.selected === 'settings') { renderSettings(main); return; }
   if (state.selected === 'history') { renderHistory(main); return; }
@@ -2342,13 +2344,26 @@ function renderSettings(main) {
   }));
   const form = main.querySelector('#settings-form');
   switch (state.settingsTab) {
-    case 'general': renderSections(form, GENERAL_SECTIONS); break;
+    case 'general': renderGeneralTab(form); break;
     case 'snippets': renderSnippetsTab(form); break;
     case 'clipboard': renderClipboardTab(form); break;
     case 'sync': renderSyncSection(form); break;
     case 'about': renderAboutTab(form); break;
     default: renderSections(form, CAPTURE_SECTIONS);
   }
+}
+
+function renderGeneralTab(form) {
+  const permissions = document.createElement('section');
+  permissions.className = 'form-section permission-settings';
+  permissions.setAttribute('aria-label', 'macOS permission status');
+  permissions.innerHTML = `
+    <h3>macOS permissions</h3>
+    <p class="adv-hint">Current access for Glyphio. Actions appear only when macOS needs one.</p>
+    <div data-permission-rows></div>`;
+  permissions.addEventListener('click', handlePermissionAction);
+  renderSections(form, GENERAL_SECTIONS, permissions);
+  renderPermissionGuidance();
 }
 
 /// Render setting sections plus the Save button they share. Every input carries its key, so
@@ -2598,11 +2613,11 @@ function renderField(key, type, label, opts) {
 /** The editor key and the straight-to-clipboard key for one capture mode. */
 function hotkeyPair(key, silentKey, label) {
   const wrap = el('div', { className: 'hotkey-pair' });
-  const one = (k, caption, placeholder) => {
+  const buildRecorder = (settingsKey, caption, placeholder) => {
     const box = el('div', { className: 'shortcut-box' });
     const input = el('input', { type: 'hidden' });
-    input.value = state.settings[k] ?? '';
-    input.dataset.key = k;
+    input.value = state.settings[settingsKey] ?? '';
+    input.dataset.key = settingsKey;
     input.dataset.type = 'text';
     input.dataset.label = `${label} (${caption})`;
 
@@ -2655,7 +2670,7 @@ function hotkeyPair(key, silentKey, label) {
         showError(recorded.error);
         return;
       }
-      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(k));
+      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey));
       if (!result.ok) {
         showError(result.error);
         return;
@@ -2673,9 +2688,9 @@ function hotkeyPair(key, silentKey, label) {
     });
     const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
     reset.addEventListener('click', () => {
-      input.value = CAPTURE_SHORTCUT_DEFAULTS[k] ?? '';
+      input.value = CAPTURE_SHORTCUT_DEFAULTS[settingsKey] ?? '';
       showValue();
-      const result = validateAccelerator(input.value, configuredShortcuts(k));
+      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey));
       showError(result.ok ? '' : result.error);
     });
     const actions = el('span', { className: 'shortcut-actions' });
@@ -2684,7 +2699,10 @@ function hotkeyPair(key, silentKey, label) {
       el('span', { className: 'hotkey-caption', textContent: caption }), error);
     return box;
   };
-  wrap.append(one(key, 'opens the editor', ''), one(silentKey, 'to the clipboard', 'not set'));
+  wrap.append(
+    buildRecorder(key, 'opens the editor', ''),
+    buildRecorder(silentKey, 'to the clipboard', 'not set'),
+  );
   return wrap;
 }
 

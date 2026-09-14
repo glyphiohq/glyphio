@@ -61,6 +61,9 @@
 .permission-panel .perm-row { padding: 8px 2px; }
 .permission-panel .perm-actions { min-width: 182px; text-align: right; }
 .permission-panel .perm-actions button { white-space: nowrap; padding: 6px 12px; font-size: 12px; }
+.permission-settings .perm-row { padding-left: 0; padding-right: 0; }
+.permission-settings .perm-actions { min-width: 182px; text-align: right; }
+.permission-settings .perm-actions button { white-space: nowrap; }
 
 .ax-banner {
   display: none;

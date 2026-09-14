@@ -65,8 +65,6 @@ const CAPTURE_SECTIONS = [
     clipboard — <kbd>⌘↩</kbd> in the palette does one on demand. Either way it lands in
     History.`, fields: [
     ['silentCapture', 'toggle', 'Make every capture silent by default'],
-    ['autoCopyOnOpen', 'toggle', 'Auto-copy when the editor opens'],
-    ['historyEnabled', 'toggle', 'Save captures to history'],
     ['historyMaxCount', 'number', 'Max captures kept'],
     ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
   ]},

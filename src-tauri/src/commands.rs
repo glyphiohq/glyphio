@@ -786,8 +786,9 @@ pub fn capture_delivery_finished(
     session_id: String,
     silent: bool,
     error: Option<String>,
+    history_id: Option<String>,
 ) {
-    crate::tray::capture_delivery_finished(&app, &session_id, silent, error);
+    crate::tray::capture_delivery_finished(&app, &session_id, silent, history_id, error);
 }
 
 /// Ask GitHub whether a newer Glyphio exists. Read-only — nothing is downloaded.

@@ -10,7 +10,7 @@ pub struct CaptureToken(u64);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResultRoute {
     Editor,
-    History,
+    History(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub enum Phase {
     Failed {
         revision: u64,
         message: String,
+        recovery: Option<ResultRoute>,
     },
     Acknowledged {
         revision: u64,
@@ -125,6 +126,7 @@ impl Lifecycle {
         session_id: &str,
         route: ResultRoute,
         error: Option<String>,
+        recovery: Option<ResultRoute>,
     ) -> Option<u64> {
         let matches = matches!(
             &self.phase,
@@ -138,7 +140,11 @@ impl Lifecycle {
         }
         let revision = self.take_revision();
         self.phase = match error {
-            Some(message) => Phase::Failed { revision, message },
+            Some(message) => Phase::Failed {
+                revision,
+                message,
+                recovery,
+            },
             None => Phase::Succeeded { revision, route },
         };
         Some(revision)
@@ -149,7 +155,11 @@ impl Lifecycle {
             return None;
         }
         let revision = self.take_revision();
-        self.phase = Phase::Failed { revision, message };
+        self.phase = Phase::Failed {
+            revision,
+            message,
+            recovery: None,
+        };
         Some(revision)
     }
 
@@ -214,6 +224,19 @@ impl Lifecycle {
                 menu_enabled: true,
                 action: Action::OpenResult(route.clone()),
             },
+            Phase::Failed {
+                message,
+                recovery: Some(route),
+                ..
+            } => Presentation {
+                title: "!",
+                tooltip: format!(
+                    "Glyphio — Capture delivery failed: {message}. Click for the saved capture."
+                ),
+                menu_text: "Clipboard copy failed — Open saved capture".into(),
+                menu_enabled: true,
+                action: Action::OpenResult(route.clone()),
+            },
             Phase::Failed { message, .. } => Presentation {
                 title: "!",
                 tooltip: format!("Glyphio — Capture failed: {message}"),
@@ -267,11 +290,19 @@ mod tests {
 
         assert!(lifecycle.bind_delivery(token, "delivery-1"));
         let revision = lifecycle
-            .finish_delivery("delivery-1", ResultRoute::History, None)
+            .finish_delivery(
+                "delivery-1",
+                ResultRoute::History("capture-1".into()),
+                None,
+                None,
+            )
             .unwrap();
         let succeeded = lifecycle.presentation();
         assert_eq!(succeeded.title, "✓");
-        assert_eq!(succeeded.action, Action::OpenResult(ResultRoute::History));
+        assert_eq!(
+            succeeded.action,
+            Action::OpenResult(ResultRoute::History("capture-1".into()))
+        );
 
         assert!(lifecycle.expire(revision));
         assert_eq!(lifecycle.phase, Phase::Idle);
@@ -288,6 +319,7 @@ mod tests {
                 "failed-delivery",
                 ResultRoute::Editor,
                 Some("permission denied".into()),
+                None,
             )
             .unwrap();
 
@@ -316,17 +348,39 @@ mod tests {
         let first = lifecycle.begin("visible").unwrap();
         assert!(lifecycle.bind_delivery(first, "old"));
         let old_revision = lifecycle
-            .finish_delivery("old", ResultRoute::Editor, None)
+            .finish_delivery("old", ResultRoute::Editor, None, None)
             .unwrap();
         let second = lifecycle.begin("snip").unwrap();
         assert!(lifecycle.bind_delivery(second, "new"));
 
         assert_eq!(
-            lifecycle.finish_delivery("old", ResultRoute::Editor, None),
+            lifecycle.finish_delivery("old", ResultRoute::Editor, None, None),
             None
         );
         assert!(!lifecycle.expire(old_revision));
         assert_eq!(lifecycle.active_token(), Some(second));
+    }
+
+    #[test]
+    fn clipboard_failure_opens_the_exact_saved_capture_for_recovery() {
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin("snip").unwrap();
+        assert!(lifecycle.bind_delivery(token, "delivery-1"));
+
+        lifecycle.finish_delivery(
+            "delivery-1",
+            ResultRoute::Editor,
+            Some("Clipboard copy failed: pasteboard unavailable".into()),
+            Some(ResultRoute::History("capture-42".into())),
+        );
+
+        let failed = lifecycle.presentation();
+        assert_eq!(failed.title, "!");
+        assert_eq!(failed.menu_text, "Clipboard copy failed — Open saved capture");
+        assert_eq!(
+            failed.action,
+            Action::OpenResult(ResultRoute::History("capture-42".into()))
+        );
     }
 
     #[test]

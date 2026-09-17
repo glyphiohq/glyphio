@@ -37,7 +37,6 @@ use std::sync::LazyLock;
 use crate::{
     cli::{LogMode, PathsOverrides},
     config::load_config,
-    util::log_system_info,
 };
 
 mod capabilities;
@@ -605,8 +604,6 @@ SubCommand::with_name("install")
             info!("reading configs from: {:?}", paths.config.display());
             info!("reading packages from: {:?}", paths.packages.display());
             info!("using runtime dir: {:?}", paths.runtime.display());
-            log_system_info();
-
             if handler.requires_config {
                 let config_result = load_config(&paths.config).expect("unable to load config");
 

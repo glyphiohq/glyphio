@@ -110,6 +110,7 @@ Run these against the same commit before the signed session:
 
 ```bash
 npm test
+bash scripts/verify-edr-surface.sh
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --workspace
 cargo clippy --manifest-path espanso/Cargo.toml -p espanso-config --all-targets -- -D warnings
@@ -120,3 +121,9 @@ The frontend tests cover capture delivery outcomes, permission presentation, and
 recording. The app workspace covers lifecycle state, exact-once sessions, scrolling, persisted
 settings, and generated delivery configuration. The expansion-engine test pins how application
 configuration contributes to the active match set.
+
+For a managed-device release candidate, additionally verify that enabling **Launch at Login**
+creates a visible entry in **System Settings → General → Login Items** and does not create a file
+in `~/Library/LaunchAgents`. Record the app's SHA-256 and Developer ID authority in the release
+evidence. A self-signed development build is appropriate for local development, but is not
+suitable evidence for an enterprise EDR allow rule.

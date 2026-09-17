@@ -94,7 +94,9 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            // Login Items is intentionally used instead of LaunchAgent: the latter writes a
+            // persistence plist to ~/Library/LaunchAgents and is correctly scrutinized by EDR.
+            tauri_plugin_autostart::MacosLauncher::AppleScript,
             Some(vec![startup::LOGIN_LAUNCH_ARGUMENT]),
         ))
         .plugin(

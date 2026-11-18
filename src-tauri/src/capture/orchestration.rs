@@ -5,7 +5,9 @@
 
 use super::delivery::{CaptureDeliverySessions, DeliveryRoute, DeliverySessionId};
 pub use super::lifecycle::DeliveryOutcome;
-use super::lifecycle::{CaptureInProgress, CaptureMode, CaptureToken, Lifecycle, Presentation};
+use super::lifecycle::{
+    CaptureInProgress, CaptureMode, CaptureToken, DeadlineCheck, Lifecycle, Presentation,
+};
 
 pub struct CaptureOrchestration<T> {
     lifecycle: Lifecycle,
@@ -73,6 +75,20 @@ impl<T> CaptureOrchestration<T> {
 
     pub fn acknowledge(&mut self) -> Option<u64> {
         self.lifecycle.acknowledge()
+    }
+
+    /// See [`Lifecycle::check_deadline`].
+    pub fn check_deadline(&mut self, token: CaptureToken, now: std::time::Instant) -> DeadlineCheck {
+        self.lifecycle.check_deadline(token, now)
+    }
+
+    pub fn heartbeat(&mut self) {
+        self.lifecycle.heartbeat();
+    }
+
+    /// Drop the active capture, if any, back to idle (tray Reload).
+    pub fn reset(&mut self) {
+        self.lifecycle.reset();
     }
 
     pub fn expire(&mut self, revision: u64) -> bool {

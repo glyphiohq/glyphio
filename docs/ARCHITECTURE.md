@@ -105,12 +105,21 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Capture deadlines
+
+A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture
+a deadline: 150 s for modes that include a selection (snip, window picker, scrolling area), 30 s for
+the rest, 20 s once pixels exist and delivery has begun. Scrolling frames call a heartbeat that
+pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog in `tray.rs` checks
+by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
+and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
+
 ### Single instance
 
 Exactly one `glyphio` process runs per user. `tauri-plugin-single-instance` is registered first
 in the builder; a second launch (Finder, direct execution, a `glyphio://` link) forwards its
-arguments to the running copy over a socket and exits before it opens any store, tray icon or
-hotkey. The running copy brings Settings forward unless the launch carried the login marker
+arguments to the running copy over a socket and exits during builder startup, before a tray
+icon, hotkey, engine or window exists. The running copy brings Settings forward unless the launch carried the login marker
 (`startup::second_launch_action`). `relaunch_app` and the updater go through `app_restart`, which
 releases the socket before `restart()` so the replacement process claims the lock rather than
 handing its launch to the process that is exiting. The pid and executable path are logged at

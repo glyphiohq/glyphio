@@ -167,7 +167,8 @@ async function loadSettings() {
 }
 
 // Acknowledge the exact delivery session this page loaded. Best-effort: if the call itself
-// fails there is nothing left to try, and the silent window has a watchdog behind it.
+// fails there is nothing left to try; the capture lifecycle's delivery deadline (see
+// capture/lifecycle.rs) then fails the capture so the next one can start.
 function reportCaptureDelivery(error, historyId = null) {
   return invoke('capture_delivery_finished', {
     sessionId: deliverySessionId,

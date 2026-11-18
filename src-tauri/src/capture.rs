@@ -363,8 +363,11 @@ pub(crate) async fn run_scrolling(
 
     crate::shortcuts::arm_stop_key(app);
 
-    let out =
-        tauri::async_runtime::spawn_blocking(move || scroll::capture(scroll::Job { rect })).await;
+    let beat = app.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        scroll::capture(scroll::Job { rect }, || crate::tray::capture_heartbeat(&beat))
+    })
+    .await;
 
     out.map_err(|e| anyhow!("scrolling capture task failed: {e}"))?
 }

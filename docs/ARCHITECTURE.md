@@ -105,6 +105,21 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Shortcut registry
+
+`shortcuts::registry::Registry` (in `AppState`) owns the table of bindings (a capture mode with
+its silent twin, open history, open palette, open clipboard), the chords the system has accepted,
+and how each binding fared. `apply` diffs the settings against what is held: only removed or
+changed chords are unregistered and only new ones registered, so saving an unrelated setting makes
+no register call and never touches Escape, which a scrolling capture borrows separately. A chord
+the system refused is asked for again on the next save, since whatever held it may have let go.
+The key handler resolves a press by lookup, not by parsing accelerator strings, and ignores the
+same action again within 250 ms. If two bindings share a chord, the first listed wins and the
+other is reported as unusable. `save_settings` returns each binding's result and `shortcut_status`
+returns them on demand; Settings shows "Not registered" with the reason beside any refused or
+invalid binding, and the tray tooltip and status row say "Some shortcuts could not be registered
+— open Settings" while the app is otherwise idle.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

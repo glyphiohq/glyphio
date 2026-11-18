@@ -55,6 +55,12 @@
         invoke('scroll_capture_run', { x: cur.x, y: cur.y, w: cur.w, h: cur.h, silent });
       });
       addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('scroll_capture_cancel'); });
+      // Losing focus or being hidden means nobody is selecting any more; without this the
+      // capture waits on an overlay that can no longer be completed.
+      addEventListener('blur', () => { if (!dragging) invoke('scroll_capture_cancel'); });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') invoke('scroll_capture_cancel');
+      });
     </script>
   </body>
 </html>

@@ -105,6 +105,15 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Capture deadlines
+
+A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture
+a deadline: 150 s for modes that include a selection (snip, window picker, scrolling area), 30 s for
+the rest, 20 s once pixels exist and delivery has begun. Scrolling frames call a heartbeat that
+pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog in `tray.rs` checks
+by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
+and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
+
 ## Architectural invariants
 
 1. Local-first is the default: configuration, personal snippets, captures, and clipboard history

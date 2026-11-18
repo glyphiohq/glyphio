@@ -6,7 +6,8 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
 use crate::capture::lifecycle::{
-    Action, CaptureInProgress, CaptureMode, CaptureToken, Presentation, ResultRoute,
+    Action, CaptureInProgress, CaptureMode, CaptureToken, DeadlineCheck, Presentation,
+    ResultRoute,
 };
 use crate::capture::orchestration::{CaptureOrchestration, DeliveryOutcome};
 use crate::capture::{delivery::DeliveryRoute, PendingCapture};
@@ -71,6 +72,62 @@ fn schedule_reset(app: &AppHandle, revision: u64) {
     });
 }
 
+/// Fail the capture `token` if it outlives its deadline. Sleeps until the deadline the
+/// lifecycle reports, then asks again, so heartbeats that moved it are honoured. It ends as
+/// soon as the token is stale, so a watchdog never touches a later capture.
+fn watch_deadline(app: &AppHandle, token: CaptureToken) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let check = app
+                .state::<crate::AppState>()
+                .capture_feedback
+                .lock()
+                .unwrap()
+                .orchestration
+                .check_deadline(token, std::time::Instant::now());
+            match check {
+                DeadlineCheck::Stale => return,
+                DeadlineCheck::Pending(remaining) => tokio::time::sleep(remaining).await,
+                DeadlineCheck::Expired {
+                    revision,
+                    mode,
+                    phase,
+                } => {
+                    log::error!(
+                        "capture ({}) timed out while {phase}; the lifecycle was reset",
+                        mode.as_str()
+                    );
+                    apply(&app, presentation(&app));
+                    schedule_reset(&app, revision);
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// A scrolling capture produced another frame, so it is alive: extend its deadline.
+pub fn capture_heartbeat(app: &AppHandle) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .heartbeat();
+}
+
+/// Return the menu-bar capture state to idle, abandoning any stuck capture. Wired to Reload.
+pub fn capture_reset(app: &AppHandle) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .reset();
+    apply(app, presentation(app));
+}
+
 /// Begin the one capture currently represented by the menu-bar icon.
 pub fn capture_started(
     app: &AppHandle,
@@ -86,6 +143,9 @@ pub fn capture_started(
     // `begin` also records a duplicate-request notice without replacing the active capture.
     // Apply it on both paths so the ignored hotkey is visible without activating Glyphio.
     apply(app, presentation(app));
+    if let Ok(token) = &result {
+        watch_deadline(app, *token);
+    }
     result
 }
 
@@ -105,13 +165,19 @@ pub fn capture_completed(
     route: DeliveryRoute,
     pending: PendingCapture,
 ) -> anyhow::Result<crate::capture::delivery::DeliverySessionId> {
-    app.state::<crate::AppState>()
+    let session = app
+        .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
         .orchestration
         .complete(token, route, pending)
-        .ok_or_else(|| anyhow::anyhow!("capture completed after its lifecycle had already ended"))
+        .ok_or_else(|| anyhow::anyhow!("capture completed after its lifecycle had already ended"))?;
+    // Delivery has a much shorter budget than selection; the watchdog started at `begin` may be
+    // asleep until the old deadline, so start one that wakes for the new one. Whichever finds
+    // the capture expired fails it; the other sees a stale token.
+    watch_deadline(app, token);
+    Ok(session)
 }
 
 pub fn take_pending_capture(

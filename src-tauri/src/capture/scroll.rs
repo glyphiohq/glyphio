@@ -136,7 +136,8 @@ pub fn require_accessibility() -> anyhow::Result<()> {
 /// Capture a scrolling region. The rect is in global screen coordinates in points (top-left
 /// origin), as reported by the selection overlay or by the page's accessibility geometry.
 ///
-pub fn capture(job: Job) -> anyhow::Result<Shot> {
+/// `heartbeat` is called once per frame so a watchdog can tell a long page from a stuck one.
+pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
     let (x, y, w, h) = job.rect;
     require_accessibility()?;
     if w < 40.0 || h < 40.0 {
@@ -153,8 +154,11 @@ pub fn capture(job: Job) -> anyhow::Result<Shot> {
     let result = capture_loop(
         &job,
         &mut driver,
-        |frames| !stopping() && wait_for_pointer(&job, frames),
-        || nap(SETTLE),
+        |frames| !stopping() && wait_for_pointer(&job, frames, &heartbeat),
+        || {
+            heartbeat();
+            nap(SETTLE)
+        },
     );
     // Give the pointer back where we found it — but only if it is still where we put it. If the
     // user has moved it themselves (that's what pauses the capture), yanking it back would be
@@ -260,7 +264,7 @@ fn may_scroll(job: &Job, p: (f64, f64)) -> bool {
 
 /// Hold the capture while the pointer is away, and resume when it comes back. Returns false
 /// when the capture should finish with what it has: an Esc, or nobody came back.
-fn wait_for_pointer(job: &Job, frames: usize) -> bool {
+fn wait_for_pointer(job: &Job, frames: usize, heartbeat: &impl Fn()) -> bool {
     if pointer_in_region(job) {
         return true;
     }
@@ -269,6 +273,9 @@ fn wait_for_pointer(job: &Job, frames: usize) -> bool {
         if stopping() {
             return false;
         }
+        // A paused capture is waiting on the user, not stuck: keep its deadline ahead of the
+        // pause limit so the watchdog doesn't cut it off mid-wait.
+        heartbeat();
         std::thread::sleep(TICK);
         if pointer_in_region(job) {
             return true;

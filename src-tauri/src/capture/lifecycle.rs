@@ -4,6 +4,19 @@
 //! capture behaviour can be verified without ScreenCaptureKit, a running application, or a live
 //! menu-bar icon.
 
+use std::time::{Duration, Instant};
+
+/// How long a capture may sit in each phase before the watchdog gives up on it. Without a
+/// deadline one lost acknowledgement leaves the lifecycle `Active` and rejects every later
+/// capture until the app restarts.
+const SELECTION_BUDGET: Duration = Duration::from_secs(150);
+const PIXEL_BUDGET: Duration = Duration::from_secs(30);
+const DELIVERY_BUDGET: Duration = Duration::from_secs(20);
+/// Each scrolling frame pushes the deadline this far ahead of now...
+const HEARTBEAT_EXTENSION: Duration = Duration::from_secs(20);
+/// ...but never past this long after the capture began.
+const SCROLLING_CAP: Duration = Duration::from_secs(300);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureToken(u64);
 
@@ -90,6 +103,9 @@ pub enum Phase {
         mode: CaptureMode,
         delivery_session: Option<String>,
         notice: Option<String>,
+        deadline: Instant,
+        /// Latest the deadline may be extended to by heartbeats (scrolling captures only).
+        cap: Option<Instant>,
     },
     Succeeded {
         revision: u64,
@@ -134,6 +150,21 @@ pub struct Presentation {
     pub action: Action,
 }
 
+/// The watchdog's view of the active capture at a given moment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeadlineCheck {
+    /// The token no longer names the active capture (it ended, or a newer one began).
+    Stale,
+    /// Still within its deadline; check again after this long.
+    Pending(Duration),
+    /// Past its deadline: the capture is now `Failed` under `revision`.
+    Expired {
+        revision: u64,
+        mode: CaptureMode,
+        phase: &'static str,
+    },
+}
+
 #[derive(Debug)]
 pub struct Lifecycle {
     next_revision: u64,
@@ -151,6 +182,14 @@ impl Default for Lifecycle {
 
 impl Lifecycle {
     pub fn begin(&mut self, requested: CaptureMode) -> Result<CaptureToken, CaptureInProgress> {
+        self.begin_at(requested, Instant::now())
+    }
+
+    pub fn begin_at(
+        &mut self,
+        requested: CaptureMode,
+        now: Instant,
+    ) -> Result<CaptureToken, CaptureInProgress> {
         if let Phase::Active { mode, notice, .. } = &mut self.phase {
             *notice = Some(format!(
                 "Already capturing {} — the new request was ignored.",
@@ -164,6 +203,9 @@ impl Lifecycle {
             mode: requested,
             delivery_session: None,
             notice: None,
+            deadline: now + initial_budget(requested),
+            cap: matches!(requested, CaptureMode::Scrolling | CaptureMode::ScrollingPage)
+                .then(|| now + SCROLLING_CAP),
         };
         Ok(token)
     }
@@ -177,13 +219,22 @@ impl Lifecycle {
 
     /// Attach the exact-once editor/worker session to the capture that produced it.
     pub fn bind_delivery(&mut self, token: CaptureToken, session_id: &str) -> bool {
+        self.bind_delivery_at(token, session_id, Instant::now())
+    }
+
+    pub fn bind_delivery_at(&mut self, token: CaptureToken, session_id: &str, now: Instant) -> bool {
         match &mut self.phase {
             Phase::Active {
                 token: active,
                 delivery_session,
+                deadline,
+                cap,
                 ..
             } if *active == token => {
                 *delivery_session = Some(session_id.to_string());
+                // Pixels exist: the selection or scroll budget is spent, delivery has its own.
+                *deadline = now + DELIVERY_BUDGET;
+                *cap = None;
                 true
             }
             _ => false,
@@ -213,6 +264,69 @@ impl Lifecycle {
             DeliveryOutcome::Succeeded { route } => Phase::Succeeded { revision, route },
         };
         Some(revision)
+    }
+
+    /// A scrolling capture is still making progress: push its deadline out, up to the cap.
+    pub fn heartbeat(&mut self) {
+        self.heartbeat_at(Instant::now());
+    }
+
+    pub fn heartbeat_at(&mut self, now: Instant) {
+        if let Phase::Active {
+            deadline,
+            cap: Some(cap),
+            ..
+        } = &mut self.phase
+        {
+            // Never shorten a budget (selection is longer than one extension).
+            *deadline = (*deadline).max((now + HEARTBEAT_EXTENSION).min(*cap));
+        }
+    }
+
+    /// Ask whether the capture `token` has run out of time, failing it if so. The watchdog
+    /// calls this when its sleep ends; a stale token (the capture finished or a newer one is
+    /// running) changes nothing.
+    pub fn check_deadline(&mut self, token: CaptureToken, now: Instant) -> DeadlineCheck {
+        let Phase::Active {
+            token: active,
+            mode,
+            delivery_session,
+            deadline,
+            ..
+        } = &self.phase
+        else {
+            return DeadlineCheck::Stale;
+        };
+        if *active != token {
+            return DeadlineCheck::Stale;
+        }
+        if now < *deadline {
+            return DeadlineCheck::Pending(*deadline - now);
+        }
+        let mode = *mode;
+        let phase = if delivery_session.is_some() {
+            "delivering"
+        } else {
+            "capturing"
+        };
+        let revision = self.take_revision();
+        self.phase = Phase::Failed {
+            revision,
+            message: format!("The {} capture timed out while {phase}.", mode.label()),
+            recovery: None,
+        };
+        DeadlineCheck::Expired {
+            revision,
+            mode,
+            phase,
+        }
+    }
+
+    /// Return to idle whatever the state, e.g. from the tray's Reload. Revisions are spent so
+    /// nothing scheduled for the discarded capture can act on a later one.
+    pub fn reset(&mut self) {
+        self.take_revision();
+        self.phase = Phase::Idle;
     }
 
     pub fn fail(&mut self, token: CaptureToken, message: String) -> Option<u64> {
@@ -337,9 +451,146 @@ impl Lifecycle {
     }
 }
 
+fn initial_budget(mode: CaptureMode) -> Duration {
+    match mode {
+        // Includes the time the user spends choosing a region or window.
+        CaptureMode::Snip | CaptureMode::FullWindow | CaptureMode::Scrolling => SELECTION_BUDGET,
+        // Scrolling frames extend this through `heartbeat`.
+        CaptureMode::Visible
+        | CaptureMode::FrontWindow
+        | CaptureMode::PageOnly
+        | CaptureMode::ScrollingPage => PIXEL_BUDGET,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Action, CaptureMode, DeliveryOutcome, Lifecycle, Phase, ResultRoute};
+    use super::{
+        Action, CaptureMode, DeadlineCheck, DeliveryOutcome, Lifecycle, Phase, ResultRoute,
+    };
+    use std::time::{Duration, Instant};
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn a_capture_past_its_deadline_fails_and_a_new_capture_can_start() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin_at(CaptureMode::Visible, t0).unwrap();
+
+        assert_eq!(
+            lifecycle.check_deadline(token, t0 + secs(29)),
+            DeadlineCheck::Pending(secs(1))
+        );
+        let DeadlineCheck::Expired { revision, mode, phase } =
+            lifecycle.check_deadline(token, t0 + secs(30))
+        else {
+            panic!("the capture should have expired");
+        };
+        assert_eq!((mode, phase), (CaptureMode::Visible, "capturing"));
+        assert_eq!(lifecycle.presentation().title, "!");
+        assert!(lifecycle.presentation().tooltip.contains("timed out"));
+        assert!(lifecycle.expire(revision));
+
+        assert!(lifecycle.begin_at(CaptureMode::Snip, t0 + secs(31)).is_ok());
+    }
+
+    #[test]
+    fn selection_gets_longer_than_pixel_capture_and_delivery_gets_its_own_budget() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin_at(CaptureMode::Snip, t0).unwrap();
+        assert_eq!(
+            lifecycle.check_deadline(token, t0 + secs(100)),
+            DeadlineCheck::Pending(secs(50))
+        );
+
+        assert!(lifecycle.bind_delivery_at(token, "s1", t0 + secs(100)));
+        assert_eq!(
+            lifecycle.check_deadline(token, t0 + secs(119)),
+            DeadlineCheck::Pending(secs(1))
+        );
+        let DeadlineCheck::Expired { phase, .. } = lifecycle.check_deadline(token, t0 + secs(120))
+        else {
+            panic!("delivery should have expired");
+        };
+        assert_eq!(phase, "delivering");
+    }
+
+    #[test]
+    fn a_stale_expiry_cannot_fail_a_newer_capture() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let first = lifecycle.begin_at(CaptureMode::Visible, t0).unwrap();
+        lifecycle.cancel_current();
+        let second = lifecycle.begin_at(CaptureMode::Visible, t0 + secs(10)).unwrap();
+
+        assert_eq!(
+            lifecycle.check_deadline(first, t0 + secs(35)),
+            DeadlineCheck::Stale
+        );
+        assert_eq!(lifecycle.active_token(), Some(second));
+        assert_eq!(
+            lifecycle.check_deadline(second, t0 + secs(35)),
+            DeadlineCheck::Pending(secs(5))
+        );
+    }
+
+    #[test]
+    fn a_scrolling_heartbeat_extends_the_deadline_up_to_the_cap() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin_at(CaptureMode::ScrollingPage, t0).unwrap();
+
+        // Frames keep arriving, so the 30 s initial budget never runs out.
+        for second in (10..=290).step_by(10) {
+            lifecycle.heartbeat_at(t0 + secs(second));
+            assert!(matches!(
+                lifecycle.check_deadline(token, t0 + secs(second)),
+                DeadlineCheck::Pending(_)
+            ));
+        }
+        // The last beat cannot push past five minutes in total.
+        lifecycle.heartbeat_at(t0 + secs(295));
+        assert_eq!(
+            lifecycle.check_deadline(token, t0 + secs(299)),
+            DeadlineCheck::Pending(secs(1))
+        );
+        assert!(matches!(
+            lifecycle.check_deadline(token, t0 + secs(300)),
+            DeadlineCheck::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn without_a_heartbeat_a_scrolling_capture_expires() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin_at(CaptureMode::ScrollingPage, t0).unwrap();
+        lifecycle.heartbeat_at(t0 + secs(10));
+        assert!(matches!(
+            lifecycle.check_deadline(token, t0 + secs(31)),
+            DeadlineCheck::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn reset_returns_a_stuck_capture_to_idle_and_voids_its_deadline() {
+        let t0 = Instant::now();
+        let mut lifecycle = Lifecycle::default();
+        let stuck = lifecycle.begin_at(CaptureMode::Visible, t0).unwrap();
+
+        lifecycle.reset();
+
+        assert_eq!(lifecycle.phase, Phase::Idle);
+        assert_eq!(
+            lifecycle.check_deadline(stuck, t0 + secs(60)),
+            DeadlineCheck::Stale
+        );
+        assert!(lifecycle.begin_at(CaptureMode::Visible, t0 + secs(1)).is_ok());
+    }
 
     #[test]
     fn capture_mode_is_validated_once_at_the_string_boundary() {

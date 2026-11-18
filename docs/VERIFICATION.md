@@ -74,6 +74,10 @@ after the menu-bar indicator changes.
 | Clipboard write failure after history save | Failure replaces success, the exact capture remains in history, and the menu-bar recovery action opens that saved capture so **Copy** can retry. | |
 | Recovery copy after the pasteboard is available | **Copy** places the saved image on the clipboard and confirms success. | |
 | Delayed/stale editor or silent worker | It cannot consume or acknowledge a newer capture; each capture settles at most once. | |
+| Editor web process killed during delivery (Activity Monitor → Glyphio Web Content, Force Quit) | Within 20 s the menu-bar icon shows failure and the log has a `timed out while delivering` error; the next shortcut press starts a capture. | |
+| Region picker left open for over 150 s | The capture fails with a timeout, the icon returns to ready, and the next capture starts. | |
+| Stuck capture, then tray **Reload** | The icon returns to ready immediately and the next capture starts. | |
+| Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native
 clipboard command boundary; do not corrupt the user's pasteboard database or install a pasteboard

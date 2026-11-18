@@ -567,6 +567,8 @@ pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
         .render_yaml_with_policy(&state.paths.engine_config, &policy)?;
     crate::shortcuts::register(app)?;
     state.supervisor.restart(app, &state.paths)?;
+    // Reload is the user's recovery gesture: a capture that never settled must not outlive it.
+    crate::tray::capture_reset(app);
     let _ = app.emit("snippets-changed", ());
     let _ = app.emit("groups-changed", ());
     let _ = app.emit("settings-changed", ());

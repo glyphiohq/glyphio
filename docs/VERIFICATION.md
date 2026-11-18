@@ -87,6 +87,8 @@ after the menu-bar indicator changes.
 | Editor web process killed during delivery (Activity Monitor → Glyphio Web Content, Force Quit) | Within 20 s the menu-bar icon shows failure and the log has a `timed out while delivering` error; the next shortcut press starts a capture. | |
 | Region picker left open for over 150 s | The capture fails with a timeout, the icon returns to ready, and the next capture starts. | |
 | Stuck capture, then tray **Reload** | The icon returns to ready immediately and the next capture starts. | |
+| Tray menu and Settings while the Full Window or Region picker is open | The Glyphio tray menu opens and Settings repaints and can be clicked while the picker waits; picking or Esc then completes or cancels normally. | |
+| Captures taken off the main thread (ScreenCaptureKit) | Visible Area, Frontmost Window and Browser Page captures taken from the worker contain the same pixels as before and no main-thread assertion appears in the log. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

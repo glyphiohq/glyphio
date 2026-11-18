@@ -119,7 +119,7 @@ pub async fn install(app: &AppHandle) -> anyhow::Result<()> {
 
     // The engine sidecar must not outlive the bundle it came from.
     app.state::<crate::AppState>().supervisor.stop();
-    app.restart();
+    crate::app_restart(app);
 }
 
 /// The quiet check that runs a little after launch.

@@ -15,9 +15,52 @@ pub fn should_open_settings(args: impl IntoIterator<Item = impl AsRef<str>>) -> 
     })
 }
 
+/// What the already-running copy does when another process is started and exits.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SecondLaunch {
+    /// A user launch (Finder, Dock, direct execution, a link): bring Settings forward.
+    ShowSettings,
+    /// A login launch while we are already running: stay quiet.
+    Ignore,
+}
+
+/// Decide how to react to a second launch from its arguments.
+pub fn second_launch_action(args: impl IntoIterator<Item = impl AsRef<str>>) -> SecondLaunch {
+    if should_open_settings(args) {
+        SecondLaunch::ShowSettings
+    } else {
+        SecondLaunch::Ignore
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::should_open_settings;
+    use super::{second_launch_action, should_open_settings, SecondLaunch};
+
+    #[test]
+    fn a_second_user_launch_surfaces_settings_in_the_running_copy() {
+        assert_eq!(
+            second_launch_action(["glyphio"]),
+            SecondLaunch::ShowSettings
+        );
+        // A Glyphio link carries its own handling, but the running copy still comes forward.
+        assert_eq!(
+            second_launch_action(["glyphio", "glyphio://join?code=x"]),
+            SecondLaunch::ShowSettings
+        );
+    }
+
+    #[test]
+    fn a_second_login_launch_does_nothing() {
+        assert_eq!(
+            second_launch_action(["glyphio", "--hidden"]),
+            SecondLaunch::Ignore
+        );
+        assert_eq!(
+            second_launch_action(["glyphio", "--launch-at-login"]),
+            SecondLaunch::Ignore
+        );
+    }
 
     #[test]
     fn a_login_launch_starts_without_the_settings_window() {

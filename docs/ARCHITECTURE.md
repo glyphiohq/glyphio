@@ -114,6 +114,18 @@ pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog i
 by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
 and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
 
+### Single instance
+
+Exactly one `glyphio` process runs per user. `tauri-plugin-single-instance` is registered first
+in the builder; a second launch (Finder, direct execution, a `glyphio://` link) forwards its
+arguments to the running copy over a socket and exits during builder startup, before a tray
+icon, hotkey, engine or window exists. The running copy brings Settings forward unless the launch carried the login marker
+(`startup::second_launch_action`). `relaunch_app` and the updater go through `app_restart`, which
+releases the socket before `restart()` so the replacement process claims the lock rather than
+handing its launch to the process that is exiting. The pid and executable path are logged at
+startup. `glyphio-engine` is intentionally two processes (daemon and worker); that is not a
+duplicate instance.
+
 ## Architectural invariants
 
 1. Local-first is the default: configuration, personal snippets, captures, and clipboard history

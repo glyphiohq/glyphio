@@ -53,9 +53,24 @@ pub struct AppState {
     pub sync: sync::SyncState,
 }
 
+/// Restart into a fresh process. The single-instance socket is released first: `restart` starts
+/// the replacement before this process exits, and a replacement that still found our socket
+/// would hand its launch to us and quit, leaving nothing running.
+pub fn app_restart(app: &tauri::AppHandle) -> ! {
+    tauri_plugin_single_instance::destroy(app);
+    app.restart()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init();
+    log::info!(
+        "starting glyphio pid={} exe={}",
+        std::process::id(),
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".into())
+    );
 
     let open_settings_on_start = startup::should_open_settings(std::env::args());
 
@@ -86,6 +101,22 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        // Must be registered first. A second process hands its arguments (including any
+        // `glyphio://` link, via the plugin's deep-link feature) to this one and exits during
+        // builder setup — before a tray icon, hotkey, engine or window exists. The stores above
+        // are already open by then (plugins only run inside the builder); SQLite tolerates that,
+        // but see the engine-config render in `run` before moving more work ahead of this point.
+        // The callback runs in the surviving copy.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            match startup::second_launch_action(&args) {
+                startup::SecondLaunch::ShowSettings => {
+                    if let Err(e) = windows::open(app, "settings") {
+                        log::warn!("could not surface Settings for a second launch: {e}");
+                    }
+                }
+                startup::SecondLaunch::Ignore => {}
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

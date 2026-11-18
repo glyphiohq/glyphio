@@ -105,6 +105,18 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Single instance
+
+Exactly one `glyphio` process runs per user. `tauri-plugin-single-instance` is registered first
+in the builder; a second launch (Finder, direct execution, a `glyphio://` link) forwards its
+arguments to the running copy over a socket and exits before it opens any store, tray icon or
+hotkey. The running copy brings Settings forward unless the launch carried the login marker
+(`startup::second_launch_action`). `relaunch_app` and the updater go through `app_restart`, which
+releases the socket before `restart()` so the replacement process claims the lock rather than
+handing its launch to the process that is exiting. The pid and executable path are logged at
+startup. `glyphio-engine` is intentionally two processes (daemon and worker); that is not a
+duplicate instance.
+
 ## Architectural invariants
 
 1. Local-first is the default: configuration, personal snippets, captures, and clipboard history

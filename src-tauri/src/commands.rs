@@ -658,7 +658,7 @@ pub fn open_screen_recording_settings(app: AppHandle) -> CmdResult<()> {
 #[tauri::command]
 pub fn relaunch_app(app: AppHandle) {
     app.state::<AppState>().supervisor.stop(); // don't orphan the engine daemon/worker
-    app.restart();
+    crate::app_restart(&app);
 }
 
 /// The editor requests its pending capture payload (set by the capture flow).

@@ -35,6 +35,16 @@ codesign -d -r- /path/to/Glyphio.app/Contents/MacOS/glyphio-engine
 Record each row as `PASS`, `FAIL`, or `BLOCKED`, with a short observation and a screenshot or log
 link for any failure. `BLOCKED` does not satisfy the release gate.
 
+## Instance matrix
+
+| State and action | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Glyphio running; execute `Glyphio.app/Contents/MacOS/glyphio` directly, twice | `pgrep -x glyphio` lists one pid; one menu-bar icon; Settings comes to the front; the log shows one startup line | |
+| Glyphio running; open a `glyphio://join?...` link | The existing copy shows the invite confirmation; no second process | |
+| Glyphio running; run the binary with `--hidden` | Nothing visible happens and no second process remains | |
+| **Relaunch Glyphio** (Screen Recording banner) | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
+| Install an update, let it restart | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
+
 ## Permission matrix
 
 Exercise both the first-prompt path and the settings-only path. Reset permissions only in the

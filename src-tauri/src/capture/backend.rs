@@ -34,6 +34,14 @@ pub fn capture(app: &AppHandle, mode: &str) -> anyhow::Result<Shot> {
     }
 }
 
+/// The non-interactive modes, without needing an `AppHandle` (benchmark only).
+pub fn capture_for_bench(mode: &str) -> anyhow::Result<Shot> {
+    match mode {
+        "frontWindow" => capture_front_window(false),
+        _ => capture_display_under_cursor(),
+    }
+}
+
 /// Backing-scale factor (pixels per point) of a display — 2.0 on Retina. The editor sizes the
 /// banner in CSS points and multiplies by this, so text isn't microscopic on Retina captures.
 fn backing_scale(display_id: u32) -> f64 {

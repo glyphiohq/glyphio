@@ -45,6 +45,28 @@ link for any failure. `BLOCKED` does not satisfy the release gate.
 | **Relaunch Glyphio** (Screen Recording banner) | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 | Install an update, let it restart | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 
+## Performance sampling
+
+Quote release builds only (`--release`). The unit under test is the log line, not a stopwatch.
+
+```bash
+cargo run --release --manifest-path src-tauri/Cargo.toml --example bench_encode 10
+cargo run --release --manifest-path src-tauri/Cargo.toml --example bench_capture 10   # needs Screen Recording for the terminal
+grep -E 'capture-trace|launch-timing' ~/Library/Logs/Glyphio/glyphio.log | tail
+xctrace record --template 'Time Profiler' --attach <pid> --time-limit 30s
+footprint <pid>
+```
+
+Idle CPU and energy: Activity Monitor → Energy column with no windows open, after five minutes.
+
+| Metric (budget) | Baseline | Source |
+| --- | --- | --- |
+| PNG encode, synthetic 5120×2880 (part of 400 ms) | p50 91 ms, p90 91 ms, 19.3 MB (Apple M4, macOS 27.2.1, n=10) | `bench_encode` |
+| Shortcut to pixels, `visible` and `frontWindow` (150 ms) | not measured — needs Screen Recording | `bench_capture`, `capture-trace` |
+| Pixels to clipboard and history, 5K (400 ms) | not measured | |
+| Cold launch to tray ready (600 ms) | not measured | `launch-timing tray-ready` |
+| Idle CPU / idle memory / scrolling peak memory | not measured | Activity Monitor, `footprint` |
+
 ## Permission matrix
 
 Exercise both the first-prompt path and the settings-only path. Reset permissions only in the

@@ -105,6 +105,17 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Performance measurement
+
+Every capture logs one line from `capture/trace.rs`:
+`capture-trace mode=visible acquire=120ms encode=88ms present=4ms total=212ms size=5120x2880`.
+It holds a mode name, fixed stage names and numbers only; the formatter takes no free text, so
+titles, URLs and clipboard content cannot reach it. `acquire` includes the user's selection time
+for picker and scrolling modes. Persist and clipboard happen in the editor page and are not yet
+traced. Launch logs `launch-timing state-built|tray-ready|engine-spawned|setup-done=<ms>` from
+`launch.rs`. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
+(`visible`, `frontWindow` through the real backend) print percentiles.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

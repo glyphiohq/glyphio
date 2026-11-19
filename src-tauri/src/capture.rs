@@ -25,6 +25,7 @@ pub mod diag;
 pub mod lifecycle;
 pub mod orchestration;
 pub mod scroll;
+pub mod trace;
 
 use anyhow::anyhow;
 use base64::Engine;
@@ -170,6 +171,7 @@ fn trigger_mode(
     // This is deliberately before any picker, browser-tree lookup, or pixel work: a global
     // shortcut must visibly acknowledge that it fired before capture can become slow.
     let activity = crate::tray::capture_started(app, mode)?;
+    trace::begin(mode);
     let delivery = Delivery::resolve(app, delivery);
     if mode == CaptureMode::Scrolling {
         // The region is dragged first; the overlay carries the decision back with the rect.
@@ -224,6 +226,7 @@ fn trigger_mode(
     let shot = backend::capture(app, mode.as_str()).inspect_err(|e| {
         report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
     })?;
+    trace::mark(trace::Stage::Acquire);
     finish(app, shot, mode, delivery, activity).inspect_err(|e| {
         report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
     })
@@ -409,6 +412,7 @@ impl Drop for ScrollingSession {
 /// The details dialog is shown only if the user chooses "Show details" from that menu.
 pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
     log::error!("{context} failed: {e}");
+    trace::discard();
     if e.downcast_ref::<AlreadyScrolling>().is_some()
         || e.downcast_ref::<lifecycle::CaptureInProgress>().is_some()
     {
@@ -451,7 +455,10 @@ pub fn finish(
     delivery: Delivery,
     activity: lifecycle::CaptureToken,
 ) -> anyhow::Result<()> {
+    trace::mark_if_missing(trace::Stage::Acquire); // page and scrolling modes acquire off this path
+    trace::set_size(shot.width, shot.height);
     let png = encode_png(&shot)?;
+    trace::mark(trace::Stage::Encode);
     let data_url = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
@@ -472,17 +479,26 @@ pub fn finish(
     };
     let session_id =
         crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
-    if silent {
+    let handed_off = if silent {
         crate::windows::run_silent_capture(app, session_id.as_str())
     } else {
         crate::windows::open_editor_session(app, session_id.as_str())
-    }
+    };
+    trace::mark(trace::Stage::Present);
+    trace::finish();
+    handed_off
 }
 
-fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
+pub fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
     let buf = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
         .ok_or_else(|| anyhow::anyhow!("capture buffer size mismatch"))?;
     let mut out = std::io::Cursor::new(Vec::new());
     buf.write_to(&mut out, image::ImageFormat::Png)?;
     Ok(out.into_inner())
+}
+
+/// Non-interactive capture without an app handle, for `examples/bench_capture.rs` only.
+#[doc(hidden)]
+pub fn bench_capture(mode: &str) -> anyhow::Result<Shot> {
+    backend::capture_for_bench(mode)
 }

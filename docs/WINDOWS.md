@@ -115,6 +115,10 @@ capture is the most-used mode.
   much as unsigned apps trigger Gatekeeper — same problem, different vendor, also money.
 - **Paths**: `paths.rs` uses `dirs`, which already resolves correctly per platform. Verify the
   engine's `ESPANSO_*` directories land somewhere sensible under `%APPDATA%`.
+- **Engine supervision**: `engine/os.rs` uses `proc_pidpath`, `proc_listchildpids` and `flock`.
+  Windows needs the same `ProcessControl` over `QueryFullProcessImageName` and a job object
+  (kills the daemon with its worker), plus a lock probe for the engine's lock file. The pure
+  reaper and respawn budget carry over unchanged.
 - **The updater** already targets `darwin-aarch64` explicitly in `latest.json`; adding
   `windows-x86_64` is a manifest change, not a code change.
 

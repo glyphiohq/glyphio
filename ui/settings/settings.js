@@ -164,6 +164,7 @@ async function init() {
   initializePermissionGuidance();
   await wirePermissionGuidance();
   await wireSecureInput();
+  await wireEngineStatus();
   await wireSync();
   wireInvites();
   maybeShowWelcome();
@@ -198,6 +199,12 @@ function renderShell() {
       <div class="ax-text">
         <strong>Expansion paused — <span id="si-holder">another app</span> is holding macOS Secure Input.</strong>
         <p>While an app captures keystrokes securely (password fields, the lock screen), no expander can see what you type — triggers resume the moment it lets go. If this persists and no password field is open, the hold is stale: lock the screen (Ctrl+Cmd+Q) and unlock, or quit the app shown above.</p>
+      </div>
+    </div>
+    <div class="ax-banner" id="engine-banner">
+      <div class="ax-text">
+        <strong>The expansion engine stopped after repeated crashes.</strong>
+        <p>Text expansion is off until it restarts. <button type="button" id="engine-restart">Restart engine</button></p>
       </div>
     </div>
     <div class="body">
@@ -325,6 +332,23 @@ function applySecureInput(holder) {
   if (!banner) return;
   banner.classList.toggle('show', Boolean(holder));
   if (holder) document.getElementById('si-holder').textContent = holder;
+}
+
+// The engine is left stopped when its respawn budget is spent; offer the one-click recovery.
+function applyEngineStopped(stopped) {
+  document.getElementById('engine-banner')?.classList.toggle('show', Boolean(stopped));
+}
+
+async function wireEngineStatus() {
+  applyEngineStopped(await invoke('engine_exhausted'));
+  await listen('engine-status', (e) => applyEngineStopped(e.payload));
+  document.getElementById('engine-restart')?.addEventListener('click', async () => {
+    try {
+      await invoke('restart_engine');
+    } catch (e) {
+      console.error('restart_engine failed', e);
+    }
+  });
 }
 
 async function wireSecureInput() {

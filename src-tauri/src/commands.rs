@@ -595,6 +595,13 @@ pub fn secure_input_status(state: State<AppState>) -> Option<String> {
     state.supervisor.secure_input_holder()
 }
 
+/// Whether the engine crashed too often to be restarted automatically (it stays stopped until
+/// the user reloads).
+#[tauri::command]
+pub fn engine_exhausted(state: State<AppState>) -> bool {
+    state.supervisor.exhausted()
+}
+
 /// Open System Settings at Privacy & Security › Accessibility.
 #[tauri::command]
 pub fn open_accessibility_settings(app: AppHandle) -> CmdResult<()> {
@@ -659,7 +666,10 @@ pub fn open_screen_recording_settings(app: AppHandle) -> CmdResult<()> {
 /// so the banner offers this instead of asking the user to quit + reopen manually.
 #[tauri::command]
 pub fn relaunch_app(app: AppHandle) {
-    app.state::<AppState>().supervisor.stop(); // don't orphan the engine daemon/worker
+    {
+        let state = app.state::<AppState>();
+        state.supervisor.stop(&state.paths);
+    } // don't orphan the engine daemon/worker
     crate::app_restart(&app);
 }
 

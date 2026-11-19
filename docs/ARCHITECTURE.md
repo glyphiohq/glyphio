@@ -105,6 +105,24 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Login item
+
+"Launch Glyphio at login" is `SMAppService.mainApp` (`autostart.rs`), the system's own login-item
+service: it appears in System Settings → General → Login Items, needs no Automation permission and
+writes no LaunchAgent plist. The decisions are pure functions over a `LoginItem` trait, tested with
+a fake. The item is changed only when the user toggles the setting; launch reads its status and
+registers once if the setting is on and nothing is registered. A registration awaiting approval, or
+refused by the system, is shown under the toggle in Settings with the system's wording and is never
+retried silently. A login launch is recognised from the launch Apple event
+(`keyAELaunchedAsLogInItem`, read in `startup::note_launch_event`), and for one more release also
+from `--hidden` / `--launch-at-login`, so it shows no Settings window. On first launch of this
+version `autostart::migrate_legacy` removes the AppleScript login item named "Glyphio" (the only
+remaining `osascript` call, best-effort, and skipped on a fresh install so a new user is never asked for Automation; if Automation is denied Settings says to remove it by hand)
+and any LaunchAgent plist whose first program argument is `…/Contents/MacOS/glyphio` inside a
+bundle with identifier `io.glyphio.app`, wherever it lives. `scripts/verify-edr-surface.sh` asserts
+no scripted backend is selected and `osascript` appears nowhere else. There is no login-item
+backend off macOS yet (see `docs/WINDOWS.md`).
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

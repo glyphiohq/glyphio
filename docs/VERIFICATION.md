@@ -45,6 +45,18 @@ link for any failure. `BLOCKED` does not satisfy the release gate.
 | **Relaunch Glyphio** (Screen Recording banner) | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 | Install an update, let it restart | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 
+## Login item matrix
+
+| State and action | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Turn **Launch Glyphio at login** on | A "Glyphio" entry appears in System Settings → General → Login Items; no Automation prompt; no file in `~/Library/LaunchAgents`. | |
+| Turn it on, but the entry is switched off in Login Items | Settings says to approve Glyphio in Login Items; relaunching does not prompt or retry. | |
+| Log out and in with it on | One `glyphio` process, a menu-bar icon, no Settings window, no Automation prompt. | |
+| Save an unrelated setting | The Login Items entry is untouched (no flicker, no new prompt). | |
+| Upgrade from a build that used the scripted item | The old "Glyphio" item is gone after first launch, or Settings shows the note to remove it by hand if Automation is denied; later launches run no `osascript`. | |
+| Cold launch with the item already registered | `sudo fs_usage -w -f exec` shows no `osascript` or `pkill`. | |
+| Upgrade with an old `~/Library/LaunchAgents/*.plist` for Glyphio (any install path) | The plist is removed; a plist for another app with a similar name is left. | |
+
 ## Permission matrix
 
 Exercise both the first-prompt path and the settings-only path. Reset permissions only in the

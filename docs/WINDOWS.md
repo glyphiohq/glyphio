@@ -109,6 +109,10 @@ capture is the most-used mode.
 
 - **UI copy**: ~30 hardcoded `⌘` references and ~26 macOS-permission strings need platform
   branching. Worth a small helper rather than 56 conditionals.
+- **Launch at login**: `autostart.rs` has the macOS backend (`SMAppService`) and a no-op elsewhere;
+  the Windows one is the `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` value, written only on toggle
+  and read back at launch, behind the same `LoginItem` trait. `tauri-plugin-autostart` was removed
+  because its macOS selector is what the EDR check forbids.
 - **Default hotkeys**: `Alt+Shift+…` is fine on Windows, but check for conflicts with common
   IME and accessibility bindings.
 - **Code signing**: Windows wants its own certificate. Unsigned installers trigger SmartScreen

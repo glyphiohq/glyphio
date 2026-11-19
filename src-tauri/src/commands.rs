@@ -195,10 +195,63 @@ pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
+fn set_login_item(app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        let outcome = crate::autostart::set_enabled(want);
+        let failure = match &outcome {
+            crate::autostart::Outcome::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        *state.login_item_outcome.lock().unwrap() = match outcome {
+            crate::autostart::Outcome::NeedsApproval | crate::autostart::Outcome::Failed(_) => {
+                Some(outcome)
+            }
+            _ => None,
+        };
+        // A refusal means the setting did not take: say so rather than save a lie.
+        if let Some(e) = failure {
+            return Err(format!("Could not change Launch at Login: {e}"));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = state;
+        crate::autostart::set_enabled_with(app, want).map_err(err)
+    }
+}
+
+/// What Settings should say under "Launch Glyphio at login": a pending approval, a refusal, or the
+/// note about an old item that has to be removed by hand. `None` when there is nothing to say.
+#[tauri::command]
+pub fn login_item_notice(state: State<AppState>) -> Option<String> {
+    use crate::autostart::Outcome;
+    let outcome = state.login_item_outcome.lock().unwrap().clone();
+    let note = state.login_item_note.lock().unwrap().clone();
+    let first = match outcome {
+        Some(Outcome::NeedsApproval) => Some(
+            "Approve Glyphio in System Settings → General → Login Items to start it at login."
+                .to_string(),
+        ),
+        Some(Outcome::Failed(e)) => Some(format!("Launch at Login is not working: {e}")),
+        _ => None,
+    };
+    match (first, note) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (a, b) => a.or(b),
+    }
+}
+
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
     crate::shortcuts::validate_settings(&settings).map_err(err)?;
-    crate::autostart::set_enabled(&app, settings.launch_at_login).map_err(err)?;
+    // The login item changes only when the user changes the setting, not on every save.
+    let toggled = state.settings.lock().unwrap().launch_at_login != settings.launch_at_login;
+    if toggled {
+        set_login_item(&app, &state, settings.launch_at_login)?;
+    }
     settings.save(&state.paths.settings_json).map_err(err)?;
     let wants_worker = settings.wants_silent_worker();
     *state.settings.lock().unwrap() = settings;

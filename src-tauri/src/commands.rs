@@ -732,9 +732,44 @@ pub fn delete_clip(state: State<AppState>, id: String) -> CmdResult<()> {
     state.clips.delete(&id).map_err(err)
 }
 
+/// Clear clipboard history, returning how many entries went. `include_pinned` defaults to true
+/// so Settings' existing calls keep their meaning; the palette asks for `false` by default.
+/// `empty_pasteboard` also empties the system clipboard, and is remembered for next time.
 #[tauri::command]
-pub fn clear_clips(state: State<AppState>) -> CmdResult<()> {
-    state.clips.clear().map_err(err)
+pub fn clear_clips(
+    app: AppHandle,
+    state: State<AppState>,
+    include_pinned: Option<bool>,
+    empty_pasteboard: Option<bool>,
+) -> CmdResult<u32> {
+    let removed = if include_pinned.unwrap_or(true) {
+        let count = state.clips.list().map_err(err)?.len() as u32;
+        state.clips.clear().map_err(err)?;
+        count
+    } else {
+        state.clips.clear_unpinned().map_err(err)?
+    };
+    if let Some(empty) = empty_pasteboard {
+        let changed = {
+            let mut s = state.settings.lock().unwrap();
+            let changed = s.clipboard_clear_also_empties_pasteboard != empty;
+            s.clipboard_clear_also_empties_pasteboard = empty;
+            changed.then(|| s.clone())
+        };
+        if let Some(s) = changed {
+            if let Err(e) = s.save(&state.paths.settings_json) {
+                log::warn!("could not remember the clear option: {e}");
+            }
+        }
+        if empty {
+            crate::clipboard::empty(&app).map_err(err)?;
+        }
+    }
+    let _ = app.emit("clipboard-changed", String::new());
+    if include_pinned.is_some() {
+        crate::tray::flash_ack(&app); // the palette's clear; Settings shows its own status
+    }
+    Ok(removed)
 }
 
 /// One-shot payload pull for bridge-driven windows (`popup` / `form`) — same pattern as

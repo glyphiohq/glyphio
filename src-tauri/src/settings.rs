@@ -65,6 +65,9 @@ pub struct Settings {
     /// remembers nothing about the day you switched it on — but content marked concealed by
     /// a password manager is never recorded either way. See `docs/SECURITY.md`.
     pub clipboard_history: bool,
+    /// Whether clearing history from the palette also empties what is on the clipboard now.
+    /// Remembered from the last confirmation.
+    pub clipboard_clear_also_empties_pasteboard: bool,
     pub clipboard_max_items: u32,
     /// Megabytes of stored images to keep. Text costs nothing next to this, so the cap is
     /// expressed in the unit that actually fills a disk.
@@ -142,6 +145,7 @@ impl Default for Settings {
             history_max_count: 50,
             history_max_bytes: 200 * 1024 * 1024, // 200 MB, matching Checkpoint
             clipboard_history: true,
+            clipboard_clear_also_empties_pasteboard: false,
             clipboard_max_items: 200,
             clipboard_max_mb: 100,
             clipboard_ignore_apps: Vec::new(),

@@ -62,7 +62,9 @@ Idle CPU and energy: Activity Monitor → Energy column with no windows open, af
 | Metric (budget) | Baseline | Source |
 | --- | --- | --- |
 | PNG encode, synthetic 5120×2880 (part of 400 ms) | p50 91 ms, p90 91 ms, 19.3 MB (Apple M4, macOS 27.2.1, n=10) | `bench_encode` |
-| Shortcut to pixels, `visible` and `frontWindow` (150 ms) | not measured — needs Screen Recording | `bench_capture`, `capture-trace` |
+| Pixels acquired, `visible` 3440×1440 (150 ms budget is shortcut to pixels) | acquire p50 83 ms, p90 97 ms; encode p50 11 ms, p90 12 ms (Apple M4, n=10, backend only, not 5K) | `bench_capture` |
+| Pixels acquired, `frontWindow` 1714×1440 | acquire p50 73 ms, p90 75 ms; encode p50 5 ms, p90 6 ms | `bench_capture` |
+| Shortcut to pixels end to end | not measured (needs `capture-trace` from a real shortcut press) | `capture-trace` |
 | Pixels to clipboard and history, 5K (400 ms) | not measured | |
 | Cold launch to tray ready (600 ms) | not measured | `launch-timing tray-ready` |
 | Idle CPU / idle memory / scrolling peak memory | not measured | Activity Monitor, `footprint` |

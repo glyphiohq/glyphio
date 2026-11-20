@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 mod engine;
 mod history;
+mod launch;
 mod logging;
 mod paths;
 mod settings;
@@ -94,6 +95,7 @@ fn login_item_at_launch(app: &tauri::AppHandle, want: bool, existing_install: bo
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    launch::start();
     logging::init();
     log::info!(
         "starting glyphio pid={} exe={}",
@@ -118,6 +120,7 @@ pub fn run() {
         .render_yaml_with_policy(&paths.engine_config, &settings.expansion_policy())
         .expect("initial engine config render");
 
+    launch::mark("state-built");
     let state = AppState {
         paths,
         snippets,
@@ -180,6 +183,7 @@ pub fn run() {
             clipboard::watch(app.handle());
 
             tray::build(app.handle())?;
+            launch::mark("tray-ready");
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
 
@@ -230,6 +234,7 @@ pub fn run() {
                 if let Err(e) = state.supervisor.start(&handle, &state.paths) {
                     log::error!("failed to start engine daemon: {e}");
                 }
+                launch::mark("engine-spawned");
             });
 
             // Resume a previous sync session silently, if one is configured.
@@ -275,6 +280,7 @@ pub fn run() {
             // Look for a newer release, quietly. Nothing is downloaded and no window opens —
             // the answer waits in Settings → About until the user goes looking for it.
             updates::check_in_background(app.handle());
+            launch::mark("setup-done");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

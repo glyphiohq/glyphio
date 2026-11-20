@@ -25,6 +25,7 @@ pub mod diag;
 pub mod lifecycle;
 pub mod orchestration;
 pub mod scroll;
+pub mod trace;
 pub mod worker;
 
 use anyhow::anyhow;
@@ -171,6 +172,7 @@ fn trigger_mode(
     // This is deliberately before any picker, browser-tree lookup, or pixel work: a global
     // shortcut must visibly acknowledge that it fired before capture can become slow.
     let activity = crate::tray::capture_started(app, mode)?;
+    trace::begin(mode);
     let delivery = Delivery::resolve(app, delivery);
     // Everything slow happens on the capture worker; this thread only queues the request. The
     // picker, the browser's accessibility tree and the scroll loop used to run right here, on
@@ -254,6 +256,7 @@ fn capture_request(
     } else {
         backend::capture(app, mode.as_str())?
     };
+    trace::mark(trace::Stage::Acquire);
     finish(app, shot, mode, delivery, activity)
 }
 
@@ -467,6 +470,7 @@ pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
         return; // already cleared, for its own token, where it was raised
     }
     log::error!("{context} failed: {e}");
+    trace::discard();
     if e.downcast_ref::<AlreadyScrolling>().is_some()
         || e.downcast_ref::<lifecycle::CaptureInProgress>().is_some()
     {
@@ -514,7 +518,10 @@ pub fn finish(
     delivery: Delivery,
     activity: lifecycle::CaptureToken,
 ) -> anyhow::Result<()> {
+    trace::mark_if_missing(trace::Stage::Acquire); // page and scrolling modes acquire off this path
+    trace::set_size(shot.width, shot.height);
     let png = encode_png(&shot)?;
+    trace::mark(trace::Stage::Encode);
     let data_url = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
@@ -537,19 +544,28 @@ pub fn finish(
         crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
     // Only the window needs the main thread; the encoding above does not.
     let app = app.clone();
-    on_main(&app.clone(), move || {
+    let handed_off = on_main(&app.clone(), move || {
         if silent {
             crate::windows::run_silent_capture(&app, session_id.as_str())
         } else {
             crate::windows::open_editor_session(&app, session_id.as_str())
         }
-    })
+    });
+    trace::mark(trace::Stage::Present);
+    trace::finish();
+    handed_off
 }
 
-fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
+pub fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
     let buf = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
         .ok_or_else(|| anyhow::anyhow!("capture buffer size mismatch"))?;
     let mut out = std::io::Cursor::new(Vec::new());
     buf.write_to(&mut out, image::ImageFormat::Png)?;
     Ok(out.into_inner())
+}
+
+/// Non-interactive capture without an app handle, for `examples/bench_capture.rs` only.
+#[doc(hidden)]
+pub fn bench_capture(mode: &str) -> anyhow::Result<Shot> {
+    backend::capture_for_bench(mode)
 }

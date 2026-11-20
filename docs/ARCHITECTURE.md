@@ -126,6 +126,12 @@ pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog i
 by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
 and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
 
+Backing out is not failing. A cancelled interactive picker surfaces as `capture::Cancelled` and
+clears the indicator for its own capture token. The scrolling selection overlay carries a
+`selecting` flag in the lifecycle: if the overlay is destroyed, blurred or hidden before it
+reports a rectangle, the capture is cancelled; closing it to start a capture is not. Each overlay
+has its own label so a replaced overlay's destruction cannot cancel its successor.
+
 ### Single instance
 
 Exactly one `glyphio` process runs per user. `tauri-plugin-single-instance` is registered first

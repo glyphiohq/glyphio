@@ -448,9 +448,24 @@ impl Drop for ScrollingSession {
     }
 }
 
+/// The user backed out of an interactive picker. Not a failure: nothing is shown.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("capture cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 /// Log a capture failure and expose it through the non-activating menu-bar feedback surface.
 /// The details dialog is shown only if the user chooses "Show details" from that menu.
 pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
+    if e.downcast_ref::<Cancelled>().is_some() {
+        return; // already cleared, for its own token, where it was raised
+    }
     log::error!("{context} failed: {e}");
     if e.downcast_ref::<AlreadyScrolling>().is_some()
         || e.downcast_ref::<lifecycle::CaptureInProgress>().is_some()
@@ -466,6 +481,11 @@ fn report_failure_for(
     context: &str,
     e: &anyhow::Error,
 ) {
+    if e.downcast_ref::<Cancelled>().is_some() {
+        log::info!("{context} cancelled by the user");
+        crate::tray::capture_cancelled_for(app, activity);
+        return;
+    }
     log::error!("{context} failed: {e}");
     if e.downcast_ref::<AlreadyScrolling>().is_some() {
         return;

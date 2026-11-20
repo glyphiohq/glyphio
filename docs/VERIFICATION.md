@@ -89,6 +89,9 @@ after the menu-bar indicator changes.
 | Stuck capture, then tray **Reload** | The icon returns to ready immediately and the next capture starts. | |
 | Tray menu and Settings while the Full Window or Region picker is open | The Glyphio tray menu opens and Settings repaints and can be clicked while the picker waits; picking or Esc then completes or cancels normally. | |
 | Captures taken off the main thread (ScreenCaptureKit) | Visible Area, Frontmost Window and Browser Page captures taken from the worker contain the same pixels as before and no main-thread assertion appears in the log. | |
+| Scrolling Area: close the selection overlay without dragging (Esc, click another app, Mission Control, switch Space) | The menu-bar icon returns to ready within a moment and the next capture starts; no failure indicator. | |
+| Scrolling Area: drag a selection | The capture runs; closing the overlay to start it does not cancel it. | |
+| Area or Window picker: press Esc | The menu-bar icon returns to ready with no `!` and no failure details. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

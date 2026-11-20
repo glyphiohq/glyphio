@@ -3,13 +3,17 @@
 //! The plugin is built once in `lib.rs` with [`handler`]; accelerators are (re)registered from
 //! the current settings by [`register`], so editing a shortcut in Settings takes effect live.
 
+pub mod registry;
+
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 use crate::AppState;
+use registry::{Action, Binding, Registrar, Registration, ShortcutStatus};
 
 /// The one key a running scrolling capture borrows.
 const STOP_KEY: &str = "Escape";
@@ -116,48 +120,106 @@ pub fn release_stop_key(app: &AppHandle) {
     }
 }
 
-/// (Re)register all configured accelerators.
-pub fn register(app: &AppHandle) -> anyhow::Result<()> {
-    let gs = app.global_shortcut();
-    let _ = gs.unregister_all();
-    let s = app.state::<AppState>().settings.lock().unwrap().clone();
-    let captures = s.capture_shortcuts();
-    for acc in captures
+/// Settings fields holding the capture chords, in the order of `Settings::capture_shortcuts`.
+const CAPTURE_KEYS: [&str; 14] = [
+    "shortcutCaptureVisible",
+    "shortcutCaptureSnip",
+    "shortcutCaptureFull",
+    "shortcutCaptureFrontWindow",
+    "shortcutCapturePage",
+    "shortcutCaptureScroll",
+    "shortcutCaptureScrollPage",
+    "shortcutCaptureVisibleSilent",
+    "shortcutCaptureSnipSilent",
+    "shortcutCaptureFullSilent",
+    "shortcutCaptureFrontWindowSilent",
+    "shortcutCapturePageSilent",
+    "shortcutCaptureScrollSilent",
+    "shortcutCaptureScrollPageSilent",
+];
+
+/// Every binding the settings describe, captures first: that order is what "first listed wins"
+/// means when two actions share a chord.
+fn bindings(s: &crate::settings::Settings) -> Vec<Binding> {
+    let mut out: Vec<Binding> = s
+        .capture_shortcuts()
         .iter()
-        .map(|(acc, _, _)| *acc)
-        .chain([
-            s.shortcut_open_history.as_str(),
-            s.shortcut_open_palette.as_str(),
-            s.shortcut_open_clipboard.as_str(),
-        ])
-    {
-        if acc.is_empty() {
-            continue;
-        }
-        match Shortcut::from_str(acc) {
-            Ok(sc) => {
-                if let Err(e) = gs.register(sc) {
-                    log::warn!("could not register shortcut {acc}: {e}");
-                }
-            }
-            Err(e) => log::warn!("invalid shortcut accelerator {acc:?}: {e}"),
-        }
+        .zip(CAPTURE_KEYS)
+        .map(|((acc, mode, silent), key)| Binding {
+            key,
+            action: Action::Capture {
+                mode,
+                silent: *silent,
+            },
+            accelerator: acc.to_string(),
+        })
+        .collect();
+    for (key, action, acc) in [
+        ("shortcutOpenHistory", Action::OpenHistory, &s.shortcut_open_history),
+        ("shortcutOpenPalette", Action::OpenPalette, &s.shortcut_open_palette),
+        ("shortcutOpenClipboard", Action::OpenClipboard, &s.shortcut_open_clipboard),
+    ] {
+        out.push(Binding {
+            key,
+            action,
+            accelerator: acc.clone(),
+        });
     }
-    // `unregister_all` above dropped Escape too, if a scrolling capture had borrowed it —
-    // saving settings while one is running would otherwise leave that capture with no way to
-    // stop, and `STOP_KEY_ARMED` still claiming otherwise.
-    if STOP_KEY_ARMED.load(Ordering::SeqCst) {
-        if let Ok(sc) = Shortcut::from_str(STOP_KEY) {
-            if let Err(e) = gs.register(sc) {
-                log::warn!("could not take {STOP_KEY} back for the running capture: {e}");
-            }
-        }
-    }
-    Ok(())
+    out
 }
 
-fn matches(pressed: &Shortcut, acc: &str) -> bool {
-    Shortcut::from_str(acc).map(|s| &s == pressed).unwrap_or(false)
+/// The real registrar. It never lets go of Escape while a scrolling capture has borrowed it,
+/// even if the user has also bound Escape to something.
+struct PluginRegistrar<'a>(&'a AppHandle);
+
+impl Registrar for PluginRegistrar<'_> {
+    fn register(&mut self, chord: Shortcut) -> Result<(), String> {
+        self.0
+            .global_shortcut()
+            .register(chord)
+            .map_err(|e| e.to_string())
+    }
+    fn unregister(&mut self, chord: Shortcut) -> Result<(), String> {
+        if STOP_KEY_ARMED.load(Ordering::SeqCst)
+            && Shortcut::from_str(STOP_KEY).is_ok_and(|stop| stop == chord)
+        {
+            return Ok(());
+        }
+        self.0
+            .global_shortcut()
+            .unregister(chord)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Bring the system's registrations in line with the current settings and say what happened to
+/// each binding. Only chords that changed are touched, so saving an unrelated setting makes no
+/// register or unregister call and the borrowed Escape is never involved.
+pub fn register(app: &AppHandle) -> Vec<ShortcutStatus> {
+    let state = app.state::<AppState>();
+    let wanted = bindings(&state.settings.lock().unwrap());
+    let status = state
+        .shortcuts
+        .lock()
+        .unwrap()
+        .apply(&wanted, &mut PluginRegistrar(app));
+    crate::tray::set_shortcut_problem(app, problem_summary(&status));
+    status
+}
+
+/// The last results, without registering anything.
+pub fn status(app: &AppHandle) -> Vec<ShortcutStatus> {
+    app.state::<AppState>().shortcuts.lock().unwrap().status().to_vec()
+}
+
+/// The notice for the tray when any binding was refused or invalid.
+fn problem_summary(status: &[ShortcutStatus]) -> bool {
+    status.iter().any(|s| {
+        matches!(
+            s.registration,
+            Registration::Refused(_) | Registration::Invalid(_)
+        )
+    })
 }
 
 /// Global handler installed on the plugin; dispatches a fired shortcut to its action.
@@ -167,40 +229,45 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     }
     // Checked before anything configured: while a scrolling capture is running, Escape means
     // "stop now and keep the frames" and nothing else.
-    if STOP_KEY_ARMED.load(Ordering::SeqCst) && matches(shortcut, STOP_KEY) {
+    if STOP_KEY_ARMED.load(Ordering::SeqCst)
+        && Shortcut::from_str(STOP_KEY).is_ok_and(|stop| &stop == shortcut)
+    {
         crate::capture::scroll::request_stop();
         return;
     }
-    let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    let action = {
+        let state = app.state::<AppState>();
+        let mut registry = state.shortcuts.lock().unwrap();
+        match registry.lookup(shortcut) {
+            Some(action) if registry.should_fire(action, Instant::now()) => action,
+            _ => return,
+        }
+    };
     let app = app.clone();
-    // A silent twin is only a different delivery for the same mode, so one table answers
-    // both. First match wins: a key configured twice does the thing listed first.
-    let fired = s
-        .capture_shortcuts()
-        .iter()
-        .find(|(acc, _, _)| !acc.is_empty() && matches(shortcut, acc))
-        .map(|(_, mode, silent)| (*mode, *silent));
-    if let Some((mode, silent)) = fired {
-        dispatch_capture(app, mode, silent);
-    } else if matches(shortcut, &s.shortcut_open_history) {
-        let inner = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            let _ = crate::commands::open_history_view(inner.clone());
-        });
-    } else if matches(shortcut, &s.shortcut_open_palette) {
-        let inner = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Err(e) = crate::windows::toggle_palette(&inner, None) {
-                log::error!("palette failed: {e}");
-            }
-        });
-    } else if matches(shortcut, &s.shortcut_open_clipboard) {
-        let inner = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Err(e) = crate::windows::toggle_palette(&inner, Some("clipboard")) {
-                log::error!("palette failed: {e}");
-            }
-        });
+    match action {
+        Action::Capture { mode, silent } => dispatch_capture(app, mode, silent),
+        Action::OpenHistory => {
+            let inner = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let _ = crate::commands::open_history_view(inner.clone());
+            });
+        }
+        Action::OpenPalette => {
+            let inner = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Err(e) = crate::windows::toggle_palette(&inner, None) {
+                    log::error!("palette failed: {e}");
+                }
+            });
+        }
+        Action::OpenClipboard => {
+            let inner = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Err(e) = crate::windows::toggle_palette(&inner, Some("clipboard")) {
+                    log::error!("palette failed: {e}");
+                }
+            });
+        }
     }
 }
 
@@ -212,6 +279,7 @@ fn dispatch_capture(app: AppHandle, mode: &'static str, silent: bool) {
 
 #[cfg(test)]
 mod tests {
+    use super::{bindings, CAPTURE_KEYS};
     use super::validate_settings;
     use crate::settings::Settings;
 
@@ -261,5 +329,14 @@ mod tests {
             ..Settings::default()
         };
         validate_settings(&settings).unwrap();
+    }
+
+    #[test]
+    fn every_binding_key_is_a_settings_field() {
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        for b in bindings(&Settings::default()) {
+            assert!(json.get(b.key).is_some(), "{} is not a settings field", b.key);
+        }
+        assert_eq!(CAPTURE_KEYS.len(), Settings::default().capture_shortcuts().len());
     }
 }

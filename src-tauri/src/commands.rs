@@ -196,7 +196,11 @@ pub fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    settings: Settings,
+) -> CmdResult<Vec<crate::shortcuts::registry::ShortcutStatus>> {
     crate::shortcuts::validate_settings(&settings).map_err(err)?;
     crate::autostart::set_enabled(&app, settings.launch_at_login).map_err(err)?;
     settings.save(&state.paths.settings_json).map_err(err)?;
@@ -205,8 +209,8 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings)
     // Delivery preferences are engine configuration, not only UI state. Regenerate immediately;
     // the managed engine's watcher hot-reloads the changed default/app-specific files.
     regen_yaml(&state)?;
-    // Re-register global hotkeys so shortcut edits take effect immediately.
-    crate::shortcuts::register(&app).map_err(err)?;
+    // Apply shortcut edits immediately. Only chords that changed are touched.
+    let shortcuts = crate::shortcuts::register(&app);
     // Park (or dismiss) the silent-capture worker now, while the user is looking at this
     // window — creating it during a capture would pull Glyphio in front of what they're
     // capturing. See `windows::ensure_silent_editor`.
@@ -217,7 +221,13 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings)
     } else {
         crate::windows::close_silent_editor(&app);
     }
-    Ok(())
+    Ok(shortcuts)
+}
+
+/// How each configured shortcut fared with the system, for Settings.
+#[tauri::command]
+pub fn shortcut_status(app: AppHandle) -> Vec<crate::shortcuts::registry::ShortcutStatus> {
+    crate::shortcuts::status(&app)
 }
 
 // ---- history ---------------------------------------------------------------
@@ -577,7 +587,7 @@ pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
     state
         .snippets
         .render_yaml_with_policy(&state.paths.engine_config, &policy)?;
-    crate::shortcuts::register(app)?;
+    crate::shortcuts::register(app);
     state.supervisor.restart(app, &state.paths)?;
     // Reload is the user's recovery gesture: a capture that never settled must not outlive it.
     crate::tray::capture_reset(app);

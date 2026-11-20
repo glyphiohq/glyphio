@@ -110,6 +110,10 @@ for the exact failure payload and recovery target.
 | Clear and save | The capture action has no global binding after save and relaunch. | |
 | Reset and save | The documented default returns and works immediately. | |
 | Existing pre-recorder settings | Existing serialized shortcut strings load, display in macOS notation, and still fire. | |
+| Refused chord is visible | Bind a capture action to a chord another app holds (for example a launcher's), save: Settings shows "Not registered" with a reason beside it, the log has one line for it, and the tray status row reads "Some shortcuts could not be registered — open Settings". | |
+| Saving an unrelated setting | Change a non-shortcut setting and save: every working shortcut keeps firing, and no shortcut is dropped even briefly. | |
+| Save during a scrolling capture | Save any setting while a scrolling capture runs: Esc still stops the capture. | |
+| Key held down | Holding a capture shortcut starts one capture, not several. | |
 
 ## Expansion delivery matrix
 

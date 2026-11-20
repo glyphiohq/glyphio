@@ -157,6 +157,19 @@ restarts the engine when Accessibility becomes granted. `permission_repair` runs
 Glyphio's own entry only, then requests again. The old per-permission commands remain until the UI
 moves to this model (ONB-02).
 
+### Setup window
+
+`windows::open_setup` shows `ui/setup/` (560×640, fixed, built through `summoned`) on launch while
+`onboardingCompleted` is false; it replaces the Settings window on first launch (`startup::launch_surface`),
+and a login launch still shows nothing. A `settings.json` written before the key existed counts as
+completed, so existing installs skip setup. Steps (pure logic in `ui/setup/steps.mjs`, row presentation
+in `ui/settings/permissions.mjs`): Accessibility, Screen Recording, Finish. The window turns on the
+permission watcher while open, shows each native grant's single remedy (prompt, open System Settings,
+**Fix it** for a stale grant, **Relaunch to finish** only when needed), comes forward when a grant lands,
+and announces changes in a live region. `onboardingStep` and `onboardingSkipped` persist so a relaunch
+resumes on the same step and moves on by itself if that permission is now granted. Shortcuts, the
+try-it capture, the login-item switch and the team choice are ONB-03.
+
 ### Login item
 
 "Launch Glyphio at login" is `SMAppService.mainApp` (`platform/macos/autostart.rs`), the system's own login-item

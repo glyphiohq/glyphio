@@ -119,6 +119,15 @@ pub struct Settings {
     /// Path of the app bundle when a permission was last seen granted; a different path later
     /// means the grant belongs to another copy.
     pub permission_grant_identity: String,
+
+    // ---- first-run setup ----
+    /// The setup window has been finished (or dismissed for good). An existing settings file
+    /// that predates this key counts as finished, so current users are never sent through it.
+    pub onboarding_completed: bool,
+    /// Where the setup window reopens, so a relaunch resumes on the same step.
+    pub onboarding_step: String,
+    /// Steps the user skipped, for the checklist that follows.
+    pub onboarding_skipped: Vec<String>,
 }
 
 impl Default for Settings {
@@ -181,6 +190,9 @@ impl Default for Settings {
             permission_prompted_accessibility: false,
             permission_prompted_screen_recording: false,
             permission_grant_identity: String::new(),
+            onboarding_completed: false,
+            onboarding_step: "accessibility".into(),
+            onboarding_skipped: Vec::new(),
         }
     }
 }
@@ -247,10 +259,15 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let mut loaded: Self = serde_json::from_str(&text).unwrap_or_default();
+        // A file written before setup existed belongs to an established install.
+        if !text.contains("\"onboardingCompleted\"") {
+            loaded.onboarding_completed = true;
+        }
+        loaded
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -431,5 +448,20 @@ mod tests {
         let json = serde_json::to_string(&stored).unwrap();
         assert!(json.contains(r#""expansionDelivery":"keys""#));
         assert!(json.contains(r#""com.apple.TextEdit":"paste""#));
+    }
+
+    #[test]
+    fn a_fresh_install_has_not_done_setup_but_an_old_settings_file_counts_as_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(!Settings::load(&path).onboarding_completed, "no file: fresh install");
+        std::fs::write(&path, r#"{"launchAtLogin": true}"#).unwrap();
+        assert!(Settings::load(&path).onboarding_completed, "file without the key: existing install");
+        let mut s = Settings::default();
+        s.save(&path).unwrap();
+        assert!(!Settings::load(&path).onboarding_completed, "saved by this version, not done");
+        s.onboarding_completed = true;
+        s.save(&path).unwrap();
+        assert!(Settings::load(&path).onboarding_completed);
     }
 }

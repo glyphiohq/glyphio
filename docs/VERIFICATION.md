@@ -115,6 +115,20 @@ for the exact failure payload and recovery target.
 | Save during a scrolling capture | Save any setting while a scrolling capture runs: Esc still stops the capture. | |
 | Key held down | Holding a capture shortcut starts one capture, not several. | |
 
+## Clipboard palette matrix
+
+Open the palette on the Clipboard list with five entries, two of them pinned, one of them an image.
+
+| Scenario | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Clear, confirm | `⌘⇧⌫` replaces the list with "Clear 5 clipboard entries? 2 pinned entries are kept."; `Enter` leaves the two pinned entries; the tray shows its acknowledgement; the palette stays open. | |
+| Clear including pinned | `⌘⇧⌫` then `⌥↩` leaves no entries and shows the empty state. | |
+| Cancel | `⌘⇧⌫` then `Esc` (or any other key) changes nothing and returns to the list; the palette stays open. | |
+| Clear control visibility | The Clear button is absent in the Capture and Snippets lists and when the clipboard list is empty; clicking it asks the same question. | |
+| Image files | After clearing, the images of removed entries are gone from the clipboard images folder and pinned images remain. | |
+| Also empty the clipboard | With "and empty the current clipboard" on, pasting after clearing pastes nothing, no new history row appears, and the choice is still on at the next clear. | |
+| Search active | With a search typed, the question states the total count, and the whole history is cleared, not just the matches. | |
+
 ## Expansion delivery matrix
 
 Create a snippet containing ASCII, non-ASCII, multiple lines, and punctuation. Test in TextEdit and

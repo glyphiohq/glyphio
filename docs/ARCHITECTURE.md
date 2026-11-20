@@ -105,6 +105,17 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Clearing clipboard history from the palette
+
+The palette's clipboard list can clear history with an inline two-key confirmation (a dialog would
+take focus, and the palette closes on blur). `ui/palette/clip-keys.mjs` maps keys to intents.
+`clear_clips(include_pinned, empty_pasteboard)` clears unpinned entries only when asked to
+(`ClipStore::clear_unpinned`), or everything (`clear`, which Settings still uses; omitting the
+argument means "including pinned"). Image files of removed entries are deleted either way, and
+pinned images stay. Emptying the system clipboard goes through `clipboard::empty`, which marks the
+change as our own so the watcher does not record it; the choice is stored as
+`clipboardClearAlsoEmptiesPasteboard`.
+
 ### Shortcut registry
 
 `shortcuts::registry::Registry` (in `AppState`) owns the table of bindings (a capture mode with

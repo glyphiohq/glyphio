@@ -13,6 +13,7 @@
 // arrives nowhere if Glyphio still has focus.
 
 import { icon } from '../shared/icons.js';
+import { clipKeyIntent, confirmationText } from './clip-keys.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -23,6 +24,8 @@ const foot = document.getElementById('foot');
 const glyph = document.getElementById('glyph');
 const viewBar = document.getElementById('views');
 const kindBar = document.getElementById('kinds');
+const clearWrap = document.getElementById('clear-wrap');
+const clearButton = document.getElementById('clear');
 
 const VIEWS = ['clipboard', 'captures', 'snippets'];
 const KINDS = ['all', 'text', 'image'];
@@ -34,7 +37,7 @@ const CHROME = {
   clipboard: {
     glyph: '⎘',
     placeholder: 'Search what you’ve copied…',
-    keys: [['↩', 'paste'], ['⌘↩', 'copy only'], ['⌘P', 'pin'], ['⌘⌫', 'forget']],
+    keys: [['↩', 'paste'], ['⌘↩', 'copy only'], ['⌘P', 'pin'], ['⌘⌫', 'forget'], ['⌘⇧⌫', 'clear']],
   },
   captures: {
     glyph: '⛶',
@@ -65,6 +68,10 @@ let snippets = [];
 let rows = [];
 let selected = 0;
 let error = '';
+/** The clear-history question, while it is on screen: null, or what the toggle is set to. */
+let confirming = null;
+/** Remembered between uses: also empty what is on the clipboard right now. */
+let emptyPasteboard = false;
 
 init();
 
@@ -78,9 +85,12 @@ async function init() {
   window.addEventListener('blur', hide);
   input.addEventListener('input', () => { selected = 0; draw(); });
   input.addEventListener('keydown', onKey);
+  clearButton.addEventListener('mousedown', (e) => e.preventDefault());
+  clearButton.addEventListener('click', startConfirming);
 
   const asked = await invoke('palette_view').catch(() => '');
   await refresh();
+  emptyPasteboard = !!(await invoke('get_settings').catch(() => ({}))).clipboardClearAlsoEmptiesPasteboard;
   setKind('all');
   setView(VIEWS.includes(asked) ? asked : 'clipboard', { keepQuery: false });
 
@@ -145,6 +155,7 @@ function setView(next, { keepQuery = true } = {}) {
   glyph.textContent = CHROME[view].glyph;
   input.placeholder = CHROME[view].placeholder;
   kindBar.hidden = view !== 'clipboard';
+  if (view !== 'clipboard') stopConfirming();
   viewBar.querySelectorAll('[data-view]').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
@@ -198,7 +209,10 @@ function draw() {
   });
 
   list.textContent = '';
-  if (!rows.length) {
+  clearWrap.hidden = view !== 'clipboard' || !clips.length;
+  if (confirming && view === 'clipboard') {
+    list.appendChild(confirmRow());
+  } else if (!rows.length) {
     list.appendChild(emptyRow(n));
   } else {
     rows.forEach((row, i) => list.appendChild(rowFor(row, i)));
@@ -293,6 +307,14 @@ function rowFor(row, i) {
 
 function drawFoot() {
   foot.textContent = '';
+  if (confirming && view === 'clipboard') {
+    for (const [key, what] of [['↩', 'clear'], ['⌥↩', 'clear including pinned'], ['E', 'also empty clipboard'], ['esc', 'cancel']]) {
+      const span = document.createElement('span');
+      span.innerHTML = `<kbd>${key}</kbd> ${what}`;
+      foot.append(span);
+    }
+    return;
+  }
   if (error) {
     const e = document.createElement('span');
     e.className = 'pal-err';
@@ -360,6 +382,68 @@ async function act(alt) {
   }
 }
 
+/** The inline question that replaces the list. A dialog would take focus, and the palette closes on blur. */
+function confirmRow() {
+  const pinned = clips.filter((c) => c.pinned).length;
+  const li = document.createElement('li');
+  li.className = 'pal-confirm';
+  const q = document.createElement('div');
+  q.textContent = confirmationText(clips.length, pinned);
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const button = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the caret where it is
+    b.addEventListener('click', fn);
+    return b;
+  };
+  actions.append(button('↩ Clear', 'danger', () => doClear(false)));
+  if (pinned) actions.append(button('⌥↩ Clear including pinned', 'danger', () => doClear(true)));
+  actions.append(button('esc Cancel', '', stopConfirming));
+  const toggle = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = emptyPasteboard;
+  box.addEventListener('change', () => { emptyPasteboard = box.checked; input.focus(); });
+  toggle.append(box, ' and empty the current clipboard (E)');
+  li.append(q, actions, toggle);
+  return li;
+}
+
+function startConfirming() {
+  if (view !== 'clipboard' || !clips.length) return;
+  confirming = {};
+  input.readOnly = true;
+  draw();
+  input.focus();
+}
+
+function stopConfirming() {
+  if (!confirming) return;
+  confirming = null;
+  input.readOnly = false;
+  draw();
+  input.focus();
+}
+
+/** Nothing is deleted until this runs. The palette stays open throughout. */
+async function doClear(includePinned) {
+  try {
+    await invoke('clear_clips', { includePinned, emptyPasteboard });
+    clips = await invoke('list_clips');
+  } catch (e) {
+    error = String(e);
+  }
+  confirming = null;
+  input.readOnly = false;
+  selected = 0;
+  draw();
+  input.focus();
+}
+
 async function clipAction(fn) {
   const row = rows[selected];
   if (!row || view !== 'clipboard') return;
@@ -375,6 +459,19 @@ async function clipAction(fn) {
 
 function onKey(e) {
   const mod = e.metaKey || e.ctrlKey;
+  if (view === 'clipboard') {
+    const { type } = clipKeyIntent(e, { confirming: !!confirming, hasClips: clips.length > 0 });
+    if (type !== 'none') {
+      e.preventDefault();
+      if (type === 'clear-start') startConfirming();
+      else if (type === 'clear-confirm') doClear(false);
+      else if (type === 'clear-confirm-pinned') doClear(true);
+      else if (type === 'clear-toggle-empty') { emptyPasteboard = !emptyPasteboard; draw(); }
+      else stopConfirming();
+      return;
+    }
+    if (confirming) return; // Alt on its way to Alt+Enter
+  }
   // ⌘1/⌘2/⌘3 jump straight to a list, which is also what the empty state advertises.
   if (mod && ['1', '2', '3'].includes(e.key)) {
     e.preventDefault();

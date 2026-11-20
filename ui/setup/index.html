@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up Glyphio</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <style>
+    body { margin: 0; display: flex; flex-direction: column; height: 100vh; }
+    main { flex: 1; padding: 28px 32px 0; overflow: auto; }
+    header { display: flex; align-items: baseline; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    .progress { color: var(--text-secondary); font-size: 12px; }
+    ol.steps { list-style: none; margin: 22px 0 0; padding: 0; display: grid; gap: 4px; }
+    ol.steps li { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: var(--radius-sm);
+      color: var(--text-secondary); font-size: 13px; }
+    ol.steps li[aria-current="step"] { color: var(--text); background: var(--surface-2); }
+    ol.steps .mark { width: 18px; text-align: center; }
+    section.panel { margin-top: 22px; padding: 18px; border: 1px solid var(--border-strong);
+      border-radius: var(--radius); background: var(--surface); }
+    section.panel h2 { margin: 0 0 6px; font-size: 15px; }
+    section.panel p { margin: 0 0 14px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+    .state { font-size: 12px; color: var(--text-secondary); margin-left: 10px; }
+    .state[data-phase="granted"] { color: var(--success); }
+    .state[data-phase="stale"] { color: var(--danger); }
+    .row { display: flex; align-items: center; }
+    .note { margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
+    footer { display: flex; justify-content: space-between; align-items: center; padding: 16px 32px 22px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Set up Glyphio</h1>
+      <span class="progress" id="progress"></span>
+    </header>
+    <ol class="steps" id="steps" aria-label="Setup steps"></ol>
+    <section class="panel" id="panel" aria-labelledby="panel-title"></section>
+  </main>
+  <footer>
+    <button type="button" class="ghost" id="skip">Skip for now</button>
+    <button type="button" class="primary" id="continue">Continue</button>
+  </footer>
+  <div class="sr-only" id="live" role="status" aria-live="polite"></div>
+  <script type="module" src="setup.js"></script>
+</body>
+</html>

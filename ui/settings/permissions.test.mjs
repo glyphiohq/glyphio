@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   afterPermissionPrompt,
+  GRANT,
+  grantPresentation,
   initialPermissionState,
   PERMISSION_KIND,
   PERMISSION_REMEDY,
@@ -113,4 +115,35 @@ test('native refresh preserves an unused prompt and turns a revocation into sett
     withNativePermissionStatus({ granted: true, remedy: PERMISSION_REMEDY.PROMPT }, false),
     { granted: false, remedy: PERMISSION_REMEDY.SETTINGS },
   );
+});
+
+test('each native grant has exactly one remedy, and granted has none', () => {
+  const expected = {
+    [GRANT.GRANTED]: [],
+    [GRANT.NOT_DETERMINED]: ['request'],
+    [GRANT.DENIED]: ['settings'],
+    [GRANT.STALE]: ['repair'],
+    [GRANT.NEEDS_RELAUNCH]: ['relaunch'],
+  };
+  for (const kind of [ax, screen]) {
+    for (const [grant, ids] of Object.entries(expected)) {
+      assert.deepEqual(grantPresentation(kind, grant).actions.map((a) => a.id), ids, `${kind} ${grant}`);
+    }
+  }
+});
+
+test('a stale grant explains itself and offers Fix it; relaunch is only offered when needed', () => {
+  const stale = grantPresentation(ax, GRANT.STALE);
+  assert.match(stale.explanation, /still blocking it/);
+  assert.equal(stale.actions[0].label, 'Fix it');
+  for (const grant of [GRANT.GRANTED, GRANT.NOT_DETERMINED, GRANT.DENIED, GRANT.STALE]) {
+    assert.ok(!grantPresentation(screen, grant).actions.some((a) => a.id === 'relaunch'));
+  }
+  assert.equal(grantPresentation(screen, GRANT.NEEDS_RELAUNCH).actions[0].label, 'Relaunch to finish');
+});
+
+test('status is conveyed in words, not only colour', () => {
+  for (const grant of Object.values(GRANT)) {
+    assert.ok(grantPresentation(ax, grant).status.length > 0);
+  }
 });

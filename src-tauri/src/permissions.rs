@@ -273,6 +273,12 @@ fn refresh(app: &AppHandle) -> Status {
         let _ = app.emit("permission-status", now);
         let newly_granted = now.accessibility == Grant::Granted
             && previous.is_some_and(|p| p.accessibility != Grant::Granted);
+        let newly_usable = newly_granted
+            || (now.screen_recording == Grant::Granted
+                && previous.is_some_and(|p| p.screen_recording != Grant::Granted));
+        if newly_usable {
+            crate::onboarding::bring_setup_forward(app);
+        }
         if newly_granted {
             let app = app.clone();
             std::thread::spawn(move || {

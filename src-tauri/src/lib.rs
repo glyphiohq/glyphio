@@ -10,6 +10,7 @@ mod engine;
 mod history;
 mod launch;
 mod logging;
+mod onboarding;
 mod paths;
 mod permissions;
 pub mod platform;
@@ -252,8 +253,11 @@ pub fn run() {
             }
 
             // A login launch keeps Glyphio in the menu bar; an ordinary launch opens Settings.
-            if open_settings_on_start {
-                windows::open(app.handle(), "settings")?;
+            let completed = app.state::<AppState>().settings.lock().unwrap().onboarding_completed;
+            match startup::launch_surface(open_settings_on_start, completed) {
+                startup::LaunchSurface::Setup => windows::open_setup(app.handle())?,
+                startup::LaunchSurface::Settings => windows::open(app.handle(), "settings")?,
+                startup::LaunchSurface::Nothing => {}
             }
 
             // The palette is deliberately NOT built ahead of time: a macOS window can only be
@@ -306,6 +310,9 @@ pub fn run() {
             commands::clear_captures,
             commands::trigger_capture,
             commands::login_item_notice,
+            onboarding::onboarding_state,
+            onboarding::onboarding_update,
+            onboarding::open_setup,
             permissions::permission_status,
             permissions::permission_watch,
             permissions::permission_request,
@@ -413,8 +420,10 @@ pub fn run() {
             // while we're still launching). Re-assert once launch completes.
             tauri::RunEvent::Ready => {
                 if startup::should_open_settings(std::env::args()) {
-                    if let Some(win) = app_handle.get_webview_window("settings") {
-                        let _ = win.set_focus();
+                    for label in ["setup", "settings"] {
+                        if let Some(win) = app_handle.get_webview_window(label) {
+                            let _ = win.set_focus();
+                        }
                     }
                 }
             }

@@ -11,6 +11,7 @@ mod history;
 mod launch;
 mod logging;
 mod paths;
+pub mod platform;
 mod settings;
 mod shortcuts;
 mod startup;
@@ -72,24 +73,16 @@ pub fn app_restart(app: &tauri::AppHandle) -> ! {
 /// Settle the login item once at launch: clear what older versions left behind, then read the
 /// native item's status and register it if the setting is on and nothing is registered.
 fn login_item_at_launch(app: &tauri::AppHandle, want: bool, existing_install: bool) {
-    #[cfg(not(target_os = "macos"))]
-    let _ = existing_install;
-    #[cfg(target_os = "macos")]
-    {
-        let state = app.state::<AppState>();
-        let marker = state.paths.root.join(".login-item-migrated");
-        if autostart::migrate_legacy(&marker, existing_install) == autostart::Migration::ManualRemoval {
-            *state.login_item_note.lock().unwrap() = Some(autostart::MANUAL_REMOVAL_NOTE.into());
-        }
-        let outcome = autostart::reconcile(want);
-        log::info!("login item at launch: {outcome:?}");
-        if let autostart::Outcome::Failed(_) | autostart::Outcome::NeedsApproval = outcome {
-            *state.login_item_outcome.lock().unwrap() = Some(outcome);
-        }
+    let autostart = &platform::current().autostart;
+    let state = app.state::<AppState>();
+    let marker = state.paths.root.join(".login-item-migrated");
+    if autostart.migrate_legacy(&marker, existing_install) == autostart::Migration::ManualRemoval {
+        *state.login_item_note.lock().unwrap() = Some(autostart::MANUAL_REMOVAL_NOTE.into());
     }
-    #[cfg(not(target_os = "macos"))]
-    if let Err(e) = autostart::set_enabled_with(app, want) {
-        log::warn!("could not update Launch at Login: {e}");
+    let outcome = autostart.reconcile(want);
+    log::info!("login item at launch: {outcome:?}");
+    if let autostart::Outcome::Failed(_) | autostart::Outcome::NeedsApproval = outcome {
+        *state.login_item_outcome.lock().unwrap() = Some(outcome);
     }
 }
 
@@ -175,8 +168,7 @@ pub fn run() {
 
             // Start as a menu-bar agent; opening a window promotes us to a regular app and
             // closing the last one demotes us again (windows::sync_activation_policy).
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            platform::current().shell.init_agent(app.handle());
 
             // Watch the clipboard. The loop re-reads the setting each tick, so this is
             // started unconditionally and does nothing while history is switched off.

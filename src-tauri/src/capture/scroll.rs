@@ -20,9 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use core_graphics::display::{CGDisplay, CGPoint};
-use core_graphics::event::{CGEvent, CGEventTapLocation, ScrollEventUnit};
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use image::RgbaImage;
 
 use super::Shot;
@@ -83,48 +80,27 @@ pub trait ScrollDriver {
     fn scroll(&mut self, delta: i32) -> anyhow::Result<()>;
 }
 
-struct QuartzDriver;
+struct PlatformDriver;
 
-impl ScrollDriver for QuartzDriver {
+impl ScrollDriver for PlatformDriver {
     fn capture(&mut self, rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
-        super::backend::capture_rect_image(rect.0, rect.1, rect.2, rect.3)
+        crate::platform::current().capturer.rect_image(rect.0, rect.1, rect.2, rect.3)
     }
 
     fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
-        post_scroll(delta)
+        crate::platform::current().input.post_scroll(delta)
     }
-}
-
-#[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
-    fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: core_foundation::dictionary::CFDictionaryRef) -> bool;
-}
-
-/// Whether the app may post synthetic events / observe keystrokes. On modern macOS this is
-/// THE Accessibility check that matters for the engine too: TCC attributes a bundled child
-/// process to its **responsible app**, so one "Glyphio" grant covers expansion (the engine
-/// sidecar) and scrolling capture alike.
-pub fn app_accessibility_trusted() -> bool {
-    unsafe { AXIsProcessTrusted() }
-}
-
-/// Ask macOS to show the Accessibility permission dialog — which also ADDS the correct
-/// "Glyphio" row to System Settings, so users never hunt for binaries with the "+" button.
-pub fn request_accessibility() -> bool {
-    use core_foundation::base::TCFType;
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::CFDictionary;
-    use core_foundation::string::CFString;
-    let key = CFString::from_static_string("AXTrustedCheckOptionPrompt");
-    let dict = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), CFBoolean::true_value().as_CFType())]);
-    unsafe { AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef()) }
 }
 
 /// The grant this mode needs, as an error rather than a bool, so the caller can refuse before
 /// starting a capture.
 pub fn require_accessibility() -> anyhow::Result<()> {
-    if app_accessibility_trusted() {
+    require_accessibility_with(&*crate::platform::current().permissions)
+}
+
+/// [`require_accessibility`] against a given permission source.
+pub fn require_accessibility_with(permissions: &dyn crate::platform::Permissions) -> anyhow::Result<()> {
+    if permissions.accessibility_trusted() {
         return Ok(());
     }
     anyhow::bail!(
@@ -146,11 +122,12 @@ pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
 
     // NB: the stop flag is cleared by the caller before it arms Escape — see [`clear_stop`].
     // Park the cursor mid-region so wheel events reach the right scroller; restore after.
-    let original = cursor_position();
-    warp_cursor(CGPoint::new(x + w / 2.0, y + h / 2.0));
+    let input = &crate::platform::current().input;
+    let original = input.cursor_position();
+    input.warp_cursor((x + w / 2.0, y + h / 2.0));
     std::thread::sleep(Duration::from_millis(120));
 
-    let mut driver = QuartzDriver;
+    let mut driver = PlatformDriver;
     let result = capture_loop(
         &job,
         &mut driver,
@@ -165,7 +142,7 @@ pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
     // the rudest possible ending.
     if let Some(p) = original {
         if pointer_in_region(&job) {
-            warp_cursor(p);
+            input.warp_cursor(p);
         }
     }
     result
@@ -248,8 +225,8 @@ fn dispatch_scroll<D: ScrollDriver>(driver: &mut D, mut delta: i32) -> anyhow::R
 /// event goes to whatever is under the pointer, so scrolling while the user has taken the mouse
 /// elsewhere scrolls the wrong thing and stitches nonsense.
 fn pointer_in_region(job: &Job) -> bool {
-    match cursor_position() {
-        Some(p) => may_scroll(job, (p.x, p.y)),
+    match crate::platform::current().input.cursor_position() {
+        Some(p) => may_scroll(job, p),
         None => true, // can't tell where the pointer is — carry on rather than stall
     }
 }
@@ -298,30 +275,6 @@ fn nap(total: Duration) -> bool {
         }
         std::thread::sleep(left.min(TICK));
     }
-}
-
-fn cursor_position() -> Option<CGPoint> {
-    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
-    Some(CGEvent::new(source).ok()?.location())
-}
-
-fn warp_cursor(p: CGPoint) {
-    let _ = CGDisplay::warp_mouse_cursor_position(p);
-}
-
-/// Diagnostics-only alias for [`post_scroll`] (used by `capture::diag`).
-pub fn post_scroll_for_diag(delta: i32) -> anyhow::Result<()> {
-    post_scroll(delta)
-}
-
-/// Post a pixel-unit scroll (negative = content moves up / scrolls down).
-fn post_scroll(delta: i32) -> anyhow::Result<()> {
-    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-        .map_err(|_| anyhow!("could not create event source"))?;
-    let ev = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 1, delta, 0, 0)
-        .map_err(|_| anyhow!("could not create scroll event"))?;
-    ev.post(CGEventTapLocation::HID);
-    Ok(())
 }
 
 // ---- stitching -----------------------------------------------------------------

@@ -195,32 +195,21 @@ pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
-fn set_login_item(app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app;
-        let outcome = crate::autostart::set_enabled(want);
-        let failure = match &outcome {
-            crate::autostart::Outcome::Failed(e) => Some(e.clone()),
-            _ => None,
-        };
-        *state.login_item_outcome.lock().unwrap() = match outcome {
-            crate::autostart::Outcome::NeedsApproval | crate::autostart::Outcome::Failed(_) => {
-                Some(outcome)
-            }
-            _ => None,
-        };
-        // A refusal means the setting did not take: say so rather than save a lie.
-        if let Some(e) = failure {
-            return Err(format!("Could not change Launch at Login: {e}"));
-        }
-        Ok(())
+fn set_login_item(_app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
+    let outcome = crate::platform::current().autostart.set_enabled(want);
+    let failure = match &outcome {
+        crate::autostart::Outcome::Failed(e) => Some(e.clone()),
+        _ => None,
+    };
+    *state.login_item_outcome.lock().unwrap() = match outcome {
+        crate::autostart::Outcome::NeedsApproval | crate::autostart::Outcome::Failed(_) => Some(outcome),
+        _ => None,
+    };
+    // A refusal means the setting did not take: say so rather than save a lie.
+    if let Some(e) = failure {
+        return Err(format!("Could not change Launch at Login: {e}"));
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        crate::autostart::set_enabled_with(app, want).map_err(err)
-    }
+    Ok(())
 }
 
 /// What Settings should say under "Launch Glyphio at login": a pending approval, a refusal, or the
@@ -531,14 +520,14 @@ pub fn scroll_capture_cancel(app: AppHandle) {
 /// child of the app, so TCC attributes it here) and scrolling capture.
 #[tauri::command]
 pub fn app_accessibility_status() -> bool {
-    crate::capture::scroll::app_accessibility_trusted()
+    crate::platform::current().permissions.accessibility_trusted()
 }
 
 /// Show the system Accessibility dialog — macOS adds the "Glyphio" row itself, the user only
 /// toggles it. The engine notices within ~2s (its periodic re-check) and expansion turns on.
 #[tauri::command]
 pub fn request_accessibility() -> bool {
-    crate::capture::scroll::request_accessibility()
+    crate::platform::current().permissions.request_accessibility()
 }
 
 // ---- windows ---------------------------------------------------------------
@@ -587,8 +576,7 @@ pub async fn palette_exec(app: AppHandle, trigger: String) -> CmdResult<()> {
     // Deactivate the whole app, not just the palette: if another Glyphio window is open,
     // macOS would hand key focus to it and the expansion would land inside Glyphio instead
     // of the app the user came from.
-    #[cfg(target_os = "macos")]
-    let _ = app.hide();
+    crate::platform::current().shell.hide_app(&app);
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let paths = app.state::<AppState>().paths.clone();
     use crate::paths::s;
@@ -618,8 +606,7 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
     if let Some(win) = app.get_webview_window("palette") {
         let _ = win.destroy();
     }
-    #[cfg(target_os = "macos")]
-    let _ = app.hide();
+    crate::platform::current().shell.hide_app(&app);
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     // Queues the request for the capture worker; nothing slow runs here.
     if let Err(e) = crate::capture::trigger(&app, &mode, delivery(silent)) {
@@ -680,13 +667,7 @@ pub fn engine_exhausted(state: State<AppState>) -> bool {
 /// Open System Settings at Privacy & Security › Accessibility.
 #[tauri::command]
 pub fn open_accessibility_settings(app: AppHandle) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            None::<&str>,
-        )
-        .map_err(err)
+    open_permission_settings(&app, crate::platform::PermissionKind::Accessibility)
 }
 
 /// Restart the expansion-engine daemon (e.g. after granting Accessibility).
@@ -695,46 +676,23 @@ pub fn restart_engine(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
     state.supervisor.restart(&app, &state.paths).map_err(err)
 }
 
-#[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGRequestScreenCaptureAccess() -> bool;
-}
-
 /// Whether the Screen Recording TCC permission is granted (checked without prompting).
 #[tauri::command]
 pub fn screen_recording_status() -> bool {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        CGPreflightScreenCaptureAccess()
-    }
-    #[cfg(not(target_os = "macos"))]
-    true
+    crate::platform::current().permissions.screen_recording_granted()
 }
 
 /// Trigger the OS Screen Recording prompt (also lists Glyphio in System Settings). Returns the
 /// possibly-still-false grant state — macOS applies the grant on the app's next launch.
 #[tauri::command]
 pub fn request_screen_recording() -> bool {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        CGRequestScreenCaptureAccess()
-    }
-    #[cfg(not(target_os = "macos"))]
-    true
+    crate::platform::current().permissions.request_screen_recording()
 }
 
 /// Open System Settings at Privacy & Security › Screen Recording.
 #[tauri::command]
 pub fn open_screen_recording_settings(app: AppHandle) -> CmdResult<()> {
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-            None::<&str>,
-        )
-        .map_err(err)
+    open_permission_settings(&app, crate::platform::PermissionKind::ScreenRecording)
 }
 
 /// Relaunch the app — macOS only applies a fresh Screen Recording grant on the next launch,
@@ -797,8 +755,7 @@ pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult
         crate::tray::flash_ack(&app);
         return Ok(());
     }
-    #[cfg(target_os = "macos")]
-    let _ = app.hide();
+    crate::platform::current().shell.hide_app(&app);
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     if let Err(e) = crate::clipboard::send_paste() {
         log::warn!("paste keystroke failed: {e}"); // still on the clipboard
@@ -877,8 +834,7 @@ pub async fn form_submit(app: AppHandle, request_id: String, text: String) {
         let _ = win.close();
     }
     // Not just the window: another open Glyphio window would take key focus instead.
-    #[cfg(target_os = "macos")]
-    let _ = app.hide();
+    crate::platform::current().shell.hide_app(&app);
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     app.state::<AppState>()
         .bridge
@@ -939,4 +895,13 @@ pub async fn install_update(app: AppHandle) -> CmdResult<()> {
 
 fn strip_data_url(s: &str) -> &str {
     s.split_once(",").map_or(s, |(_, rest)| rest)
+}
+
+fn open_permission_settings(app: &AppHandle, kind: crate::platform::PermissionKind) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = crate::platform::current()
+        .permissions
+        .settings_url(kind)
+        .ok_or_else(|| "this platform has no settings page for that permission".to_string())?;
+    app.opener().open_url(url, None::<&str>).map_err(err)
 }

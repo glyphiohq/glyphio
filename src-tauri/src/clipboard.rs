@@ -20,10 +20,15 @@
 //! expose a counter that changes when the clipboard does. So: poll the counter (cheap, no
 //! content is touched), and read the clipboard only when it has actually moved.
 
-mod platform;
 mod store;
 
-pub use platform::{can_send_paste, send_paste};
+pub fn can_send_paste() -> bool {
+    crate::platform::current().input.can_send_paste()
+}
+
+pub fn send_paste() -> anyhow::Result<()> {
+    crate::platform::current().input.send_paste()
+}
 pub use store::{ClipEntry, ClipStore, NewClip};
 
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -56,7 +61,7 @@ static IGNORE: AtomicI64 = AtomicI64::new(i64::MIN);
 
 /// Call immediately after writing to the clipboard from inside the app.
 pub fn ignore_own_write() {
-    IGNORE.store(platform::change_counter(), Ordering::Relaxed);
+    IGNORE.store(crate::platform::current().pasteboard.change_counter(), Ordering::Relaxed);
 }
 
 /// Empty the system clipboard, and keep the watcher from recording the change.
@@ -76,10 +81,10 @@ pub fn watch(app: &AppHandle) {
     std::thread::spawn(move || {
         // Whatever is already on the clipboard at launch was copied before we were asked to
         // watch, so adopt the counter without reading it.
-        let seen = AtomicI64::new(platform::change_counter());
+        let seen = AtomicI64::new(crate::platform::current().pasteboard.change_counter());
         loop {
             std::thread::sleep(POLL);
-            let counter = platform::change_counter();
+            let counter = crate::platform::current().pasteboard.change_counter();
             if counter == seen.load(Ordering::Relaxed) {
                 continue;
             }
@@ -109,13 +114,13 @@ fn consider(app: &AppHandle) -> anyhow::Result<()> {
     if !enabled {
         return Ok(());
     }
-    if platform::is_concealed() {
+    if crate::platform::current().pasteboard.is_concealed() {
         // Deliberately not logged in any detail: the interesting fact is that something
         // asked not to be recorded, not what it was.
         log::debug!("clipboard entry marked concealed — not recorded");
         return Ok(());
     }
-    let source = platform::foreground_app();
+    let source = crate::platform::current().windows.foreground_app_name();
     if !source.is_empty()
         && ignored.iter().any(|a| a.eq_ignore_ascii_case(&source) || {
             let a = a.to_lowercase();

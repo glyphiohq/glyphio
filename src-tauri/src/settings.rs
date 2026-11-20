@@ -175,7 +175,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Whether any banner line needs the browser to be asked about the page. Nothing is read
-    /// from the browser unless one of these is on — see `capture::ax::browser_meta`.
+    /// from the browser unless one of these is on — see `PageInspector::browser_meta`.
     pub fn wants_browser_details(&self) -> bool {
         self.show_page_title || self.show_page_url || self.show_browser_profile
     }

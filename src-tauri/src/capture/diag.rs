@@ -4,18 +4,20 @@
 
 use std::time::{Duration, Instant};
 
+use crate::platform;
+
 /// Run the scrollingPage front-half step by step; with `capture` also grab pixels and
 /// run a short 3-frame scroll loop, saving PNGs next to the report for inspection.
 pub fn page_probe(capture: bool) {
-    println!("accessibility trusted: {}", super::scroll::app_accessibility_trusted());
-    println!("frontmost app: {:?}", super::backend::frontmost_app());
+    println!("accessibility trusted: {}", platform::current().permissions.accessibility_trusted());
+    println!("frontmost app: {:?}", platform::current().windows.frontmost_app());
 
     // The two ways of answering "which display is the user on" — one confirms itself against
     // the window list, one doesn't. Summoned windows use the cheap one; captures can't.
     // Both are timed repeatedly after a warm-up, because the first accessibility call of a
     // process pays for the connection and would otherwise be charged to whichever ran first.
-    let _ = super::backend::focused_window_display();
-    let _ = super::backend::frontmost_window_bounds();
+    let _ = platform::current().windows.focused_window_display();
+    let _ = platform::current().windows.frontmost_window();
     let bench = |label: &str, f: &dyn Fn() -> bool| {
         let mut best = Duration::MAX;
         let mut ok = true;
@@ -26,11 +28,11 @@ pub fn page_probe(capture: bool) {
         }
         println!("placement {label}: ok={ok} best of 5 = {best:?}");
     };
-    bench("no-window-list", &|| super::backend::focused_window_display().is_some());
-    bench("window-list", &|| super::backend::frontmost_window_bounds().is_ok());
+    bench("no-window-list", &|| platform::current().windows.focused_window_display().is_some());
+    bench("window-list", &|| platform::current().windows.frontmost_window().is_ok());
 
     let t = Instant::now();
-    let win = match super::backend::frontmost_window_bounds() {
+    let win = match platform::current().windows.frontmost_window() {
         Ok(w) => w,
         Err(e) => {
             println!("frontmost_window_bounds FAILED after {:?}: {e}", t.elapsed());
@@ -43,10 +45,10 @@ pub fn page_probe(capture: bool) {
     );
 
     let t = Instant::now();
-    println!("browser meta: {:?} [{:?}]", win.browser_meta(), t.elapsed());
+    println!("browser meta: {:?} [{:?}]", platform::current().inspector.browser_meta(win.pid, &win.app_name), t.elapsed());
 
     let t = Instant::now();
-    match super::ax::page_geometry(win.pid, super::PAGE_TREE_BUDGET) {
+    match platform::current().inspector.page_geometry(win.pid, super::PAGE_TREE_BUDGET) {
         Some(g) => {
             let (wx, wy, ww, wh) = g.window;
             println!("ax window frame: ({wx}, {wy}) {ww}x{wh} [{:?}]", t.elapsed());
@@ -82,7 +84,7 @@ fn probe_captures(x: f64, y: f64, w: f64, h: f64) {
     let out = std::env::temp_dir();
     for i in 0..3 {
         let t = Instant::now();
-        match super::backend::capture_rect_image(x, y, w, h) {
+        match platform::current().capturer.rect_image(x, y, w, h) {
             Ok((img, dpr)) => {
                 let (pw, ph) = img.dimensions();
                 let black = img
@@ -115,8 +117,8 @@ fn probe_captures(x: f64, y: f64, w: f64, h: f64) {
 }
 
 fn scroll_once(cx: f64, cy: f64, amount: i32) -> anyhow::Result<()> {
-    use core_graphics::display::{CGDisplay, CGPoint};
-    let _ = CGDisplay::warp_mouse_cursor_position(CGPoint::new(cx, cy));
+    let input = &platform::current().input;
+    input.warp_cursor((cx, cy));
     std::thread::sleep(std::time::Duration::from_millis(120));
-    super::scroll::post_scroll_for_diag(-amount)
+    input.post_scroll(-amount)
 }

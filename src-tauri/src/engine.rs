@@ -19,7 +19,7 @@ use budget::{RespawnBudget, Verdict, MAX_RESPAWNS};
 use reaper::{reap, wait_until, Reaped};
 
 mod budget;
-mod os;
+mod pidfile;
 mod reaper;
 
 /// How long to wait for a killed daemon's lock to clear before starting the next one.
@@ -186,7 +186,7 @@ impl Supervisor {
                 }
             }
         });
-        os::write_pid(&paths.engine_runtime(), child.pid());
+        pidfile::write_pid(&paths.engine_runtime(), child.pid());
         *self.started_at.lock().unwrap() = Some(Instant::now());
         *self.child.lock().unwrap() = Some(child);
         log::info!("engine daemon started (config: {})", s(&paths.engine_config));
@@ -198,13 +198,13 @@ impl Supervisor {
     pub fn stop(&self, paths: &AppPaths) {
         self.stopping.store(true, Ordering::SeqCst); // deliberate — exit watcher must not respawn
         if let Some(child) = self.child.lock().unwrap().take() {
-            reaper::ProcessControl::kill_tree(&os::Os, child.pid());
+            crate::platform::current().process.kill_tree(child.pid());
             if let Err(e) = child.kill() {
                 log::debug!("engine daemon already gone: {e}");
             }
             wait_for_lock(&paths.engine_runtime());
         }
-        os::clear_pid(&paths.engine_runtime());
+        pidfile::clear_pid(&paths.engine_runtime());
     }
 
     /// Restart to force a full config reload (rarely needed — file-watch handles most changes).
@@ -239,11 +239,11 @@ fn update_tray_tooltip(app: &AppHandle, holder: Option<&str>, exhausted: bool) {
 /// Terminate the engine recorded by a previous run, if it is this bundle's, and wait for its
 /// lock only when something was actually killed.
 fn clear_stale(runtime: &std::path::Path) {
-    let Some(engine_exe) = os::bundled_engine_exe() else {
+    let Some(engine_exe) = crate::platform::current().process.bundled_engine_exe() else {
         log::warn!("[engine] cannot resolve the bundled engine path; not clearing stale engines");
         return;
     };
-    match reap(&os::Os, os::read_pid(runtime), &engine_exe) {
+    match reap(&*crate::platform::current().process, pidfile::read_pid(runtime), &engine_exe) {
         Reaped::Killed(pid) => {
             log::info!("[engine] terminated stale daemon {pid}");
             wait_for_lock(runtime);
@@ -253,12 +253,12 @@ fn clear_stale(runtime: &std::path::Path) {
         }
         Reaped::Gone(_) | Reaped::NothingRecorded => {}
     }
-    os::clear_pid(runtime);
+    pidfile::clear_pid(runtime);
 }
 
 fn wait_for_lock(runtime: &std::path::Path) {
     let freed = wait_until(
-        || os::daemon_lock_free(runtime),
+        || crate::platform::current().process.daemon_lock_free(runtime),
         LOCK_WAIT,
         Duration::from_millis(20),
         std::thread::sleep,

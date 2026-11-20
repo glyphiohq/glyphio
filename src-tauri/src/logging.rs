@@ -9,7 +9,7 @@
 //! The log is a plain file that survives reboots and gets pasted into bug reports. Everything
 //! Glyphio touches that is worth stealing is therefore banned from it:
 //!
-//! * **Page identity** — URLs, page titles, browser profile names. `capture::ax::BrowserMeta`
+//! * **Page identity** — URLs, page titles, browser profile names. `platform::BrowserMeta`
 //!   exists to put these on an image the user is looking at, not into a file they forget about.
 //!   A URL in a log is a browsing history someone else can read.
 //! * **Snippet content** — triggers and replacements are the text the user types all day.

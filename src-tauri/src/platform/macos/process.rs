@@ -1,12 +1,11 @@
-//! The real [`ProcessControl`], the pid file and the daemon lock probe (macOS/unix).
+//! The real [`ProcessControl`] and the daemon lock probe (macOS).
 
 use std::path::{Path, PathBuf};
 
-use super::reaper::ProcessControl;
 
 pub struct Os;
 
-impl ProcessControl for Os {
+impl crate::platform::ProcessControl for Os {
     fn exe_path(&self, pid: u32) -> Option<PathBuf> {
         let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         // SAFETY: the buffer is valid for its length; proc_pidpath writes at most that many bytes.
@@ -16,6 +15,14 @@ impl ProcessControl for Os {
         }
         buf.truncate(n as usize);
         Some(PathBuf::from(String::from_utf8_lossy(&buf).into_owned()))
+    }
+
+    fn daemon_lock_free(&self, runtime: &Path) -> bool {
+        daemon_lock_free(runtime)
+    }
+
+    fn bundled_engine_exe(&self) -> Option<PathBuf> {
+        bundled_engine_exe()
     }
 
     fn kill_tree(&self, pid: u32) {
@@ -36,27 +43,9 @@ impl ProcessControl for Os {
     }
 }
 
-pub fn pid_file(runtime: &Path) -> PathBuf {
-    runtime.join("glyphio-engine.pid")
-}
-
-pub fn read_pid(runtime: &Path) -> Option<u32> {
-    std::fs::read_to_string(pid_file(runtime)).ok()?.trim().parse().ok()
-}
-
-pub fn write_pid(runtime: &Path, pid: u32) {
-    if let Err(e) = std::fs::write(pid_file(runtime), pid.to_string()) {
-        log::warn!("[engine] could not record pid: {e}");
-    }
-}
-
-pub fn clear_pid(runtime: &Path) {
-    let _ = std::fs::remove_file(pid_file(runtime));
-}
-
 /// Whether the engine daemon's lock (`espanso-daemon.lock`, an flock) can be taken, i.e. no
 /// daemon holds it. The probe releases it immediately.
-pub fn daemon_lock_free(runtime: &Path) -> bool {
+fn daemon_lock_free(runtime: &Path) -> bool {
     use std::os::fd::AsRawFd;
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
@@ -79,7 +68,7 @@ pub fn daemon_lock_free(runtime: &Path) -> bool {
 }
 
 /// This bundle's engine: the sidecar sits next to the main executable.
-pub fn bundled_engine_exe() -> Option<PathBuf> {
+fn bundled_engine_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     Some(exe.parent()?.join("glyphio-engine"))
 }
@@ -87,6 +76,7 @@ pub fn bundled_engine_exe() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::ProcessControl;
     use std::os::fd::AsRawFd;
 
     #[test]
@@ -115,13 +105,4 @@ mod tests {
         assert!(daemon_lock_free(dir.path()));
     }
 
-    #[test]
-    fn pid_file_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(read_pid(dir.path()), None);
-        write_pid(dir.path(), 4242);
-        assert_eq!(read_pid(dir.path()), Some(4242));
-        clear_pid(dir.path());
-        assert_eq!(read_pid(dir.path()), None);
-    }
 }

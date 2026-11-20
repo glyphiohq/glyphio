@@ -128,9 +128,22 @@ the main-thread `setup`. `engine/budget.rs` allows 5 respawns, refilled after 10
 running; when spent, the engine stays stopped, the tray tooltip says so, Settings shows a banner
 with **Restart engine**, and tray **Reload** also restarts it.
 
+### Platform module
+
+`src-tauri/src/platform/` is the only place for `cfg(target_os)` and OS crates. One trait per
+capability (`ScreenCapturer`, `RegionPicker`, `WindowQuery`, `PageInspector`, `InputInjector`,
+`Pasteboard`, `Permissions`, `Autostart`, `AppShell`, `ProcessControl`) with the macOS
+implementation in `platform/macos/` (the former `capture/backend.rs`, `capture/ax.rs`,
+`clipboard/platform.rs`, the Quartz and permission calls from `scroll.rs` and `commands.rs`, the
+login item, the window-shell calls from `windows.rs`, and process control). `platform::current()`
+builds the implementation once; `platform::fake` (tests) is a minimal in-memory one. Pure cores
+(capture lifecycle, stitching, delivery rules, the engine reaper and respawn budget, the login-item
+decisions) do not reference OS crates. Moved without behaviour change; the macOS verification
+matrix is the check.
+
 ### Login item
 
-"Launch Glyphio at login" is `SMAppService.mainApp` (`autostart.rs`), the system's own login-item
+"Launch Glyphio at login" is `SMAppService.mainApp` (`platform/macos/autostart.rs`), the system's own login-item
 service: it appears in System Settings → General → Login Items, needs no Automation permission and
 writes no LaunchAgent plist. The decisions are pure functions over a `LoginItem` trait, tested with
 a fake. The item is changed only when the user toggles the setting; launch reads its status and

@@ -173,7 +173,7 @@ pub fn send_paste() -> anyhow::Result<()> {
 pub fn can_send_paste() -> bool {
     #[cfg(target_os = "macos")]
     {
-        crate::capture::scroll::app_accessibility_trusted()
+        crate::platform::current().permissions.accessibility_trusted()
     }
     #[cfg(not(target_os = "macos"))]
     {

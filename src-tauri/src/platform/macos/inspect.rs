@@ -12,6 +12,7 @@
 //! never saw it. Uses the same app-level Accessibility grant as scrolling capture — no new
 //! permission.
 
+use crate::platform::{BrowserMeta, PageGeometry};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -55,28 +56,12 @@ extern "C" {
     fn AXValueGetValue(value: AXValueRef, value_type: u32, out: *mut std::ffi::c_void) -> bool;
 }
 
-/// What the AX tree knows about `pid`'s focused window.
-pub(super) struct PageGeometry {
-    /// The focused window's frame (points, global top-left) — the authoritative window
-    /// rect. CGWindowList can return sliver windows (Safari's toolbar strip is its own
-    /// window on modern macOS); AX always describes the real focused window.
-    pub window: (f64, f64, f64, f64),
-    /// The VISIBLE part of the web content area, if the window hosts one. `AXWebArea`
-    /// reports the full document extent (tens of thousands of points on a long page),
-    /// so the raw bounds are intersected with the window frame to get the viewport.
-    pub web_visible: Option<(f64, f64, f64, f64)>,
-    /// This call switched the browser's accessibility tree on and the budget ran out before
-    /// a web area appeared. Means "ask again in a moment", not "that isn't a web page" — the
-    /// two failures look identical from the outside and read very differently to a user.
-    pub tree_still_building: bool,
-}
-
 /// Read [`PageGeometry`] for `pid`'s focused window, or `None` when AX yields nothing.
 ///
 /// `budget` is how long to keep waiting for a web area that isn't there yet: a browser that
 /// has never had an assistive client attached takes ~2s to build its tree and push it to the
 /// browser process. The wait is paid once per browser — see [`enable_web_accessibility`].
-pub(super) fn page_geometry(pid: i32, budget: Duration) -> Option<PageGeometry> {
+pub(crate) fn page_geometry(pid: i32, budget: Duration) -> Option<PageGeometry> {
     if pid <= 0 {
         return None;
     }
@@ -228,7 +213,7 @@ fn read_geometry(app: &CFType) -> Option<PageGeometry> {
 /// The pid of the application holding keyboard focus. Unlike walking the window list this is
 /// display- and Space-agnostic: it names the app the user is actually in, however many
 /// monitors their windows are spread across.
-pub(super) fn focused_app_pid() -> Option<i32> {
+pub(crate) fn focused_app_pid() -> Option<i32> {
     let system = unsafe { AXUIElementCreateSystemWide() };
     if system.is_null() {
         return None;
@@ -242,7 +227,7 @@ pub(super) fn focused_app_pid() -> Option<i32> {
 /// Frame and title of `pid`'s focused window, straight from AX. The window list agrees about
 /// geometry but not always about titles — `kCGWindowName` comes back empty for some browser
 /// windows, which is how captures ended up labelled "Safari" instead of the page they showed.
-pub(super) fn focused_window(pid: i32) -> Option<((f64, f64, f64, f64), String)> {
+pub(crate) fn focused_window(pid: i32) -> Option<((f64, f64, f64, f64), String)> {
     if pid <= 0 {
         return None;
     }
@@ -260,24 +245,6 @@ pub(super) fn focused_window(pid: i32) -> Option<((f64, f64, f64, f64), String)>
     Some((frame, title))
 }
 
-/// What the browser will tell us about the page in its front window. Empty strings mean
-/// "didn't say" — no field is ever guessed.
-#[derive(Debug, Default, Clone)]
-pub struct BrowserMeta {
-    /// The page's own title, without the browser and profile the window title adds.
-    pub page_title: String,
-    pub url: String,
-    /// Chromium's profile name, present in the window title only while more than one profile
-    /// is in use — which is exactly when it's worth showing.
-    pub profile: String,
-}
-
-impl BrowserMeta {
-    pub fn is_empty(&self) -> bool {
-        self.page_title.is_empty() && self.url.is_empty() && self.profile.is_empty()
-    }
-}
-
 /// Ask `pid`'s front window what page it is showing. `app_name` is the application's
 /// localized name ("Google Chrome"), the key to reading its window title.
 ///
@@ -287,7 +254,7 @@ impl BrowserMeta {
 /// and the page-capture modes have already opted their browser in by the time they call
 /// here. So no browser is made to work harder because a banner line is switched on, and a
 /// non-browser simply returns nothing.
-pub(super) fn browser_meta(pid: i32, app_name: &str) -> BrowserMeta {
+pub(crate) fn browser_meta(pid: i32, app_name: &str) -> BrowserMeta {
     let mut meta = BrowserMeta::default();
     if pid <= 0 {
         return meta;

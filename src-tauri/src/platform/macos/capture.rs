@@ -20,27 +20,10 @@ use screencapturekit::screenshot_manager::{CGImageExt, SCScreenshotManager};
 use screencapturekit::shareable_content::{SCDisplay, SCShareableContent, SCWindow};
 use screencapturekit::stream::configuration::SCStreamConfiguration;
 use screencapturekit::stream::content_filter::SCContentFilter;
-use tauri::AppHandle;
 use uuid::Uuid;
 
-use super::Shot;
-
-pub fn capture(app: &AppHandle, mode: &str) -> anyhow::Result<Shot> {
-    match mode {
-        "fullWindow" => screencapture_interactive(&["-i", "-W"]),
-        "snip" => screencapture_interactive(&["-i"]),
-        "frontWindow" => capture_front_window(super::wants_browser_details(app)),
-        _ => capture_display_under_cursor(), // "visible"
-    }
-}
-
-/// The non-interactive modes, without needing an `AppHandle` (benchmark only).
-pub fn capture_for_bench(mode: &str) -> anyhow::Result<Shot> {
-    match mode {
-        "frontWindow" => capture_front_window(false),
-        _ => capture_display_under_cursor(),
-    }
-}
+use crate::capture::Shot;
+use crate::platform::FrontWindow;
 
 /// Backing-scale factor (pixels per point) of a display — 2.0 on Retina. The editor sizes the
 /// banner in CSS points and multiplies by this, so text isn't microscopic on Retina captures.
@@ -66,7 +49,7 @@ fn cursor_display_scale() -> f64 {
 
 /// Native interactive picker. Blocks until the user picks (or cancels with Esc). Returns the
 /// captured PNG decoded to RGBA. Cancel → `Cancelled` (not a failure; the caller clears the indicator).
-fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
+pub(crate) fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
     let tmp = std::env::temp_dir().join(format!("glyphio-capture-{}.png", Uuid::new_v4()));
     let status = std::process::Command::new("/usr/sbin/screencapture")
         .args(flags)
@@ -76,7 +59,7 @@ fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
         .map_err(|e| anyhow!("failed to launch screencapture: {e}"))?;
 
     if !status.success() || !tmp.exists() {
-        return Err(super::Cancelled.into());
+        return Err(crate::capture::Cancelled.into());
     }
     let bytes = std::fs::read(&tmp)?;
     let _ = std::fs::remove_file(&tmp);
@@ -95,7 +78,7 @@ fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
 }
 
 /// SCK capture of whichever display currently contains the mouse cursor (multi-monitor aware).
-fn capture_display_under_cursor() -> anyhow::Result<Shot> {
+pub(crate) fn capture_display_under_cursor() -> anyhow::Result<Shot> {
     let target_id = display_id_under_cursor().unwrap_or_else(|| CGDisplay::main().id);
     let dpr = backing_scale(target_id);
 
@@ -140,10 +123,10 @@ fn capture_display_under_cursor() -> anyhow::Result<Shot> {
 /// Non-interactive capture of the frontmost window (whole window, chrome included) — one
 /// keystroke, no picker. The motivating case: grab just the browser window instead of the
 /// entire screen.
-fn capture_front_window(with_browser_details: bool) -> anyhow::Result<Shot> {
+pub(crate) fn capture_front_window(with_browser_details: bool) -> anyhow::Result<Shot> {
     let win = frontmost_window_bounds_with_inset(0.0)?;
     let browser = if with_browser_details {
-        win.browser_meta()
+        crate::platform::current().inspector.browser_meta(win.pid, &win.app_name)
     } else {
         Default::default()
     };
@@ -176,7 +159,7 @@ type DisplayPiece<'a> = (&'a SCDisplay, (f64, f64, f64, f64));
 /// on some display; anything hanging off the edge of the desktop is trimmed rather than
 /// padded. Mixed-DPI arrangements resolve to the sharpest scale involved, upscaling the
 /// coarser piece so the seam lines up.
-pub(super) fn capture_rect_image(
+pub(crate) fn capture_rect_image(
     x: f64,
     y: f64,
     w: f64,
@@ -316,33 +299,10 @@ fn intersect(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> Option<(f64, f
     (w >= 1.0 && h >= 1.0).then_some((x, y, w, h))
 }
 
-/// Frontmost normal window not owned by Glyphio — the target of "scrolling page", "front
-/// window", and "browser page" capture.
-pub(super) struct FrontWindow {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-    pub title: String,
-    /// Owning process — lets the AX layer find the window's web content area.
-    pub pid: i32,
-    /// The owning application's name as macOS presents it ("Google Chrome"). Browsers build
-    /// their window title around it, which is how the page title and profile come apart.
-    pub app_name: String,
-}
-
-impl FrontWindow {
-    /// What the browser says about the page in this window — empty for anything that isn't
-    /// showing one. See [`super::ax::browser_meta`]: nothing is switched on to find out.
-    pub fn browser_meta(&self) -> super::ax::BrowserMeta {
-        super::ax::browser_meta(self.pid, &self.app_name)
-    }
-}
-
 /// Bounds (points, global top-left), title, and pid of the frontmost window. Scrolling capture
 /// insets the title bar away (`TITLE_BAR_PT`) so window chrome doesn't repeat in every
 /// stitched frame; front-window capture wants the whole window and passes 0.
-pub(super) fn frontmost_window_bounds() -> anyhow::Result<FrontWindow> {
+pub(crate) fn frontmost_window_bounds() -> anyhow::Result<FrontWindow> {
     const TITLE_BAR_PT: f64 = 28.0;
     frontmost_window_bounds_with_inset(TITLE_BAR_PT)
 }
@@ -363,7 +323,7 @@ fn frontmost_window_bounds_with_inset(title_bar_inset: f64) -> anyhow::Result<Fr
     let focused = frontmost_app()
         .filter(|(pid, _)| *pid != std::process::id() as i32)
         .and_then(|(pid, name)| {
-            super::ax::focused_window(pid).map(|(frame, title)| (pid, name, frame, title))
+            super::inspect::focused_window(pid).map(|(frame, title)| (pid, name, frame, title))
         });
 
     if let Some((pid, app_name, frame, ax_title)) = focused {
@@ -432,7 +392,7 @@ impl ListedWindow {
 /// only source that answers this correctly on a multi-display desk; the system-wide
 /// accessibility element's `AXFocusedApplication` returns `kAXErrorCannotComplete` on current
 /// macOS even for a trusted process, so it is only a backstop (and knows no name).
-pub(super) fn frontmost_app() -> Option<(i32, String)> {
+pub(crate) fn frontmost_app() -> Option<(i32, String)> {
     let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication();
     if let Some(app) = front {
         let pid = app.processIdentifier();
@@ -444,7 +404,7 @@ pub(super) fn frontmost_app() -> Option<(i32, String)> {
             return Some((pid, name));
         }
     }
-    super::ax::focused_app_pid().map(|pid| (pid, String::new()))
+    super::inspect::focused_app_pid().map(|pid| (pid, String::new()))
 }
 
 /// Every normal, non-Glyphio window currently on screen, front to back. "On screen" is the
@@ -546,20 +506,20 @@ fn on_screen_windows() -> Vec<ListedWindow> {
 ///
 /// So this asks the two cheap questions only. It is the difference between the palette
 /// appearing at once and appearing after a beat.
-pub(super) fn focused_window_display() -> Option<((f64, f64), (f64, f64))> {
+pub(crate) fn focused_window_display() -> Option<((f64, f64), (f64, f64))> {
     let (pid, _) = frontmost_app()?;
-    let ((x, y, w, h), _) = super::ax::focused_window(pid)?;
+    let ((x, y, w, h), _) = super::inspect::focused_window(pid)?;
     display_bounds_containing_point(x + w / 2.0, y + h / 2.0)
 }
 
-pub(super) fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
+pub(crate) fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
     let id = display_id_under_cursor().unwrap_or_else(|| CGDisplay::main().id);
     let b = CGDisplay::new(id).bounds();
     ((b.origin.x, b.origin.y), (b.size.width, b.size.height))
 }
 
 /// (origin, size) in points of the display containing a global point, if any.
-pub(super) fn display_bounds_containing_point(x: f64, y: f64) -> Option<((f64, f64), (f64, f64))> {
+pub(crate) fn display_bounds_containing_point(x: f64, y: f64) -> Option<((f64, f64), (f64, f64))> {
     for id in CGDisplay::active_displays().ok()? {
         let b = CGDisplay::new(id).bounds();
         if x >= b.origin.x

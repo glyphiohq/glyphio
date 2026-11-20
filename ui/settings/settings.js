@@ -180,6 +180,20 @@ async function reloadAll() {
   ]);
   renderSidebar();
   renderMain();
+  refreshLoginNotice();
+}
+
+/** Say why Launch at Login isn't working (approval pending, refused, an old item to remove). */
+async function refreshLoginNotice() {
+  const input = document.querySelector('[data-key="launchAtLogin"]');
+  if (!input) return;
+  const field = input.closest('.field');
+  let note = field.querySelector('.login-notice');
+  if (!note) {
+    note = el('p', { className: 'adv-hint login-notice' });
+    field.append(note);
+  }
+  note.textContent = (await invoke('login_item_notice').catch(() => null)) || '';
 }
 async function reloadSnippets() { state.snippets = await invoke('list_snippets'); renderSidebar(); renderMain(); }
 async function reloadGroups() { state.groups = await invoke('list_groups'); renderSidebar(); renderMain(); }
@@ -2904,6 +2918,7 @@ async function saveSettings() {
       refused ? 'err' : 'ok');
   }
   catch (e) { setStatus(String(e), 'err'); }
+  refreshLoginNotice();
 }
 
 // --- utils ------------------------------------------------------------------

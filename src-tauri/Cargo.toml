@@ -47,7 +47,11 @@ core-foundation = "0.10"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-opener = "2.5.4"
-tauri-plugin-autostart = "2.5.1"
+# The native login item (`SMAppService.mainApp`) and the launch Apple event that says whether
+# we were started by logging in. No scripting, no LaunchAgent plist.
+objc2 = "0.6"
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services"] }
 tauri-plugin-single-instance = { version = "2.4", features = ["deep-link"] }
 
 [dev-dependencies]

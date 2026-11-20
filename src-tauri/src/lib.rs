@@ -45,6 +45,11 @@ pub struct AppState {
     /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
     /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
     pub capture_feedback: Mutex<tray::CaptureFeedback>,
+    /// Why the login item is not working, if it is not; shown in Settings. Set at launch and
+    /// after a toggle.
+    pub login_item_outcome: Mutex<Option<autostart::Outcome>>,
+    /// One-line note about the old login item that could not be removed automatically.
+    pub login_item_note: Mutex<Option<String>>,
     /// Which chord does what, and whether the system accepted it. See `shortcuts::registry`.
     pub shortcuts: Mutex<shortcuts::registry::Registry>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
@@ -63,6 +68,30 @@ pub fn app_restart(app: &tauri::AppHandle) -> ! {
     app.restart()
 }
 
+/// Settle the login item once at launch: clear what older versions left behind, then read the
+/// native item's status and register it if the setting is on and nothing is registered.
+fn login_item_at_launch(app: &tauri::AppHandle, want: bool, existing_install: bool) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = existing_install;
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.state::<AppState>();
+        let marker = state.paths.root.join(".login-item-migrated");
+        if autostart::migrate_legacy(&marker, existing_install) == autostart::Migration::ManualRemoval {
+            *state.login_item_note.lock().unwrap() = Some(autostart::MANUAL_REMOVAL_NOTE.into());
+        }
+        let outcome = autostart::reconcile(want);
+        log::info!("login item at launch: {outcome:?}");
+        if let autostart::Outcome::Failed(_) | autostart::Outcome::NeedsApproval = outcome {
+            *state.login_item_outcome.lock().unwrap() = Some(outcome);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Err(e) = autostart::set_enabled_with(app, want) {
+        log::warn!("could not update Launch at Login: {e}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     logging::init();
@@ -74,9 +103,10 @@ pub fn run() {
             .unwrap_or_else(|_| "<unknown>".into())
     );
 
-    let open_settings_on_start = startup::should_open_settings(std::env::args());
-
     let paths = AppPaths::resolve().expect("resolve app paths");
+    // A fresh install never had the old scripted login item, so it must not be asked about
+    // Automation just to look for one. Decided before the stores create their files.
+    let existing_install = paths.snippets_db.exists();
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
     let history = HistoryStore::open(&paths).expect("open history store");
     let clips = ClipStore::open(&paths).expect("open clipboard store");
@@ -96,6 +126,8 @@ pub fn run() {
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         capture_feedback: Mutex::new(Default::default()),
+        login_item_outcome: Mutex::new(None),
+        login_item_note: Mutex::new(None),
         shortcuts: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
@@ -127,12 +159,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(
-            // Login Items is intentionally used instead of LaunchAgent: the latter writes a
-            // persistence plist to ~/Library/LaunchAgents and is correctly scrutinized by EDR.
-            tauri_plugin_autostart::MacosLauncher::AppleScript,
-            Some(vec![startup::LOGIN_LAUNCH_ARGUMENT]),
-        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(shortcuts::handler)
@@ -140,6 +166,10 @@ pub fn run() {
         )
         .manage(state)
         .setup(move |app| {
+            // First, while the system's launch event is still the current one.
+            startup::note_launch_event();
+            let open_settings_on_start = startup::should_open_settings(std::env::args());
+
             // Start as a menu-bar agent; opening a window promotes us to a regular app and
             // closing the last one demotes us again (windows::sync_activation_policy).
             #[cfg(target_os = "macos")]
@@ -159,9 +189,7 @@ pub fn run() {
                 .lock()
                 .unwrap()
                 .launch_at_login;
-            if let Err(e) = autostart::set_enabled(app.handle(), launch_at_login) {
-                log::warn!("could not update Launch at Login: {e}");
-            }
+            login_item_at_launch(app.handle(), launch_at_login, existing_install);
 
             // Notify open windows on store changes. Remote-origin changes (applied by the sync
             // engine, bypassing the command layer) must also regenerate the engine's config here.
@@ -273,6 +301,7 @@ pub fn run() {
             commands::close_editor,
             commands::clear_captures,
             commands::trigger_capture,
+            commands::login_item_notice,
             commands::shortcut_status,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,

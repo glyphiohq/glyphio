@@ -63,9 +63,10 @@ device except content a user *deliberately* shares with a team, over a channel t
   the app data dir; it resolves only snippets that exist, are live, and are enabled, so it
   cannot be used to surface content the store doesn't currently expose.
 - The espanso fork stays near-upstream so upstream security fixes rebase quickly.
-- **Login launch is a visible macOS Login Item, not a user-written launchd plist.** Upgrades remove
-  the previous Glyphio-owned LaunchAgent only after verifying that it targets the running Glyphio
-  executable. The expansion engine no longer gathers OS-version details on startup.
+- **Login launch is the system's native login item (`SMAppService`), not a script or a
+  user-written launchd plist.** Upgrades remove the previous Glyphio-owned LaunchAgent only after
+  verifying that it runs a `Contents/MacOS/glyphio` inside a bundle identified as `io.glyphio.app`,
+  and remove the old scripted login item once. The expansion engine no longer gathers OS-version details on startup.
 
 ## Reporting a vulnerability
 

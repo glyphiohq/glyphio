@@ -73,6 +73,18 @@ impl<T> CaptureOrchestration<T> {
         self.lifecycle.cancel_current()
     }
 
+    pub fn cancel(&mut self, token: CaptureToken) -> bool {
+        self.lifecycle.cancel(token)
+    }
+
+    pub fn selection_made(&mut self, token: CaptureToken) {
+        self.lifecycle.selection_made(token);
+    }
+
+    pub fn cancel_selection(&mut self) -> bool {
+        self.lifecycle.cancel_selection()
+    }
+
     pub fn acknowledge(&mut self) -> Option<u64> {
         self.lifecycle.acknowledge()
     }

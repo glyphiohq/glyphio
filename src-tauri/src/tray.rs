@@ -277,14 +277,41 @@ pub fn capture_failed_current(app: &AppHandle, message: String) {
     }
 }
 
-pub fn capture_cancelled(app: &AppHandle) {
+/// The user backed out of capture `token` (Esc in the picker): clear the indicator quietly.
+pub fn capture_cancelled_for(app: &AppHandle, token: CaptureToken) {
     let changed = app
         .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
         .orchestration
-        .cancel_current();
+        .cancel(token);
+    if changed {
+        apply(app, presentation(app));
+    }
+}
+
+/// The scrolling selection overlay produced a rectangle and is about to close to start the
+/// capture; its closing must not be mistaken for an abandoned selection.
+pub fn capture_selection_made(app: &AppHandle, token: CaptureToken) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .selection_made(token);
+}
+
+/// The scrolling selection overlay is gone without a rectangle. Cancels only a capture that
+/// is still waiting on it.
+pub fn capture_selection_abandoned(app: &AppHandle) {
+    let changed = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .cancel_selection();
     if changed {
         apply(app, presentation(app));
     }

@@ -272,11 +272,9 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
 }
 
 fn dispatch_capture(app: AppHandle, mode: &'static str, silent: bool) {
-    let inner = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        let delivery = silent.then_some(crate::capture::Delivery::Silent);
-        crate::capture::trigger_or_report(&inner, mode, delivery);
-    });
+    // Cheap: begins the lifecycle and queues the request for the capture worker.
+    let delivery = silent.then_some(crate::capture::Delivery::Silent);
+    crate::capture::trigger_or_report(&app, mode, delivery);
 }
 
 #[cfg(test)]

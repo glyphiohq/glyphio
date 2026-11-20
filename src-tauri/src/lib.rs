@@ -11,6 +11,7 @@ mod history;
 mod launch;
 mod logging;
 mod paths;
+mod permissions;
 pub mod platform;
 mod settings;
 mod shortcuts;
@@ -43,6 +44,8 @@ pub struct AppState {
     /// it wasn't listening for.
     pub palette_view: Mutex<String>,
     pub supervisor: Supervisor,
+    /// Permission session facts, last reading and watcher switch. See `permissions`.
+    pub permissions: permissions::PermissionState,
     pub settings: Mutex<Settings>,
     /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
     /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
@@ -120,6 +123,7 @@ pub fn run() {
         history,
         clips,
         supervisor: Supervisor::new(),
+        permissions: Default::default(),
         settings: Mutex::new(settings),
         capture_feedback: Mutex::new(Default::default()),
         login_item_outcome: Mutex::new(None),
@@ -175,6 +179,7 @@ pub fn run() {
             clipboard::watch(app.handle());
 
             tray::build(app.handle())?;
+            permissions::start_watcher(app.handle());
             launch::mark("tray-ready");
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
@@ -301,6 +306,13 @@ pub fn run() {
             commands::clear_captures,
             commands::trigger_capture,
             commands::login_item_notice,
+            permissions::permission_status,
+            permissions::permission_watch,
+            permissions::permission_request,
+            permissions::permission_open_settings,
+            permissions::permission_confirm_enabled,
+            permissions::permission_repair,
+            permissions::permission_import_legacy_flags,
             commands::shortcut_status,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,

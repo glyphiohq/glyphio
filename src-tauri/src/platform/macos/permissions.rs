@@ -41,3 +41,25 @@ pub fn screen_recording_granted() -> bool {
 pub fn request_screen_recording() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
+
+/// A real ScreenCaptureKit content query: succeeds when capture is usable by this process.
+pub fn screen_recording_probe() -> bool {
+    screencapturekit::shareable_content::SCShareableContent::get().is_ok()
+}
+
+/// `tccutil reset <service> <bundle id>`, user scope. Only this app's own entry is touched.
+pub fn reset(kind: crate::platform::PermissionKind) -> anyhow::Result<()> {
+    let service = match kind {
+        crate::platform::PermissionKind::Accessibility => "Accessibility",
+        crate::platform::PermissionKind::ScreenRecording => "ScreenCapture",
+    };
+    let out = std::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", service, crate::autostart::BUNDLE_IDENTIFIER])
+        .output()
+        .map_err(|e| anyhow::anyhow!("could not run tccutil: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("tccutil failed: {}", String::from_utf8_lossy(&out.stderr).trim())
+    }
+}

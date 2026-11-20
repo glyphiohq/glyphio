@@ -137,6 +137,12 @@ impl Permissions for Macos {
     fn request_screen_recording(&self) -> bool {
         permissions::request_screen_recording()
     }
+    fn screen_recording_probe(&self) -> bool {
+        permissions::screen_recording_probe()
+    }
+    fn reset(&self, kind: PermissionKind) -> anyhow::Result<()> {
+        permissions::reset(kind)
+    }
     fn settings_url(&self, kind: PermissionKind) -> Option<&'static str> {
         Some(match kind {
             PermissionKind::Accessibility => {

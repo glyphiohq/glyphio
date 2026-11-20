@@ -114,7 +114,7 @@ pub const MANUAL_REMOVAL_NOTE: &str =
     "Remove the old “Glyphio” entry in System Settings → General → Login Items.";
 
 /// The identifier the old LaunchAgent's bundle must carry.
-const BUNDLE_IDENTIFIER: &str = "io.glyphio.app";
+pub(crate) const BUNDLE_IDENTIFIER: &str = "io.glyphio.app";
 const EXECUTABLE_SUFFIX: &str = "/Contents/MacOS/glyphio";
 
 /// First `<string>` of the `ProgramArguments` array in a LaunchAgent plist.

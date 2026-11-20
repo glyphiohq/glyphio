@@ -99,6 +99,11 @@ after the menu-bar indicator changes.
 | Editor web process killed during delivery (Activity Monitor → Glyphio Web Content, Force Quit) | Within 20 s the menu-bar icon shows failure and the log has a `timed out while delivering` error; the next shortcut press starts a capture. | |
 | Region picker left open for over 150 s | The capture fails with a timeout, the icon returns to ready, and the next capture starts. | |
 | Stuck capture, then tray **Reload** | The icon returns to ready immediately and the next capture starts. | |
+| Tray menu and Settings while the Full Window or Region picker is open | The Glyphio tray menu opens and Settings repaints and can be clicked while the picker waits; picking or Esc then completes or cancels normally. | |
+| Captures taken off the main thread (ScreenCaptureKit) | Visible Area, Frontmost Window and Browser Page captures taken from the worker contain the same pixels as before and no main-thread assertion appears in the log. | |
+| Scrolling Area: close the selection overlay without dragging (Esc, click another app, Mission Control, switch Space) | The menu-bar icon returns to ready within a moment and the next capture starts; no failure indicator. | |
+| Scrolling Area: drag a selection | The capture runs; closing the overlay to start it does not cancel it. | |
+| Area or Window picker: press Esc | The menu-bar icon returns to ready with no `!` and no failure details. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native
@@ -117,6 +122,24 @@ for the exact failure payload and recovery target.
 | Clear and save | The capture action has no global binding after save and relaunch. | |
 | Reset and save | The documented default returns and works immediately. | |
 | Existing pre-recorder settings | Existing serialized shortcut strings load, display in macOS notation, and still fire. | |
+| Refused chord is visible | Bind a capture action to a chord another app holds (for example a launcher's), save: Settings shows "Not registered" with a reason beside it, the log has one line for it, and the tray status row reads "Some shortcuts could not be registered — open Settings". | |
+| Saving an unrelated setting | Change a non-shortcut setting and save: every working shortcut keeps firing, and no shortcut is dropped even briefly. | |
+| Save during a scrolling capture | Save any setting while a scrolling capture runs: Esc still stops the capture. | |
+| Key held down | Holding a capture shortcut starts one capture, not several. | |
+
+## Clipboard palette matrix
+
+Open the palette on the Clipboard list with five entries, two of them pinned, one of them an image.
+
+| Scenario | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Clear, confirm | `⌘⇧⌫` replaces the list with "Clear 5 clipboard entries? 2 pinned entries are kept."; `Enter` leaves the two pinned entries; the tray shows its acknowledgement; the palette stays open. | |
+| Clear including pinned | `⌘⇧⌫` then `⌥↩` leaves no entries and shows the empty state. | |
+| Cancel | `⌘⇧⌫` then `Esc` (or any other key) changes nothing and returns to the list; the palette stays open. | |
+| Clear control visibility | The Clear button is absent in the Capture and Snippets lists and when the clipboard list is empty; clicking it asks the same question. | |
+| Image files | After clearing, the images of removed entries are gone from the clipboard images folder and pinned images remain. | |
+| Also empty the clipboard | With "and empty the current clipboard" on, pasting after clearing pastes nothing, no new history row appears, and the choice is still on at the next clear. | |
+| Search active | With a search typed, the question states the total count, and the whole history is cleared, not just the matches. | |
 
 ## Expansion delivery matrix
 

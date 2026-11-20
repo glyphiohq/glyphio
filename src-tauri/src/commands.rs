@@ -245,7 +245,11 @@ pub fn login_item_notice(state: State<AppState>) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> CmdResult<()> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    settings: Settings,
+) -> CmdResult<Vec<crate::shortcuts::registry::ShortcutStatus>> {
     crate::shortcuts::validate_settings(&settings).map_err(err)?;
     // The login item changes only when the user changes the setting, not on every save.
     let toggled = state.settings.lock().unwrap().launch_at_login != settings.launch_at_login;
@@ -258,8 +262,8 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings)
     // Delivery preferences are engine configuration, not only UI state. Regenerate immediately;
     // the managed engine's watcher hot-reloads the changed default/app-specific files.
     regen_yaml(&state)?;
-    // Re-register global hotkeys so shortcut edits take effect immediately.
-    crate::shortcuts::register(&app).map_err(err)?;
+    // Apply shortcut edits immediately. Only chords that changed are touched.
+    let shortcuts = crate::shortcuts::register(&app);
     // Park (or dismiss) the silent-capture worker now, while the user is looking at this
     // window — creating it during a capture would pull Glyphio in front of what they're
     // capturing. See `windows::ensure_silent_editor`.
@@ -270,7 +274,13 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings)
     } else {
         crate::windows::close_silent_editor(&app);
     }
-    Ok(())
+    Ok(shortcuts)
+}
+
+/// How each configured shortcut fared with the system, for Settings.
+#[tauri::command]
+pub fn shortcut_status(app: AppHandle) -> Vec<crate::shortcuts::registry::ShortcutStatus> {
+    crate::shortcuts::status(&app)
 }
 
 // ---- history ---------------------------------------------------------------
@@ -460,13 +470,25 @@ pub async fn scroll_capture_run(
 ) -> CmdResult<()> {
     let activity = crate::tray::active_capture(&app)
         .ok_or_else(|| "the scrolling capture is no longer active".to_string())?;
-    let (gx, gy) = {
-        let win = app
-            .get_webview_window("scroll-overlay")
-            .ok_or("selection overlay is gone")?;
+    // The overlay is about to close on purpose; that must not read as an abandoned selection.
+    crate::tray::capture_selection_made(&app, activity);
+    // Resolving the overlay's origin can fail, and the overlay is the only page that invoked
+    // this command: an early `?` return would vanish into it and strand the capture. Every
+    // failure from here reports itself.
+    let origin = (|| -> Result<(f64, f64), String> {
+        let win = crate::windows::scroll_overlay(&app).ok_or("selection overlay is gone")?;
         let pos = win.outer_position().map_err(err)?;
         let scale = win.scale_factor().map_err(err)?;
-        (pos.x as f64 / scale + x, pos.y as f64 / scale + y)
+        Ok((pos.x as f64 / scale + x, pos.y as f64 / scale + y))
+    })();
+    let (gx, gy) = match origin {
+        Ok(origin) => origin,
+        Err(e) => {
+            log::error!("capture (scrolling) failed: {e}");
+            crate::windows::close_scroll_overlay(&app);
+            crate::tray::capture_failed(&app, activity, e.clone());
+            return Err(e);
+        }
     };
     crate::windows::close_scroll_overlay(&app);
     // Give the compositor a beat to remove the overlay before the first frame.
@@ -500,7 +522,9 @@ pub async fn scroll_capture_run(
 #[tauri::command]
 pub fn scroll_capture_cancel(app: AppHandle) {
     crate::windows::close_scroll_overlay(&app);
-    crate::tray::capture_cancelled(&app);
+    // Only a capture still waiting on the overlay: the page can report Esc, blur and hide in
+    // quick succession, and a later report must not cancel a capture started in between.
+    crate::tray::capture_selection_abandoned(&app);
 }
 
 /// Whether the APP holds Accessibility. One grant covers both expansion (the engine is a
@@ -597,13 +621,11 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
     #[cfg(target_os = "macos")]
     let _ = app.hide();
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    let inner = app.clone();
-    app.run_on_main_thread(move || {
-        if let Err(e) = crate::capture::trigger(&inner, &mode, delivery(silent)) {
-            log::error!("palette capture ({mode}) failed: {e}");
-        }
-    })
-    .map_err(err)
+    // Queues the request for the capture worker; nothing slow runs here.
+    if let Err(e) = crate::capture::trigger(&app, &mode, delivery(silent)) {
+        log::error!("palette capture ({mode}) failed: {e}");
+    }
+    Ok(())
 }
 
 // ---- reload ------------------------------------------------------------------
@@ -618,7 +640,7 @@ pub fn do_reload(app: &AppHandle) -> anyhow::Result<()> {
     state
         .snippets
         .render_yaml_with_policy(&state.paths.engine_config, &policy)?;
-    crate::shortcuts::register(app)?;
+    crate::shortcuts::register(app);
     state.supervisor.restart(app, &state.paths)?;
     // Reload is the user's recovery gesture: a capture that never settled must not outlive it.
     crate::tray::capture_reset(app);
@@ -785,9 +807,44 @@ pub fn delete_clip(state: State<AppState>, id: String) -> CmdResult<()> {
     state.clips.delete(&id).map_err(err)
 }
 
+/// Clear clipboard history, returning how many entries went. `include_pinned` defaults to true
+/// so Settings' existing calls keep their meaning; the palette asks for `false` by default.
+/// `empty_pasteboard` also empties the system clipboard, and is remembered for next time.
 #[tauri::command]
-pub fn clear_clips(state: State<AppState>) -> CmdResult<()> {
-    state.clips.clear().map_err(err)
+pub fn clear_clips(
+    app: AppHandle,
+    state: State<AppState>,
+    include_pinned: Option<bool>,
+    empty_pasteboard: Option<bool>,
+) -> CmdResult<u32> {
+    let removed = if include_pinned.unwrap_or(true) {
+        let count = state.clips.list().map_err(err)?.len() as u32;
+        state.clips.clear().map_err(err)?;
+        count
+    } else {
+        state.clips.clear_unpinned().map_err(err)?
+    };
+    if let Some(empty) = empty_pasteboard {
+        let changed = {
+            let mut s = state.settings.lock().unwrap();
+            let changed = s.clipboard_clear_also_empties_pasteboard != empty;
+            s.clipboard_clear_also_empties_pasteboard = empty;
+            changed.then(|| s.clone())
+        };
+        if let Some(s) = changed {
+            if let Err(e) = s.save(&state.paths.settings_json) {
+                log::warn!("could not remember the clear option: {e}");
+            }
+        }
+        if empty {
+            crate::clipboard::empty(&app).map_err(err)?;
+        }
+    }
+    let _ = app.emit("clipboard-changed", String::new());
+    if include_pinned.is_some() {
+        crate::tray::flash_ack(&app); // the palette's clear; Settings shows its own status
+    }
+    Ok(removed)
 }
 
 /// One-shot payload pull for bridge-driven windows (`popup` / `form`) — same pattern as

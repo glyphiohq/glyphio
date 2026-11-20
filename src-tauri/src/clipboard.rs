@@ -59,6 +59,14 @@ pub fn ignore_own_write() {
     IGNORE.store(platform::change_counter(), Ordering::Relaxed);
 }
 
+/// Empty the system clipboard, and keep the watcher from recording the change.
+pub fn empty(app: &AppHandle) -> anyhow::Result<()> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard().clear()?;
+    ignore_own_write();
+    Ok(())
+}
+
 /// Start watching the clipboard for the life of the app.
 ///
 /// Runs whatever the setting says: the loop keeps ticking and re-reads the setting each time,

@@ -88,7 +88,14 @@
       background: color-mix(in srgb, var(--text) 10%, transparent);
       color: var(--text);
     }
-    #kinds[hidden] { display: none; }
+    #kinds[hidden], #clear-wrap[hidden] { display: none; }
+    #clear { color: var(--danger); }
+    #clear:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+    .pal-confirm { display: flex; flex-direction: column; gap: 10px; padding: 18px 16px; color: var(--text); font-size: 13px; }
+    .pal-confirm .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pal-confirm button { font: inherit; font-size: 12px; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+    .pal-confirm button.danger { color: var(--danger); }
+    .pal-confirm label { font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 
     .pal-list {
       flex: 1;
@@ -211,6 +218,9 @@
         <button type="button" data-kind="all">All</button>
         <button type="button" data-kind="text">Text</button>
         <button type="button" data-kind="image">Images</button>
+      </div>
+      <div class="chips" id="clear-wrap" hidden>
+        <button type="button" id="clear" title="Clear clipboard history (⌘⇧⌫)">Clear</button>
       </div>
     </div>
     <ul class="pal-list" id="list"></ul>

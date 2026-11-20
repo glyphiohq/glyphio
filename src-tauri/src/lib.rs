@@ -222,14 +222,15 @@ pub fn run() {
             // a popup/form trigger fired right after launch has to find it.
             bridge::start(app.handle());
 
-            // Launch the supervised expansion-engine daemon.
+            // Launch the supervised expansion-engine daemon off the main thread: clearing a
+            // stale daemon can wait briefly for its lock.
             let handle = app.handle().clone();
-            {
+            tauri::async_runtime::spawn_blocking(move || {
                 let state = handle.state::<AppState>();
                 if let Err(e) = state.supervisor.start(&handle, &state.paths) {
                     log::error!("failed to start engine daemon: {e}");
                 }
-            }
+            });
 
             // Resume a previous sync session silently, if one is configured.
             sync::init(app.handle());
@@ -326,6 +327,7 @@ pub fn run() {
             commands::form_cancel,
             commands::accessibility_status,
             commands::secure_input_status,
+            commands::engine_exhausted,
             commands::open_accessibility_settings,
             commands::restart_engine,
             commands::screen_recording_status,
@@ -414,7 +416,10 @@ pub fn run() {
                 } else {
                     windows::save_all_geometry(app_handle);
                     capture::restore_browser_accessibility();
-                    app_handle.state::<AppState>().supervisor.stop();
+                    {
+                        let state = app_handle.state::<AppState>();
+                        state.supervisor.stop(&state.paths);
+                    }
                 }
             }
             // Tray "Quit" and ⌘Q (both predefined menu items) fire `Exit` — clean up the engine
@@ -422,7 +427,10 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 windows::save_all_geometry(app_handle);
                 capture::restore_browser_accessibility();
-                app_handle.state::<AppState>().supervisor.stop();
+                {
+                        let state = app_handle.state::<AppState>();
+                        state.supervisor.stop(&state.paths);
+                    }
             }
             _ => {}
         });

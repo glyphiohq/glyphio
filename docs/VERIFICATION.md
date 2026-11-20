@@ -45,6 +45,16 @@ link for any failure. `BLOCKED` does not satisfy the release gate.
 | **Relaunch Glyphio** (Screen Recording banner) | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 | Install an update, let it restart | Exactly one `glyphio` process afterwards, with a menu-bar icon | |
 
+## Engine supervision matrix
+
+| State and action | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Development build and release build both running; restart the engine in one (tray **Reload**) | The other build's `glyphio-engine` keeps its pid. | |
+| Force-quit Glyphio (`kill -9`), relaunch | The orphaned engine is terminated, the new daemon starts and reports Accessibility; the log shows `terminated stale daemon`. | |
+| `sudo fs_usage -w -f exec` during a cold launch with no stale engine | No `pkill`; no fixed sleep before the engine starts. | |
+| `kill -9` the engine daemon six times in quick succession | After the fifth respawn the tray tooltip says the engine stopped and Settings shows the banner; **Restart engine** or **Reload** recovers. | |
+| Kill the engine once, wait over 10 minutes, repeat five more times with gaps | It keeps respawning (the budget refilled). | |
+
 ## Login item matrix
 
 | State and action | Expected observation | Result / evidence |

@@ -105,6 +105,18 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Engine supervision
+
+`engine::Supervisor` runs the daemon and records its pid in `<runtime>/glyphio-engine.pid`. Before
+starting, it terminates the recorded process (and its worker child) only if it is alive and its
+executable path is this bundle's `glyphio-engine` (`engine/reaper.rs`, over a `ProcessControl`
+trait with a fake in tests). It never matches by name, so a development build beside a release
+build never kills the other's engine. It waits for the daemon's `espanso-daemon.lock` only when
+something was actually killed, with a 3 s bound. `start` runs in a spawned blocking task, not in
+the main-thread `setup`. `engine/budget.rs` allows 5 respawns, refilled after 10 minutes of healthy
+running; when spent, the engine stays stopped, the tray tooltip says so, Settings shows a banner
+with **Restart engine**, and tray **Reload** also restarts it.
+
 ### Login item
 
 "Launch Glyphio at login" is `SMAppService.mainApp` (`autostart.rs`), the system's own login-item

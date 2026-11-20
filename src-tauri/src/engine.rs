@@ -6,17 +6,24 @@
 //! the fork diff for cosmetics). It file-watches that dir and hot-reloads, so
 //! regenerating config from the snippet store is all it takes to update live expansions.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 use crate::paths::{s, AppPaths};
+use budget::{RespawnBudget, Verdict, MAX_RESPAWNS};
+use reaper::{reap, wait_until, Reaped};
 
-/// Give up auto-respawning after this many engine deaths in one app run (crash loop).
-const MAX_RESPAWNS: u32 = 5;
+mod budget;
+mod os;
+mod reaper;
+
+/// How long to wait for a killed daemon's lock to clear before starting the next one.
+const LOCK_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct Supervisor {
@@ -32,7 +39,11 @@ pub struct Supervisor {
     secure_input_holder: Arc<Mutex<Option<String>>>,
     /// Set while we are deliberately stopping (exit/restart) so the exit watcher doesn't respawn.
     stopping: Arc<AtomicBool>,
-    respawns: Arc<AtomicU32>,
+    budget: Arc<Mutex<RespawnBudget>>,
+    /// When the current daemon was spawned, so a long healthy run refills the respawn budget.
+    started_at: Arc<Mutex<Option<Instant>>>,
+    /// The respawn budget is spent and the engine is left stopped (shown in tray and Settings).
+    exhausted: Arc<AtomicBool>,
 }
 
 impl Supervisor {
@@ -42,6 +53,11 @@ impl Supervisor {
 
     pub fn is_running(&self) -> bool {
         self.child.lock().unwrap().is_some()
+    }
+
+    /// True once the engine crashed too often to be restarted automatically.
+    pub fn exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::SeqCst)
     }
 
     /// Whether the daemon last reported Accessibility as granted (false until reported).
@@ -59,11 +75,11 @@ impl Supervisor {
         if self.is_running() {
             return Ok(());
         }
-        // Clear any orphaned engine from a previous run (a tray-quit or crash that bypassed our
+        // Clear an orphaned engine from a previous run (a tray-quit or crash that bypassed our
         // cleanup). A lingering daemon holds the engine's lock, so our fresh daemon would exit with
-        // "daemon is already running!" and never report Accessibility — leaving the UI banner
-        // stuck at "not granted" no matter what the user granted. Kill stale ones first.
-        kill_stale_engines();
+        // "daemon is already running!" and never report Accessibility. Only the pid we recorded,
+        // and only if it is this bundle's engine, is ever terminated.
+        clear_stale(&paths.engine_runtime());
 
         let cmd = app
             .shell()
@@ -83,7 +99,9 @@ impl Supervisor {
         let secure_holder = self.secure_input_holder.clone();
         let child_slot = self.child.clone();
         let stopping = self.stopping.clone();
-        let respawns = self.respawns.clone();
+        let budget = self.budget.clone();
+        let started_at = self.started_at.clone();
+        let exhausted = self.exhausted.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
                 let (line, is_err) = match event {
@@ -98,18 +116,35 @@ impl Supervisor {
                             log::info!("[engine] daemon stopped (requested)");
                             continue;
                         }
-                        let n = respawns.fetch_add(1, Ordering::SeqCst) + 1;
-                        if n > MAX_RESPAWNS {
-                            log::error!(
-                                "[engine] daemon exited ({payload:?}) — giving up after {MAX_RESPAWNS} respawns"
-                            );
-                            continue;
-                        }
+                        let ran_for = started_at
+                            .lock()
+                            .unwrap()
+                            .map_or(Duration::ZERO, |t| t.elapsed());
+                        let verdict = budget.lock().unwrap().on_exit(ran_for);
+                        let n = match verdict {
+                            Verdict::Respawn(n) => n,
+                            Verdict::Exhausted => {
+                                log::error!(
+                                    "[engine] daemon exited ({payload:?}) — giving up after {MAX_RESPAWNS} respawns"
+                                );
+                                exhausted.store(true, Ordering::SeqCst);
+                                let _ = app_ev.emit("engine-status", true);
+                                update_tray_tooltip(&app_ev, None, true);
+                                continue;
+                            }
+                        };
                         log::warn!("[engine] daemon exited ({payload:?}) — respawning ({n}/{MAX_RESPAWNS})");
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        let state = app_ev.state::<crate::AppState>();
-                        if let Err(e) = state.supervisor.start(&app_ev, &state.paths) {
-                            log::error!("[engine] respawn failed: {e}");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let app_re = app_ev.clone();
+                        let result = tauri::async_runtime::spawn_blocking(move || {
+                            let state = app_re.state::<crate::AppState>();
+                            state.supervisor.start(&app_re, &state.paths)
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => log::error!("[engine] respawn failed: {e}"),
+                            Err(e) => log::error!("[engine] respawn task failed: {e}"),
                         }
                         continue;
                     }
@@ -135,11 +170,11 @@ impl Supervisor {
                         .to_string();
                     *secure_holder.lock().unwrap() = Some(holder.clone());
                     let _ = app_ev.emit("secure-input-status", Some(holder.clone()));
-                    update_tray_tooltip(&app_ev, Some(&holder));
+                    update_tray_tooltip(&app_ev, Some(&holder), false);
                 } else if line.contains("secure input has been disabled") {
                     *secure_holder.lock().unwrap() = None;
                     let _ = app_ev.emit("secure-input-status", Option::<String>::None);
-                    update_tray_tooltip(&app_ev, None);
+                    update_tray_tooltip(&app_ev, None, false);
                 }
                 // Redacted: this is the only text in the log we didn't write ourselves, so it
                 // is the only place a URL could arrive without anyone having decided to log one.
@@ -151,55 +186,84 @@ impl Supervisor {
                 }
             }
         });
+        os::write_pid(&paths.engine_runtime(), child.pid());
+        *self.started_at.lock().unwrap() = Some(Instant::now());
         *self.child.lock().unwrap() = Some(child);
         log::info!("engine daemon started (config: {})", s(&paths.engine_config));
         Ok(())
     }
 
-    /// Kill the sidecar (called on app exit). Kills our tracked daemon child *and* sweeps any
-    /// engine processes (the daemon spawns a separate `worker` that must not be left orphaned).
-    pub fn stop(&self) {
+    /// Kill the sidecar (called on app exit): our tracked daemon and its worker (the daemon
+    /// spawns a separate `worker` that must not be left orphaned), then wait for the lock.
+    pub fn stop(&self, paths: &AppPaths) {
         self.stopping.store(true, Ordering::SeqCst); // deliberate — exit watcher must not respawn
         if let Some(child) = self.child.lock().unwrap().take() {
+            reaper::ProcessControl::kill_tree(&os::Os, child.pid());
             if let Err(e) = child.kill() {
-                log::warn!("failed to kill engine daemon: {e}");
+                log::debug!("engine daemon already gone: {e}");
             }
+            wait_for_lock(&paths.engine_runtime());
         }
-        kill_stale_engines();
+        os::clear_pid(&paths.engine_runtime());
     }
 
     /// Restart to force a full config reload (rarely needed — file-watch handles most changes).
     pub fn restart(&self, app: &AppHandle, paths: &AppPaths) -> anyhow::Result<()> {
-        self.stop();
+        self.stop(paths);
         // Clear the last-known Accessibility state so a stale value can't linger across the
         // restart; the fresh daemon (or its periodic re-check) reports the current status.
         self.accessibility_ok.store(false, Ordering::SeqCst);
         self.accessibility_reported.store(false, Ordering::SeqCst);
-        self.respawns.store(0, Ordering::SeqCst); // manual restart resets the crash-loop budget
+        self.budget.lock().unwrap().reset(); // manual restart resets the crash-loop budget
+        if self.exhausted.swap(false, Ordering::SeqCst) {
+            let _ = app.emit("engine-status", false);
+            update_tray_tooltip(app, None, false);
+        }
         self.start(app, paths)
     }
 }
 
-/// Reflect Secure Input state in the menu-bar tooltip — the one Glyphio surface that's
-/// always reachable while the user wonders why typing a trigger did nothing.
-fn update_tray_tooltip(app: &AppHandle, holder: Option<&str>) {
+/// Reflect engine state in the menu-bar tooltip — the one Glyphio surface that's always
+/// reachable while the user wonders why typing a trigger did nothing.
+fn update_tray_tooltip(app: &AppHandle, holder: Option<&str>, exhausted: bool) {
     if let Some(tray) = app.tray_by_id("glyphio-tray") {
-        let tip = match holder {
-            Some(h) => format!("Glyphio — expansion paused: {h} holds macOS Secure Input"),
-            None => "Glyphio".to_string(),
+        let tip = match (exhausted, holder) {
+            (true, _) => "Glyphio — expansion engine stopped; choose Reload to restart it".to_string(),
+            (false, Some(h)) => format!("Glyphio — expansion paused: {h} holds macOS Secure Input"),
+            (false, None) => "Glyphio".to_string(),
         };
         let _ = tray.set_tooltip(Some(tip));
     }
 }
 
-/// SIGKILL any lingering `glyphio-engine` processes (daemon + worker) not under our control.
-/// the engine's daemon spawns the worker as a separate process and guards startup with a lock file,
-/// so an orphan from a prior run must be cleared or the next daemon can't start. macOS-only helper;
-/// matches on the unique sidecar name so it can't hit unrelated processes.
-fn kill_stale_engines() {
-    let _ = std::process::Command::new("pkill")
-        .args(["-9", "-f", "glyphio-engine"])
-        .status();
-    // Give the OS a moment to release the engine's lock file before we (re)spawn.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+/// Terminate the engine recorded by a previous run, if it is this bundle's, and wait for its
+/// lock only when something was actually killed.
+fn clear_stale(runtime: &std::path::Path) {
+    let Some(engine_exe) = os::bundled_engine_exe() else {
+        log::warn!("[engine] cannot resolve the bundled engine path; not clearing stale engines");
+        return;
+    };
+    match reap(&os::Os, os::read_pid(runtime), &engine_exe) {
+        Reaped::Killed(pid) => {
+            log::info!("[engine] terminated stale daemon {pid}");
+            wait_for_lock(runtime);
+        }
+        Reaped::Foreign(pid) => {
+            log::info!("[engine] recorded pid {pid} is not this bundle's engine; left running");
+        }
+        Reaped::Gone(_) | Reaped::NothingRecorded => {}
+    }
+    os::clear_pid(runtime);
+}
+
+fn wait_for_lock(runtime: &std::path::Path) {
+    let freed = wait_until(
+        || os::daemon_lock_free(runtime),
+        LOCK_WAIT,
+        Duration::from_millis(20),
+        std::thread::sleep,
+    );
+    if !freed {
+        log::warn!("[engine] daemon lock still held after {LOCK_WAIT:?}");
+    }
 }

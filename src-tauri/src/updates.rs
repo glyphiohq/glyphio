@@ -118,7 +118,10 @@ pub async fn install(app: &AppHandle) -> anyhow::Result<()> {
         .await?;
 
     // The engine sidecar must not outlive the bundle it came from.
-    app.state::<crate::AppState>().supervisor.stop();
+    {
+        let state = app.state::<crate::AppState>();
+        state.supervisor.stop(&state.paths);
+    }
     crate::app_restart(app);
 }
 

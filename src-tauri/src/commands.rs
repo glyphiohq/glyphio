@@ -558,13 +558,11 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
     #[cfg(target_os = "macos")]
     let _ = app.hide();
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    let inner = app.clone();
-    app.run_on_main_thread(move || {
-        if let Err(e) = crate::capture::trigger(&inner, &mode, delivery(silent)) {
-            log::error!("palette capture ({mode}) failed: {e}");
-        }
-    })
-    .map_err(err)
+    // Queues the request for the capture worker; nothing slow runs here.
+    if let Err(e) = crate::capture::trigger(&app, &mode, delivery(silent)) {
+        log::error!("palette capture ({mode}) failed: {e}");
+    }
+    Ok(())
 }
 
 // ---- reload ------------------------------------------------------------------

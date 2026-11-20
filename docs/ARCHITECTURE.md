@@ -105,6 +105,18 @@ text expansion; Screen Recording permission enables capture. The UI and capture/
 native-shell orchestration plus a webview canvas editor. Redaction is an editing feature, not an
 encryption boundary: users must redact before sharing a capture outside the device.
 
+### Capture worker
+
+Captures run on one dedicated thread (`capture::worker`), never on the main thread. A hotkey,
+the palette, the tray or the `trigger_capture` command only begins the lifecycle and queues a
+request (`capture::trigger`), then returns. The worker runs the interactive picker, the browser
+accessibility lookup, the scroll loop and PNG encoding, and hops to the main thread
+(`capture::on_main`) only to create windows, waiting there itself so the main thread never waits
+on it. While the region picker is open the tray menu and Settings therefore stay live. Requests
+run one at a time; a second capture is already refused by the lifecycle, and the single scrolling
+capture flag is unchanged. A panicking request is logged and the worker carries on; the capture
+deadline below clears its indicator.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

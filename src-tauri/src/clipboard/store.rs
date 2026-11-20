@@ -225,11 +225,26 @@ impl ClipStore {
         Ok(())
     }
 
-    /// Forget everything. Pinned entries go too — "clear" that leaves things behind is the
-    /// kind of surprise this feature can least afford.
+    /// Forget everything. Pinned entries go too: this is Settings' "clear", and the palette's
+    /// "clear including pinned".
     pub fn clear(&self) -> anyhow::Result<()> {
+        self.remove_where("")?;
+        Ok(())
+    }
+
+    /// Forget everything that is not pinned, returning how many entries went. The image files
+    /// of the removed entries are deleted; pinned entries and their files stay.
+    pub fn clear_unpinned(&self) -> anyhow::Result<u32> {
+        self.remove_where(" WHERE pinned = 0")
+    }
+
+    /// Delete the rows matching `filter` (an SQL `WHERE` clause or nothing) and their images.
+    fn remove_where(&self, filter: &str) -> anyhow::Result<u32> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT image_path FROM clips WHERE image_path IS NOT NULL")?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT image_path FROM clips{filter}{}",
+            if filter.is_empty() { " WHERE image_path IS NOT NULL" } else { " AND image_path IS NOT NULL" }
+        ))?;
         let paths: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .filter_map(Result::ok)
@@ -238,8 +253,8 @@ impl ClipStore {
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
-        conn.execute("DELETE FROM clips", [])?;
-        Ok(())
+        let removed = conn.execute(&format!("DELETE FROM clips{filter}"), [])?;
+        Ok(removed as u32)
     }
 
     /// Drop the oldest unpinned entries until the history is within both caps.
@@ -348,6 +363,52 @@ mod tests {
             ClipStore { conn: Mutex::new(conn), images_dir: images },
             dir,
         )
+    }
+
+    fn image(n: u8) -> NewClip {
+        NewClip::Image { png: vec![0x89, b'P', b'N', b'G', n, n, n, n], width: 4, height: 4 }
+    }
+
+    #[test]
+    fn clear_unpinned_keeps_pinned_entries_and_reports_the_count() {
+        let (s, _d) = store();
+        for t in ["a", "b", "c", "d", "e"] {
+            s.record(NewClip::Text(t.into()), "", 100, 1 << 20).unwrap();
+        }
+        for e in s.list().unwrap().iter().take(2) {
+            s.set_pinned(&e.id, true).unwrap();
+        }
+
+        assert_eq!(s.clear_unpinned().unwrap(), 3);
+        assert_eq!(s.list().unwrap().len(), 2);
+        assert!(s.list().unwrap().iter().all(|e| e.pinned));
+
+        s.clear().unwrap();
+        assert_eq!(s.list().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn clear_unpinned_deletes_unpinned_image_files_and_keeps_pinned_ones() {
+        let (s, _d) = store();
+        s.record(image(1), "", 100, 1 << 20).unwrap();
+        s.record(image(2), "", 100, 1 << 20).unwrap();
+        let pinned = s.list().unwrap().into_iter().next().unwrap();
+        s.set_pinned(&pinned.id, true).unwrap();
+        let files = |s: &ClipStore| {
+            std::fs::read_dir(&s.images_dir).unwrap().filter_map(|e| e.ok()).count()
+        };
+        assert_eq!(files(&s), 2);
+
+        assert_eq!(s.clear_unpinned().unwrap(), 1);
+
+        assert_eq!(files(&s), 1, "only the pinned image remains on disk");
+        assert!(std::path::Path::new(pinned.image_path.as_ref().unwrap()).exists());
+    }
+
+    #[test]
+    fn clear_unpinned_on_an_empty_history_removes_nothing() {
+        let (s, _d) = store();
+        assert_eq!(s.clear_unpinned().unwrap(), 0);
     }
 
     #[test]

@@ -117,6 +117,62 @@ the main-thread `setup`. `engine/budget.rs` allows 5 respawns, refilled after 10
 running; when spent, the engine stays stopped, the tray tooltip says so, Settings shows a banner
 with **Restart engine**, and tray **Reload** also restarts it.
 
+### Login item
+
+"Launch Glyphio at login" is `SMAppService.mainApp` (`autostart.rs`), the system's own login-item
+service: it appears in System Settings → General → Login Items, needs no Automation permission and
+writes no LaunchAgent plist. The decisions are pure functions over a `LoginItem` trait, tested with
+a fake. The item is changed only when the user toggles the setting; launch reads its status and
+registers once if the setting is on and nothing is registered. A registration awaiting approval, or
+refused by the system, is shown under the toggle in Settings with the system's wording and is never
+retried silently. A login launch is recognised from the launch Apple event
+(`keyAELaunchedAsLogInItem`, read in `startup::note_launch_event`), and for one more release also
+from `--hidden` / `--launch-at-login`, so it shows no Settings window. On first launch of this
+version `autostart::migrate_legacy` removes the AppleScript login item named "Glyphio" (the only
+remaining `osascript` call, best-effort, and skipped on a fresh install so a new user is never asked for Automation; if Automation is denied Settings says to remove it by hand)
+and any LaunchAgent plist whose first program argument is `…/Contents/MacOS/glyphio` inside a
+bundle with identifier `io.glyphio.app`, wherever it lives. `scripts/verify-edr-surface.sh` asserts
+no scripted backend is selected and `osascript` appears nowhere else. There is no login-item
+backend off macOS yet (see `docs/WINDOWS.md`).
+
+### Clearing clipboard history from the palette
+
+The palette's clipboard list can clear history with an inline two-key confirmation (a dialog would
+take focus, and the palette closes on blur). `ui/palette/clip-keys.mjs` maps keys to intents.
+`clear_clips(include_pinned, empty_pasteboard)` clears unpinned entries only when asked to
+(`ClipStore::clear_unpinned`), or everything (`clear`, which Settings still uses; omitting the
+argument means "including pinned"). Image files of removed entries are deleted either way, and
+pinned images stay. Emptying the system clipboard goes through `clipboard::empty`, which marks the
+change as our own so the watcher does not record it; the choice is stored as
+`clipboardClearAlsoEmptiesPasteboard`.
+
+### Shortcut registry
+
+`shortcuts::registry::Registry` (in `AppState`) owns the table of bindings (a capture mode with
+its silent twin, open history, open palette, open clipboard), the chords the system has accepted,
+and how each binding fared. `apply` diffs the settings against what is held: only removed or
+changed chords are unregistered and only new ones registered, so saving an unrelated setting makes
+no register call and never touches Escape, which a scrolling capture borrows separately. A chord
+the system refused is asked for again on the next save, since whatever held it may have let go.
+The key handler resolves a press by lookup, not by parsing accelerator strings, and ignores the
+same action again within 250 ms. If two bindings share a chord, the first listed wins and the
+other is reported as unusable. `save_settings` returns each binding's result and `shortcut_status`
+returns them on demand; Settings shows "Not registered" with the reason beside any refused or
+invalid binding, and the tray tooltip and status row say "Some shortcuts could not be registered
+— open Settings" while the app is otherwise idle.
+
+### Capture worker
+
+Captures run on one dedicated thread (`capture::worker`), never on the main thread. A hotkey,
+the palette, the tray or the `trigger_capture` command only begins the lifecycle and queues a
+request (`capture::trigger`), then returns. The worker runs the interactive picker, the browser
+accessibility lookup, the scroll loop and PNG encoding, and hops to the main thread
+(`capture::on_main`) only to create windows, waiting there itself so the main thread never waits
+on it. While the region picker is open the tray menu and Settings therefore stay live. Requests
+run one at a time; a second capture is already refused by the lifecycle, and the single scrolling
+capture flag is unchanged. A panicking request is logged and the worker carries on; the capture
+deadline below clears its indicator.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture
@@ -125,6 +181,12 @@ the rest, 20 s once pixels exist and delivery has begun. Scrolling frames call a
 pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog in `tray.rs` checks
 by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
 and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
+
+Backing out is not failing. A cancelled interactive picker surfaces as `capture::Cancelled` and
+clears the indicator for its own capture token. The scrolling selection overlay carries a
+`selecting` flag in the lifecycle: if the overlay is destroyed, blurred or hidden before it
+reports a rectangle, the capture is cancelled; closing it to start a capture is not. Each overlay
+has its own label so a replaced overlay's destruction cannot cancel its successor.
 
 ### Single instance
 

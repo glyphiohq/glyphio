@@ -7,9 +7,6 @@ const LEGACY_LOGIN_LAUNCH_ARGUMENT: &str = "--launch-at-login";
 /// `keyAELaunchedAsLogInItem`: the property of the launch Apple event when the system started us
 /// because the user logged in.
 const LAUNCHED_AS_LOGIN_ITEM: u32 = u32::from_be_bytes(*b"lgit");
-/// `keyAEPropData`: where that property lives in the event.
-const KEY_AE_PROP_DATA: u32 = u32::from_be_bytes(*b"prdt");
-
 /// Whether the launch event's property says "started by logging in".
 pub fn is_login_item_property(property: Option<u32>) -> bool {
     property == Some(LAUNCHED_AS_LOGIN_ITEM)
@@ -21,17 +18,10 @@ static LAUNCHED_BY_LOGIN: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// event is still the current one. After it, [`should_open_settings`] knows about a login launch
 /// even though the native login item passes no arguments.
 pub fn note_launch_event() {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_foundation::NSAppleEventManager;
-        let property = NSAppleEventManager::sharedAppleEventManager()
-            .currentAppleEvent()
-            .and_then(|event| event.paramDescriptorForKeyword(KEY_AE_PROP_DATA))
-            .map(|descriptor| descriptor.enumCodeValue());
-        let by_login = is_login_item_property(property);
-        LAUNCHED_BY_LOGIN.store(by_login, std::sync::atomic::Ordering::SeqCst);
-        log::info!("launched by login item: {by_login}");
-    }
+    let property = crate::platform::current().autostart.launch_property();
+    let by_login = is_login_item_property(property);
+    LAUNCHED_BY_LOGIN.store(by_login, std::sync::atomic::Ordering::SeqCst);
+    log::info!("launched by login item: {by_login}");
 }
 
 /// Whether startup should present the regular Settings window. A login launch is recognised by

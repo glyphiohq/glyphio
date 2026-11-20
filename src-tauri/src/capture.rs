@@ -9,17 +9,15 @@
 //!
 //! | module     | macOS today                              | Windows would need          |
 //! |------------|------------------------------------------|-----------------------------|
-//! | `backend`  | ScreenCaptureKit + `/usr/sbin/screencapture` | Windows.Graphics.Capture |
-//! | `ax`       | Accessibility API (`AXDocument` for URLs) | UI Automation               |
-//! | `scroll`   | CGEvent scroll injection                 | `SendInput`                 |
+//! | `platform/macos` (capture) | ScreenCaptureKit + `/usr/sbin/screencapture` | Windows.Graphics.Capture |
+//! | `platform/macos` (inspect) | Accessibility API (`AXDocument` for URLs) | UI Automation               |
+//! | `platform/macos` (input) | CGEvent scroll injection                 | `SendInput`                 |
 //!
 //! `scroll` is only half platform-bound — the frame stitching is pure image work and ports
 //! as-is; only `post_scroll` and `warp_cursor` are Quartz. See `docs/WINDOWS.md` for the
 //! full port plan, including the one piece with no Windows equivalent (macOS gives us its
 //! interactive window picker for free; Windows has nothing like it).
 
-mod ax;
-mod backend;
 pub mod delivery;
 pub mod diag;
 pub mod lifecycle;
@@ -33,6 +31,7 @@ use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::platform::{self, BrowserMeta, PickKind};
 use crate::AppState;
 use delivery::DeliveryRoute;
 use lifecycle::CaptureMode;
@@ -40,33 +39,36 @@ use lifecycle::CaptureMode;
 /// Undo any accessibility opt-in still outstanding on a browser we captured from — called on
 /// app exit, since the cooldown thread that normally does it dies with us.
 pub fn restore_browser_accessibility() {
-    ax::restore_web_accessibility();
+    platform::current().inspector.release();
 }
 
 /// (origin, size) in points of the display under the cursor — used to place the
 /// scrolling-capture selection overlay.
 pub fn display_bounds_under_cursor() -> ((f64, f64), (f64, f64)) {
-    backend::display_bounds_under_cursor()
+    platform::current().windows.display_bounds_under_cursor()
 }
 
 /// (origin, size) in points of the display hosting the frontmost window — where the user
 /// is typing. Expansion-summoned surfaces (popup/form/palette) belong there; the cursor
 /// can be on a different display entirely, so it's only the fallback.
 pub fn display_bounds_for_active_window() -> ((f64, f64), (f64, f64)) {
-    backend::focused_window_display().unwrap_or_else(backend::display_bounds_under_cursor)
+    platform::current()
+        .windows
+        .focused_window_display()
+        .unwrap_or_else(|| platform::current().windows.display_bounds_under_cursor())
 }
 
 /// Whether a point falls on some connected display. Used to reject a remembered window
 /// position belonging to a monitor that isn't attached any more — restoring it would put the
 /// window somewhere the user can't reach.
 pub fn point_on_a_display(x: f64, y: f64) -> bool {
-    backend::display_bounds_containing_point(x, y).is_some()
+    platform::current().windows.display_bounds_containing_point(x, y).is_some()
 }
 
 /// (origin, size) in points of the display holding a global point — where a panel anchored to
 /// something on screen has to stay inside.
 pub fn display_bounds_containing(x: f64, y: f64) -> Option<((f64, f64), (f64, f64))> {
-    backend::display_bounds_containing_point(x, y)
+    platform::current().windows.display_bounds_containing_point(x, y)
 }
 
 /// A captured, un-annotated frame handed to the editor webview.
@@ -80,7 +82,7 @@ pub struct Shot {
     pub title: String,
     /// What the browser said about the page, for the modes that target one window. Empty
     /// unless the user has asked for one of those banner lines.
-    pub browser: ax::BrowserMeta,
+    pub browser: BrowserMeta,
 }
 
 #[derive(Clone, Serialize)]
@@ -254,7 +256,7 @@ fn capture_request(
             PageTarget::Done(shot) => shot,
         }
     } else {
-        backend::capture(app, mode.as_str())?
+        acquire(mode, wants_browser_details(app))?
     };
     trace::mark(trace::Stage::Acquire);
     finish(app, shot, mode, delivery, activity)
@@ -281,7 +283,7 @@ fn on_main<T: Send + 'static>(
 /// the web area appearing. The previous 3s left ~0.8s of headroom, which a loaded machine
 /// eats — and the failure is a hard error telling the user their page isn't a page. The wait
 /// is only ever paid on the first capture per browser per grace period, and only while the
-/// tree is genuinely being built (see `ax::page_geometry`), so the ceiling is cheap to raise
+/// tree is genuinely being built (see `PageInspector::page_geometry`), so the ceiling is cheap to raise
 /// and expensive to keep tight.
 const PAGE_TREE_BUDGET: std::time::Duration = std::time::Duration::from_millis(8000);
 
@@ -294,7 +296,7 @@ enum PageTarget {
     Scroll {
         rect: (f64, f64, f64, f64),
         title: String,
-        browser: ax::BrowserMeta,
+        browser: BrowserMeta,
     },
 }
 
@@ -304,23 +306,23 @@ enum PageTarget {
 ///
 /// Geometry comes from the AX tree when possible: CGWindowList ordering is unreliable on
 /// modern macOS (Safari's toolbar strip is its own window), and `AXWebArea` alone reports
-/// the full document extent, so `ax::page_geometry` intersects it down to the viewport.
+/// the full document extent, so `PageInspector::page_geometry` intersects it down to the viewport.
 fn page_target(mode: CaptureMode, with_browser_details: bool) -> anyhow::Result<PageTarget> {
-    let win = backend::frontmost_window_bounds()?;
-    let geometry = if scroll::app_accessibility_trusted() {
-        ax::page_geometry(win.pid, PAGE_TREE_BUDGET)
+    let win = platform::current().windows.frontmost_window()?;
+    let geometry = if platform::current().permissions.accessibility_trusted() {
+        platform::current().inspector.page_geometry(win.pid, PAGE_TREE_BUDGET)
     } else {
         None
     };
     // Read after `page_geometry`, which has just opted a Chromium browser in if it needed to:
     // by now the page will answer, and this costs a single tree walk.
     let browser = if with_browser_details {
-        win.browser_meta()
+        platform::current().inspector.browser_meta(win.pid, &win.app_name)
     } else {
         Default::default()
     };
     if mode == CaptureMode::PageOnly {
-        if !scroll::app_accessibility_trusted() {
+        if !platform::current().permissions.accessibility_trusted() {
             anyhow::bail!(
                 "Browser page capture needs Accessibility permission for Glyphio \
                  (System Settings › Privacy & Security › Accessibility) — it reads the \
@@ -352,7 +354,7 @@ fn page_target(mode: CaptureMode, with_browser_details: bool) -> anyhow::Result<
                     )
                 }
             })?;
-        let (img, dpr) = backend::capture_rect_image(x, y, w, h)?;
+        let (img, dpr) = platform::current().capturer.rect_image(x, y, w, h)?;
         let (width, height) = img.dimensions();
         return Ok(PageTarget::Done(Shot {
             rgba: img.into_raw(),
@@ -564,8 +566,23 @@ pub fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
+/// Pixels for the four single-shot modes, through the platform.
+fn acquire(mode: CaptureMode, with_browser_details: bool) -> anyhow::Result<Shot> {
+    let p = platform::current();
+    match mode {
+        CaptureMode::FullWindow => p.picker.pick(PickKind::Window),
+        CaptureMode::Snip => p.picker.pick(PickKind::Region),
+        CaptureMode::FrontWindow => p.capturer.front_window(with_browser_details),
+        _ => p.capturer.visible(), // Visible
+    }
+}
+
 /// Non-interactive capture without an app handle, for `examples/bench_capture.rs` only.
 #[doc(hidden)]
 pub fn bench_capture(mode: &str) -> anyhow::Result<Shot> {
-    backend::capture_for_bench(mode)
+    let p = platform::current();
+    match mode {
+        "frontWindow" => p.capturer.front_window(false),
+        _ => p.capturer.visible(),
+    }
 }

@@ -10,12 +10,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub trait ProcessControl {
-    /// Executable path of a live process, or `None` if the pid is not running.
-    fn exe_path(&self, pid: u32) -> Option<std::path::PathBuf>;
-    /// Terminate the process and its children (the daemon's worker).
-    fn kill_tree(&self, pid: u32);
-}
+use crate::platform::ProcessControl;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Reaped {
@@ -30,7 +25,7 @@ pub enum Reaped {
 }
 
 /// Terminate the recorded daemon only if it is our engine.
-pub fn reap<C: ProcessControl>(ctl: &C, recorded: Option<u32>, engine_exe: &Path) -> Reaped {
+pub fn reap<C: ProcessControl + ?Sized>(ctl: &C, recorded: Option<u32>, engine_exe: &Path) -> Reaped {
     let Some(pid) = recorded else {
         return Reaped::NothingRecorded;
     };
@@ -66,20 +61,26 @@ pub fn wait_until(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
     use std::path::PathBuf;
 
     #[derive(Default)]
     struct Fake {
         procs: Vec<(u32, PathBuf)>,
-        killed: RefCell<Vec<u32>>,
+        killed: Mutex<Vec<u32>>,
     }
     impl ProcessControl for Fake {
+        fn daemon_lock_free(&self, _: &Path) -> bool {
+            true
+        }
+        fn bundled_engine_exe(&self) -> Option<PathBuf> {
+            None
+        }
         fn exe_path(&self, pid: u32) -> Option<PathBuf> {
             self.procs.iter().find(|(p, _)| *p == pid).map(|(_, e)| e.clone())
         }
         fn kill_tree(&self, pid: u32) {
-            self.killed.borrow_mut().push(pid);
+            self.killed.lock().unwrap().push(pid);
         }
     }
 
@@ -91,7 +92,7 @@ mod tests {
     fn stale_engine_of_this_bundle_is_killed() {
         let ctl = Fake { procs: vec![(10, mine())], ..Default::default() };
         assert_eq!(reap(&ctl, Some(10), &mine()), Reaped::Killed(10));
-        assert_eq!(*ctl.killed.borrow(), vec![10]);
+        assert_eq!(*ctl.killed.lock().unwrap(), vec![10]);
     }
 
     #[test]
@@ -99,14 +100,14 @@ mod tests {
         let other = PathBuf::from("/Users/dev/build/Glyphio.app/Contents/MacOS/glyphio-engine");
         let ctl = Fake { procs: vec![(10, other)], ..Default::default() };
         assert_eq!(reap(&ctl, Some(10), &mine()), Reaped::Foreign(10));
-        assert!(ctl.killed.borrow().is_empty());
+        assert!(ctl.killed.lock().unwrap().is_empty());
     }
 
     #[test]
     fn a_reused_pid_running_something_else_is_left_alone() {
         let ctl = Fake { procs: vec![(10, PathBuf::from("/usr/bin/vim"))], ..Default::default() };
         assert_eq!(reap(&ctl, Some(10), &mine()), Reaped::Foreign(10));
-        assert!(ctl.killed.borrow().is_empty());
+        assert!(ctl.killed.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -114,7 +115,7 @@ mod tests {
         let ctl = Fake::default();
         assert_eq!(reap(&ctl, Some(10), &mine()), Reaped::Gone(10));
         assert_eq!(reap(&ctl, None, &mine()), Reaped::NothingRecorded);
-        assert!(ctl.killed.borrow().is_empty());
+        assert!(ctl.killed.lock().unwrap().is_empty());
     }
 
     #[test]

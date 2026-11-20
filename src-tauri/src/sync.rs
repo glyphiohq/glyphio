@@ -17,15 +17,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::AppState;
 
-/// System-wide managed configuration (deployed by IT/MDM, root-owned). When present, its
-/// sync settings are authoritative: the user's `sync.toml` is ignored for connection fields
-/// and the app refuses user edits — the enterprise anti-exfiltration control that stops
-/// team content being redirected to a rogue backend. Absent on self-hosted/personal installs.
-#[cfg(target_os = "macos")]
-const MANAGED_CONFIG: &str = "/Library/Application Support/Glyphio/managed.toml";
-#[cfg(not(target_os = "macos"))]
-const MANAGED_CONFIG: &str = "/etc/glyphio/managed.toml";
-
 pub struct SyncState {
     config_path: PathBuf,
     engine: Mutex<Option<Arc<SyncEngine>>>,
@@ -47,7 +38,7 @@ impl SyncState {
     }
 
     fn managed_config() -> Option<SyncConfig> {
-        let path = std::path::Path::new(MANAGED_CONFIG);
+        let path = std::path::Path::new(crate::platform::managed_config_path());
         if !path.exists() {
             return None;
         }
@@ -57,14 +48,14 @@ impl SyncState {
         match cfg.validate() {
             Ok(()) => Some(cfg),
             Err(e) => {
-                log::error!("managed config at {MANAGED_CONFIG} is invalid ({e}) — sync disabled");
+                log::error!("managed config at {} is invalid ({e}) — sync disabled", crate::platform::managed_config_path());
                 Some(SyncConfig::default()) // managed-but-broken = locked and off
             }
         }
     }
 
     pub fn is_managed(&self) -> bool {
-        std::path::Path::new(MANAGED_CONFIG).exists()
+        std::path::Path::new(crate::platform::managed_config_path()).exists()
     }
 
     pub fn config(&self) -> SyncConfig {

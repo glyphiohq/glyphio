@@ -43,45 +43,12 @@ fn is_main_window(label: &str) -> bool {
 /// Re-derive the macOS activation policy from what's on screen. `ignoring` excludes a window
 /// that is closing right now — during `Destroyed` it may still be in the manager's map.
 pub fn sync_activation_policy(app: &AppHandle, ignoring: Option<&str>) {
-    #[cfg(target_os = "macos")]
-    {
-        let any_visible = app.webview_windows().iter().any(|(label, win)| {
-            is_main_window(label)
-                && Some(label.as_str()) != ignoring
-                && win.is_visible().unwrap_or(false)
-        });
-        apply_activation_policy(app, any_visible);
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, ignoring);
-}
-
-/// Set the policy, remembering what it is. The transition is visible — the Dock icon appears
-/// or disappears — so it is only applied on an actual change; calling it on every window event
-/// otherwise flickers.
-///
-/// Summoned surfaces call this with `false` before building themselves: a window created by a
-/// *regular* app is born on the Space that app's other windows are on, so with Settings parked
-/// on a spare display the palette, the capture overlay and the expansion popups all appeared
-/// over there — or nowhere at all, if the user was in a full-screen app. Created as a menu-bar
-/// agent, the same window is born where the user is. The Dock icon comes back on its own: the
-/// surface's `Destroyed` event re-derives the policy from what is still on screen.
-#[cfg(target_os = "macos")]
-fn apply_activation_policy(app: &AppHandle, regular: bool) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static IS_REGULAR: AtomicBool = AtomicBool::new(false);
-
-    if regular == IS_REGULAR.swap(regular, Ordering::SeqCst) {
-        return;
-    }
-    let policy = if regular {
-        tauri::ActivationPolicy::Regular
-    } else {
-        tauri::ActivationPolicy::Accessory
-    };
-    if let Err(e) = app.set_activation_policy(policy) {
-        log::warn!("could not set activation policy: {e}");
-    }
+    let any_visible = app.webview_windows().iter().any(|(label, win)| {
+        is_main_window(label)
+            && Some(label.as_str()) != ignoring
+            && win.is_visible().unwrap_or(false)
+    });
+    crate::platform::current().shell.set_regular(app, any_visible);
 }
 
 /// Build a summoned surface as a menu-bar agent, so it is born on the Space the user is on
@@ -93,8 +60,7 @@ fn apply_activation_policy(app: &AppHandle, regular: bool) {
 /// on screen — hence the re-derive on the error path. Every summoned surface needs both halves,
 /// which is why they live here instead of being spelled out at each call site.
 fn summoned<T>(app: &AppHandle, build: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
-    #[cfg(target_os = "macos")]
-    apply_activation_policy(app, false);
+    crate::platform::current().shell.set_regular(app, false);
     let out = build();
     if out.is_err() {
         sync_activation_policy(app, None);
@@ -112,9 +78,7 @@ fn summoned<T>(app: &AppHandle, build: impl FnOnce() -> anyhow::Result<T>) -> an
 /// touched it at all. Held by `capture::ScrollingSession` so both paths agree and the release
 /// happens on every path out.
 pub fn hold_agent_policy(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    apply_activation_policy(app, false);
-    let _ = app;
+    crate::platform::current().shell.set_regular(app, false);
 }
 
 // --- Remembered window geometry ----------------------------------------------------------
@@ -261,30 +225,6 @@ fn present(app: &AppHandle, win: &WebviewWindow) -> anyhow::Result<()> {
 /// the editor window (an already-open one takes the `present` path and never reaches here, which
 /// is why this could hide for a while). So the hop is done here, once, rather than trusted at
 /// each call site; `run_on_main_thread` runs it inline when we are already on the main thread.
-#[cfg(target_os = "macos")]
-fn follow_user_across_spaces(win: &WebviewWindow) {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-
-    let win = win.clone();
-    let app = win.app_handle().clone();
-    let _ = app.run_on_main_thread(move || {
-        let Ok(ptr) = win.ns_window() else { return };
-        if ptr.is_null() {
-            return;
-        }
-        // Safety: `ns_window` hands back this window's live NSWindow, and this block only runs
-        // on the main thread.
-        unsafe {
-            let ns: &NSWindow = &*(ptr as *const NSWindow);
-            let behavior = ns.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
-            ns.setCollectionBehavior(behavior);
-        }
-    });
-}
-
-#[cfg(not(target_os = "macos"))]
-fn follow_user_across_spaces(_win: &WebviewWindow) {}
-
 /// Re-assert focus a beat later.
 ///
 /// A capture that used the interactive picker leaves `screencapture` as the frontmost app;
@@ -341,7 +281,7 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
         .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
-    follow_user_across_spaces(&win);
+    crate::platform::current().shell.follow_user_across_spaces(&win);
     // A menu-bar agent isn't active when a window is built, so a fresh window would appear
     // BEHIND the frontmost app. Take the regular-app policy first, then set_focus activates
     // us (activateIgnoringOtherApps).
@@ -382,7 +322,7 @@ pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
         .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
-    follow_user_across_spaces(&win);
+    crate::platform::current().shell.follow_user_across_spaces(&win);
     // See open_capture: without this, new windows of a menu-bar agent open behind the
     // frontmost app instead of on top.
     sync_activation_policy(app, None);
@@ -417,7 +357,7 @@ pub fn open_editor_session(app: &AppHandle, session_id: &str) -> anyhow::Result<
         .position(g.x, g.y)
         .min_inner_size(640.0, 480.0)
         .build()?;
-    follow_user_across_spaces(&win);
+    crate::platform::current().shell.follow_user_across_spaces(&win);
     sync_activation_policy(app, None);
     win.set_focus()?;
     refocus_shortly(app, "editor");

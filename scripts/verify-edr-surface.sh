@@ -15,12 +15,12 @@ if rg -q 'MacosLauncher::AppleScript' src-tauri/src; then
   exit 1
 fi
 
-if grep -rl 'osascript' src-tauri/src | grep -qv '/autostart\.rs$'; then
+if grep -rl 'osascript' src-tauri/src | grep -qv '/platform/macos/autostart\.rs$'; then
   echo 'EDR surface check failed: osascript is spawned outside the one-time login-item migration.' >&2
   exit 1
 fi
 
-if ! rg -q 'SMAppService' src-tauri/src/autostart.rs; then
+if ! rg -q 'SMAppService' src-tauri/src/platform/macos/autostart.rs; then
   echo 'EDR surface check failed: Glyphio no longer uses the native login item service.' >&2
   exit 1
 fi

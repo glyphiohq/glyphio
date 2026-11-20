@@ -17,7 +17,7 @@ something Windows simply doesn't have.
 - **`snippet-store`, `sync-client`, `sync-proto`** — pure Rust, no platform calls.
 - **History** — SQLite via `rusqlite` with the bundled build.
 - **Clipboard history** — the store, retention, dedupe, search and picker are all portable.
-  Its platform surface is four functions in `clipboard/platform.rs` (change counter, concealed
+  Its platform surface is four functions in `platform/macos/pasteboard.rs` (change counter, concealed
   check, foreground app, paste keystroke) and **the Windows half is already written** — via
   `GetClipboardSequenceNumber`, `ExcludeClipboardContentFromMonitorProcessing` and `SendInput`.
   It has never been compiled, so treat it as a first draft, not a finished port; it also needs
@@ -47,7 +47,7 @@ Two things do need doing:
 
 Roughly 1,200 lines are macOS to the bone.
 
-### `capture/backend.rs` (~544 lines) → Windows.Graphics.Capture
+### `platform/macos/capture.rs` (~544 lines) → Windows.Graphics.Capture
 
 Screen and window capture, multi-monitor compositing, DPI handling. The compositing and
 rect-intersection logic is portable in shape but not in API. Windows.Graphics.Capture is the
@@ -57,7 +57,7 @@ modern, permission-free equivalent of ScreenCaptureKit.
 sharpest scale involved and upscales the coarser piece. Windows has per-monitor DPI awareness
 with its own rules; expect this to need rework rather than translation.
 
-### `capture/ax.rs` (~498 lines) → UI Automation
+### `platform/macos/inspect.rs` (~498 lines) → UI Automation
 
 Reads page identity (URL, title, profile) for the banner. On macOS, Chrome answers from the
 window's `AXDocument` in ~100µs with no accessibility tree built — measured, and the reason
@@ -109,7 +109,7 @@ capture is the most-used mode.
 
 - **UI copy**: ~30 hardcoded `⌘` references and ~26 macOS-permission strings need platform
   branching. Worth a small helper rather than 56 conditionals.
-- **Launch at login**: `autostart.rs` has the macOS backend (`SMAppService`) and a no-op elsewhere;
+- **Launch at login**: `platform/macos/autostart.rs` has the macOS backend (`SMAppService`) and a no-op elsewhere;
   the Windows one is the `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` value, written only on toggle
   and read back at launch, behind the same `LoginItem` trait. `tauri-plugin-autostart` was removed
   because its macOS selector is what the EDR check forbids.
@@ -119,7 +119,7 @@ capture is the most-used mode.
   much as unsigned apps trigger Gatekeeper — same problem, different vendor, also money.
 - **Paths**: `paths.rs` uses `dirs`, which already resolves correctly per platform. Verify the
   engine's `ESPANSO_*` directories land somewhere sensible under `%APPDATA%`.
-- **Engine supervision**: `engine/os.rs` uses `proc_pidpath`, `proc_listchildpids` and `flock`.
+- **Engine supervision**: `platform/macos/process.rs` uses `proc_pidpath`, `proc_listchildpids` and `flock`.
   Windows needs the same `ProcessControl` over `QueryFullProcessImageName` and a job object
   (kills the daemon with its worker), plus a lock probe for the engine's lock file. The pure
   reaper and respawn budget carry over unchanged.

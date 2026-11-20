@@ -349,6 +349,11 @@ pub fn run() {
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } => {
+                // The selection overlay going away by any route Glyphio did not ask for (focus
+                // lost, closed by the system) must not leave the capture waiting on it.
+                if windows::scroll_overlay_destroyed_unexpectedly(&label) {
+                    tray::capture_selection_abandoned(app_handle);
+                }
                 windows::sync_activation_policy(app_handle, Some(&label));
             }
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already

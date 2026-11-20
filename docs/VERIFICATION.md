@@ -87,6 +87,9 @@ after the menu-bar indicator changes.
 | Editor web process killed during delivery (Activity Monitor → Glyphio Web Content, Force Quit) | Within 20 s the menu-bar icon shows failure and the log has a `timed out while delivering` error; the next shortcut press starts a capture. | |
 | Region picker left open for over 150 s | The capture fails with a timeout, the icon returns to ready, and the next capture starts. | |
 | Stuck capture, then tray **Reload** | The icon returns to ready immediately and the next capture starts. | |
+| Scrolling Area: close the selection overlay without dragging (Esc, click another app, Mission Control, switch Space) | The menu-bar icon returns to ready within a moment and the next capture starts; no failure indicator. | |
+| Scrolling Area: drag a selection | The capture runs; closing the overlay to start it does not cancel it. | |
+| Area or Window picker: press Esc | The menu-bar icon returns to ready with no `!` and no failure details. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

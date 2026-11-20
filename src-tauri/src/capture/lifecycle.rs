@@ -104,6 +104,9 @@ pub enum Phase {
         delivery_session: Option<String>,
         notice: Option<String>,
         deadline: Instant,
+        /// A region-drag capture is waiting on its selection overlay; set until the overlay
+        /// reports a rectangle.
+        selecting: bool,
         /// Latest the deadline may be extended to by heartbeats (scrolling captures only).
         cap: Option<Instant>,
     },
@@ -204,6 +207,7 @@ impl Lifecycle {
             delivery_session: None,
             notice: None,
             deadline: now + initial_budget(requested),
+            selecting: requested == CaptureMode::Scrolling,
             cap: matches!(requested, CaptureMode::Scrolling | CaptureMode::ScrollingPage)
                 .then(|| now + SCROLLING_CAP),
         };
@@ -345,6 +349,39 @@ impl Lifecycle {
     pub fn fail_current(&mut self, message: String) -> Option<u64> {
         let token = self.active_token()?;
         self.fail(token, message)
+    }
+
+    /// The user backed out of the capture `token` (for example dismissed the picker). Unlike a
+    /// failure this shows nothing, and a late cancel cannot touch a newer capture.
+    pub fn cancel(&mut self, token: CaptureToken) -> bool {
+        if self.active_token() != Some(token) {
+            return false;
+        }
+        self.cancel_current()
+    }
+
+    /// The selection overlay produced a rectangle: closing it now starts the capture rather
+    /// than abandoning it.
+    pub fn selection_made(&mut self, token: CaptureToken) {
+        if let Phase::Active {
+            token: active,
+            selecting,
+            ..
+        } = &mut self.phase
+        {
+            if *active == token {
+                *selecting = false;
+            }
+        }
+    }
+
+    /// The selection overlay went away without a rectangle, by any route. Cancels only a
+    /// capture that is still waiting on it.
+    pub fn cancel_selection(&mut self) -> bool {
+        if matches!(self.phase, Phase::Active { selecting: true, .. }) {
+            return self.cancel_current();
+        }
+        false
     }
 
     pub fn cancel_current(&mut self) -> bool {
@@ -574,6 +611,60 @@ mod tests {
             lifecycle.check_deadline(token, t0 + secs(31)),
             DeadlineCheck::Expired { .. }
         ));
+    }
+
+    #[test]
+    fn cancelling_a_capture_clears_the_indicator_without_a_failure() {
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin(CaptureMode::Snip).unwrap();
+
+        assert!(lifecycle.cancel(token));
+
+        assert_eq!(lifecycle.phase, Phase::Idle);
+        assert_eq!(lifecycle.presentation().title, "");
+        assert!(lifecycle.begin(CaptureMode::Snip).is_ok());
+    }
+
+    #[test]
+    fn a_late_cancel_cannot_cancel_a_newer_capture() {
+        let mut lifecycle = Lifecycle::default();
+        let old = lifecycle.begin(CaptureMode::Snip).unwrap();
+        lifecycle.cancel(old);
+        let newer = lifecycle.begin(CaptureMode::Visible).unwrap();
+
+        assert!(!lifecycle.cancel(old));
+        assert_eq!(lifecycle.active_token(), Some(newer));
+    }
+
+    #[test]
+    fn abandoning_the_selection_overlay_cancels_a_capture_still_selecting() {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.begin(CaptureMode::Scrolling).unwrap();
+
+        assert!(lifecycle.cancel_selection());
+
+        assert_eq!(lifecycle.presentation().title, "");
+        assert!(!lifecycle.cancel_selection());
+    }
+
+    #[test]
+    fn closing_the_overlay_to_start_the_capture_does_not_cancel_it() {
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin(CaptureMode::Scrolling).unwrap();
+
+        lifecycle.selection_made(token);
+
+        assert!(!lifecycle.cancel_selection());
+        assert_eq!(lifecycle.active_token(), Some(token));
+    }
+
+    #[test]
+    fn abandoning_a_selection_never_touches_a_capture_that_has_no_overlay() {
+        let mut lifecycle = Lifecycle::default();
+        let token = lifecycle.begin(CaptureMode::Visible).unwrap();
+
+        assert!(!lifecycle.cancel_selection());
+        assert_eq!(lifecycle.active_token(), Some(token));
     }
 
     #[test]

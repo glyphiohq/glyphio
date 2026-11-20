@@ -91,6 +91,20 @@ Idle CPU and energy: Activity Monitor → Energy column with no windows open, af
 | Cold launch with the item already registered | `sudo fs_usage -w -f exec` shows no `osascript` or `pkill`. | |
 | Upgrade with an old `~/Library/LaunchAgents/*.plist` for Glyphio (any install path) | The plist is removed; a plist for another app with a similar name is left. | |
 
+## Permission model matrix
+
+Run on macOS 14, 15 and 26.
+
+| State and action | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Fresh account: read `permission_status` | Accessibility and Screen Recording are `notDetermined`; no system prompt appears. | |
+| Request each permission | One system prompt each; afterwards `denied` until granted. | |
+| Grant Screen Recording while running | `granted` without a relaunch if the content query succeeds, otherwise `needsRelaunch` after returning from Settings. | |
+| Grant Accessibility while the watcher is on | Within about a second the status becomes `granted` and expansion starts without relaunching. | |
+| Re-sign the app with another certificate, relaunch | The previously granted permission shows `stale`. | |
+| Repair a stale permission | One fresh prompt; one clean Glyphio entry in System Settings; capability works after granting. | |
+| Watcher off (no setup or General settings visible) | No polling activity (check with `sample` or Activity Monitor wake-ups). | |
+
 ## Permission matrix
 
 Exercise both the first-prompt path and the settings-only path. Reset permissions only in the

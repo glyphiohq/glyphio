@@ -93,6 +93,12 @@ pub trait Permissions: Send + Sync {
     fn request_accessibility(&self) -> bool;
     fn screen_recording_granted(&self) -> bool;
     fn request_screen_recording(&self) -> bool;
+    /// Whether a real capture-content query succeeds. Slower than the preflight and may itself
+    /// prompt on a fresh system, so callers use it only after the user was already prompted.
+    fn screen_recording_probe(&self) -> bool;
+    /// Forget this app's grant for `kind` (user scope, no administrator rights) so the next
+    /// request shows a fresh prompt and adds a clean entry.
+    fn reset(&self, kind: PermissionKind) -> anyhow::Result<()>;
     /// A URL that opens the OS settings page for `kind`, if the OS has one.
     fn settings_url(&self, kind: PermissionKind) -> Option<&'static str>;
 }

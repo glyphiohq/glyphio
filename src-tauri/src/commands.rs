@@ -897,7 +897,7 @@ fn strip_data_url(s: &str) -> &str {
     s.split_once(",").map_or(s, |(_, rest)| rest)
 }
 
-fn open_permission_settings(app: &AppHandle, kind: crate::platform::PermissionKind) -> CmdResult<()> {
+pub(crate) fn open_permission_settings(app: &AppHandle, kind: crate::platform::PermissionKind) -> CmdResult<()> {
     use tauri_plugin_opener::OpenerExt;
     let url = crate::platform::current()
         .permissions

@@ -9,6 +9,8 @@ use super::{InputInjector, PermissionKind, Permissions, ProcessControl};
 #[derive(Default)]
 pub struct Fake {
     pub accessibility: bool,
+    pub screen_recording: bool,
+    pub calls: Mutex<Vec<String>>,
     pub scrolls: Mutex<Vec<i32>>,
 }
 
@@ -17,13 +19,23 @@ impl Permissions for Fake {
         self.accessibility
     }
     fn request_accessibility(&self) -> bool {
+        self.calls.lock().unwrap().push("request Accessibility".into());
         self.accessibility
     }
     fn screen_recording_granted(&self) -> bool {
-        true
+        self.screen_recording
     }
     fn request_screen_recording(&self) -> bool {
+        self.calls.lock().unwrap().push("request ScreenRecording".into());
         true
+    }
+    fn screen_recording_probe(&self) -> bool {
+        self.calls.lock().unwrap().push("probe".into());
+        false
+    }
+    fn reset(&self, kind: PermissionKind) -> anyhow::Result<()> {
+        self.calls.lock().unwrap().push(format!("reset {kind:?}"));
+        Ok(())
     }
     fn settings_url(&self, _: PermissionKind) -> Option<&'static str> {
         None

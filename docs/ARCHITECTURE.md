@@ -141,6 +141,22 @@ builds the implementation once; `platform::fake` (tests) is a minimal in-memory 
 decisions) do not reference OS crates. Moved without behaviour change; the macOS verification
 matrix is the check.
 
+### Permission model
+
+`permissions.rs` (platform-neutral, over `platform::Permissions`) maps what the system allows to one of
+`Granted`, `NotDetermined`, `Denied`, `Stale` or `NeedsRelaunch` per permission, plus `expansion_live`
+from the engine as a separate line. Accessibility comes from the app's own trust check (TCC credits the
+bundled engine to Glyphio). Screen Recording is the preflight, then a real content query, which runs
+only after the user was prompted once because it can prompt on a fresh system. "Prompted" lives in
+`settings.json` (`permission_prompted_*`), imported once from the old web-storage flags by
+`permission_import_legacy_flags`. `Stale` means the user says it is on (button, or 20 s after
+returning from System Settings) and the system still refuses, or the bundle path differs from the one
+recorded when it was last granted. A watcher polls once a second only while the UI has called
+`permission_watch(true)` (setup or General settings visible), emits `permission-status` on change, and
+restarts the engine when Accessibility becomes granted. `permission_repair` runs `tccutil reset` for
+Glyphio's own entry only, then requests again. The old per-permission commands remain until the UI
+moves to this model (ONB-02).
+
 ### Login item
 
 "Launch Glyphio at login" is `SMAppService.mainApp` (`platform/macos/autostart.rs`), the system's own login-item

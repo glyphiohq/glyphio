@@ -110,6 +110,15 @@ pub struct Settings {
     pub shortcut_capture_page_silent: String,
     pub shortcut_capture_scroll_silent: String,
     pub shortcut_capture_scroll_page_silent: String,
+
+    // ---- permission guidance (replaces the old web-storage flags) ----
+    /// The system prompt for this permission has been shown once, so "not granted" now means
+    /// refused or stale rather than not yet asked.
+    pub permission_prompted_accessibility: bool,
+    pub permission_prompted_screen_recording: bool,
+    /// Path of the app bundle when a permission was last seen granted; a different path later
+    /// means the grant belongs to another copy.
+    pub permission_grant_identity: String,
 }
 
 impl Default for Settings {
@@ -169,6 +178,9 @@ impl Default for Settings {
             shortcut_capture_page_silent: String::new(),
             shortcut_capture_scroll_silent: String::new(),
             shortcut_capture_scroll_page_silent: String::new(),
+            permission_prompted_accessibility: false,
+            permission_prompted_screen_recording: false,
+            permission_grant_identity: String::new(),
         }
     }
 }

@@ -46,6 +46,13 @@ pub struct AppState {
     /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
     /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
     pub capture_feedback: Mutex<tray::CaptureFeedback>,
+    /// Why the login item is not working, if it is not; shown in Settings. Set at launch and
+    /// after a toggle.
+    pub login_item_outcome: Mutex<Option<autostart::Outcome>>,
+    /// One-line note about the old login item that could not be removed automatically.
+    pub login_item_note: Mutex<Option<String>>,
+    /// Which chord does what, and whether the system accepted it. See `shortcuts::registry`.
+    pub shortcuts: Mutex<shortcuts::registry::Registry>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
     pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
@@ -62,6 +69,30 @@ pub fn app_restart(app: &tauri::AppHandle) -> ! {
     app.restart()
 }
 
+/// Settle the login item once at launch: clear what older versions left behind, then read the
+/// native item's status and register it if the setting is on and nothing is registered.
+fn login_item_at_launch(app: &tauri::AppHandle, want: bool, existing_install: bool) {
+    #[cfg(not(target_os = "macos"))]
+    let _ = existing_install;
+    #[cfg(target_os = "macos")]
+    {
+        let state = app.state::<AppState>();
+        let marker = state.paths.root.join(".login-item-migrated");
+        if autostart::migrate_legacy(&marker, existing_install) == autostart::Migration::ManualRemoval {
+            *state.login_item_note.lock().unwrap() = Some(autostart::MANUAL_REMOVAL_NOTE.into());
+        }
+        let outcome = autostart::reconcile(want);
+        log::info!("login item at launch: {outcome:?}");
+        if let autostart::Outcome::Failed(_) | autostart::Outcome::NeedsApproval = outcome {
+            *state.login_item_outcome.lock().unwrap() = Some(outcome);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Err(e) = autostart::set_enabled_with(app, want) {
+        log::warn!("could not update Launch at Login: {e}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     launch::start();
@@ -74,9 +105,10 @@ pub fn run() {
             .unwrap_or_else(|_| "<unknown>".into())
     );
 
-    let open_settings_on_start = startup::should_open_settings(std::env::args());
-
     let paths = AppPaths::resolve().expect("resolve app paths");
+    // A fresh install never had the old scripted login item, so it must not be asked about
+    // Automation just to look for one. Decided before the stores create their files.
+    let existing_install = paths.snippets_db.exists();
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
     let history = HistoryStore::open(&paths).expect("open history store");
     let clips = ClipStore::open(&paths).expect("open clipboard store");
@@ -97,6 +129,9 @@ pub fn run() {
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         capture_feedback: Mutex::new(Default::default()),
+        login_item_outcome: Mutex::new(None),
+        login_item_note: Mutex::new(None),
+        shortcuts: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
@@ -127,12 +162,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(
-            // Login Items is intentionally used instead of LaunchAgent: the latter writes a
-            // persistence plist to ~/Library/LaunchAgents and is correctly scrutinized by EDR.
-            tauri_plugin_autostart::MacosLauncher::AppleScript,
-            Some(vec![startup::LOGIN_LAUNCH_ARGUMENT]),
-        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(shortcuts::handler)
@@ -140,6 +169,10 @@ pub fn run() {
         )
         .manage(state)
         .setup(move |app| {
+            // First, while the system's launch event is still the current one.
+            startup::note_launch_event();
+            let open_settings_on_start = startup::should_open_settings(std::env::args());
+
             // Start as a menu-bar agent; opening a window promotes us to a regular app and
             // closing the last one demotes us again (windows::sync_activation_policy).
             #[cfg(target_os = "macos")]
@@ -151,7 +184,8 @@ pub fn run() {
 
             tray::build(app.handle())?;
             launch::mark("tray-ready");
-            shortcuts::register(app.handle())?;
+            // A refused chord is not fatal; it is recorded, logged and shown in Settings.
+            shortcuts::register(app.handle());
 
             let launch_at_login = app
                 .state::<AppState>()
@@ -159,9 +193,7 @@ pub fn run() {
                 .lock()
                 .unwrap()
                 .launch_at_login;
-            if let Err(e) = autostart::set_enabled(app.handle(), launch_at_login) {
-                log::warn!("could not update Launch at Login: {e}");
-            }
+            login_item_at_launch(app.handle(), launch_at_login, existing_install);
 
             // Notify open windows on store changes. Remote-origin changes (applied by the sync
             // engine, bypassing the command layer) must also regenerate the engine's config here.
@@ -194,15 +226,16 @@ pub fn run() {
             // a popup/form trigger fired right after launch has to find it.
             bridge::start(app.handle());
 
-            // Launch the supervised expansion-engine daemon.
+            // Launch the supervised expansion-engine daemon off the main thread: clearing a
+            // stale daemon can wait briefly for its lock.
             let handle = app.handle().clone();
-            {
+            tauri::async_runtime::spawn_blocking(move || {
                 let state = handle.state::<AppState>();
                 if let Err(e) = state.supervisor.start(&handle, &state.paths) {
                     log::error!("failed to start engine daemon: {e}");
                 }
                 launch::mark("engine-spawned");
-            }
+            });
 
             // Resume a previous sync session silently, if one is configured.
             sync::init(app.handle());
@@ -275,6 +308,8 @@ pub fn run() {
             commands::close_editor,
             commands::clear_captures,
             commands::trigger_capture,
+            commands::login_item_notice,
+            commands::shortcut_status,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,
             commands::app_accessibility_status,
@@ -298,6 +333,7 @@ pub fn run() {
             commands::form_cancel,
             commands::accessibility_status,
             commands::secure_input_status,
+            commands::engine_exhausted,
             commands::open_accessibility_settings,
             commands::restart_engine,
             commands::screen_recording_status,
@@ -355,6 +391,11 @@ pub fn run() {
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } => {
+                // The selection overlay going away by any route Glyphio did not ask for (focus
+                // lost, closed by the system) must not leave the capture waiting on it.
+                if windows::scroll_overlay_destroyed_unexpectedly(&label) {
+                    tray::capture_selection_abandoned(app_handle);
+                }
                 windows::sync_activation_policy(app_handle, Some(&label));
             }
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already
@@ -381,7 +422,10 @@ pub fn run() {
                 } else {
                     windows::save_all_geometry(app_handle);
                     capture::restore_browser_accessibility();
-                    app_handle.state::<AppState>().supervisor.stop();
+                    {
+                        let state = app_handle.state::<AppState>();
+                        state.supervisor.stop(&state.paths);
+                    }
                 }
             }
             // Tray "Quit" and ⌘Q (both predefined menu items) fire `Exit` — clean up the engine
@@ -389,7 +433,10 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 windows::save_all_geometry(app_handle);
                 capture::restore_browser_accessibility();
-                app_handle.state::<AppState>().supervisor.stop();
+                {
+                        let state = app_handle.state::<AppState>();
+                        state.supervisor.stop(&state.paths);
+                    }
             }
             _ => {}
         });

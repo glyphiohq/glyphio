@@ -65,7 +65,7 @@ fn cursor_display_scale() -> f64 {
 }
 
 /// Native interactive picker. Blocks until the user picks (or cancels with Esc). Returns the
-/// captured PNG decoded to RGBA. Cancel → error (caller skips opening the editor).
+/// captured PNG decoded to RGBA. Cancel → `Cancelled` (not a failure; the caller clears the indicator).
 fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
     let tmp = std::env::temp_dir().join(format!("glyphio-capture-{}.png", Uuid::new_v4()));
     let status = std::process::Command::new("/usr/sbin/screencapture")
@@ -76,7 +76,7 @@ fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> {
         .map_err(|e| anyhow!("failed to launch screencapture: {e}"))?;
 
     if !status.success() || !tmp.exists() {
-        anyhow::bail!("capture cancelled");
+        return Err(super::Cancelled.into());
     }
     let bytes = std::fs::read(&tmp)?;
     let _ = std::fs::remove_file(&tmp);

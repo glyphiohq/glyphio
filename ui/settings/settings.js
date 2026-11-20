@@ -13,6 +13,7 @@ import {
   formatAccelerator,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
+import { registrationNotice, statusFor } from './shortcut-status.mjs';
 import {
   afterPermissionPrompt,
   initialPermissionState,
@@ -164,6 +165,7 @@ async function init() {
   initializePermissionGuidance();
   await wirePermissionGuidance();
   await wireSecureInput();
+  await wireEngineStatus();
   await wireSync();
   wireInvites();
   maybeShowWelcome();
@@ -173,11 +175,26 @@ async function init() {
 }
 
 async function reloadAll() {
-  [state.settings, state.snippets, state.groups] = await Promise.all([
+  [state.settings, state.snippets, state.groups, state.shortcutStatus] = await Promise.all([
     invoke('get_settings'), invoke('list_snippets'), invoke('list_groups'),
+    invoke('shortcut_status').catch(() => []),
   ]);
   renderSidebar();
   renderMain();
+  refreshLoginNotice();
+}
+
+/** Say why Launch at Login isn't working (approval pending, refused, an old item to remove). */
+async function refreshLoginNotice() {
+  const input = document.querySelector('[data-key="launchAtLogin"]');
+  if (!input) return;
+  const field = input.closest('.field');
+  let note = field.querySelector('.login-notice');
+  if (!note) {
+    note = el('p', { className: 'adv-hint login-notice' });
+    field.append(note);
+  }
+  note.textContent = (await invoke('login_item_notice').catch(() => null)) || '';
 }
 async function reloadSnippets() { state.snippets = await invoke('list_snippets'); renderSidebar(); renderMain(); }
 async function reloadGroups() { state.groups = await invoke('list_groups'); renderSidebar(); renderMain(); }
@@ -198,6 +215,12 @@ function renderShell() {
       <div class="ax-text">
         <strong>Expansion paused — <span id="si-holder">another app</span> is holding macOS Secure Input.</strong>
         <p>While an app captures keystrokes securely (password fields, the lock screen), no expander can see what you type — triggers resume the moment it lets go. If this persists and no password field is open, the hold is stale: lock the screen (Ctrl+Cmd+Q) and unlock, or quit the app shown above.</p>
+      </div>
+    </div>
+    <div class="ax-banner" id="engine-banner">
+      <div class="ax-text">
+        <strong>The expansion engine stopped after repeated crashes.</strong>
+        <p>Text expansion is off until it restarts. <button type="button" id="engine-restart">Restart engine</button></p>
       </div>
     </div>
     <div class="body">
@@ -325,6 +348,23 @@ function applySecureInput(holder) {
   if (!banner) return;
   banner.classList.toggle('show', Boolean(holder));
   if (holder) document.getElementById('si-holder').textContent = holder;
+}
+
+// The engine is left stopped when its respawn budget is spent; offer the one-click recovery.
+function applyEngineStopped(stopped) {
+  document.getElementById('engine-banner')?.classList.toggle('show', Boolean(stopped));
+}
+
+async function wireEngineStatus() {
+  applyEngineStopped(await invoke('engine_exhausted'));
+  await listen('engine-status', (e) => applyEngineStopped(e.payload));
+  document.getElementById('engine-restart')?.addEventListener('click', async () => {
+    try {
+      await invoke('restart_engine');
+    } catch (e) {
+      console.error('restart_engine failed', e);
+    }
+  });
 }
 
 async function wireSecureInput() {
@@ -2609,7 +2649,24 @@ function renderField(key, type, label, opts) {
   else { input = el('input', { type: 'text' }); input.value = state.settings[key] ?? ''; }
   input.dataset.key = key; input.dataset.type = type;
   field.append(input);
+  if (key.startsWith('shortcut')) field.append(shortcutWarning(key));
   return field;
+}
+
+/** The "not registered" line under one shortcut, kept current by `paintShortcutStatus`. */
+function shortcutWarning(key) {
+  const span = el('span', { className: 'field-error shortcut-warning' });
+  span.dataset.statusKey = key;
+  span.textContent = registrationNotice(statusFor(state.shortcutStatus, key));
+  return span;
+}
+
+/** Show what the system said about each shortcut after a save. */
+function paintShortcutStatus(statuses) {
+  state.shortcutStatus = statuses ?? [];
+  document.querySelectorAll('[data-status-key]').forEach((span) => {
+    span.textContent = registrationNotice(statusFor(state.shortcutStatus, span.dataset.statusKey));
+  });
 }
 
 /** The editor key and the straight-to-clipboard key for one capture mode. */
@@ -2705,7 +2762,8 @@ function hotkeyPair(key, silentKey, label) {
     const actions = el('span', { className: 'shortcut-actions' });
     actions.append(clear, reset);
     box.append(input, record, actions,
-      el('span', { className: 'hotkey-caption', textContent: caption }), error);
+      el('span', { className: 'hotkey-caption', textContent: caption }), error,
+      shortcutWarning(settingsKey));
     return box;
   };
   wrap.append(
@@ -2875,8 +2933,16 @@ async function saveSettings() {
     }
     next.expansionAppOverrides = appOverrides;
   }
-  try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }
+  try {
+    const registered = await invoke('save_settings', { settings: next });
+    state.settings = next;
+    paintShortcutStatus(registered);
+    const refused = (registered ?? []).filter((s) => registrationNotice(s)).length;
+    setStatus(refused ? 'Settings saved. Some shortcuts could not be registered.' : 'Settings saved.',
+      refused ? 'err' : 'ok');
+  }
   catch (e) { setStatus(String(e), 'err'); }
+  refreshLoginNotice();
 }
 
 // --- utils ------------------------------------------------------------------

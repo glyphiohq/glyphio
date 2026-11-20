@@ -109,12 +109,20 @@ capture is the most-used mode.
 
 - **UI copy**: ~30 hardcoded `⌘` references and ~26 macOS-permission strings need platform
   branching. Worth a small helper rather than 56 conditionals.
+- **Launch at login**: `autostart.rs` has the macOS backend (`SMAppService`) and a no-op elsewhere;
+  the Windows one is the `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` value, written only on toggle
+  and read back at launch, behind the same `LoginItem` trait. `tauri-plugin-autostart` was removed
+  because its macOS selector is what the EDR check forbids.
 - **Default hotkeys**: `Alt+Shift+…` is fine on Windows, but check for conflicts with common
   IME and accessibility bindings.
 - **Code signing**: Windows wants its own certificate. Unsigned installers trigger SmartScreen
   much as unsigned apps trigger Gatekeeper — same problem, different vendor, also money.
 - **Paths**: `paths.rs` uses `dirs`, which already resolves correctly per platform. Verify the
   engine's `ESPANSO_*` directories land somewhere sensible under `%APPDATA%`.
+- **Engine supervision**: `engine/os.rs` uses `proc_pidpath`, `proc_listchildpids` and `flock`.
+  Windows needs the same `ProcessControl` over `QueryFullProcessImageName` and a job object
+  (kills the daemon with its worker), plus a lock probe for the engine's lock file. The pure
+  reaper and respawn budget carry over unchanged.
 - **The updater** already targets `darwin-aarch64` explicitly in `latest.json`; adding
   `windows-x86_64` is a manifest change, not a code change.
 

@@ -350,7 +350,7 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
-.shortcut-error { grid-column: 1 / -1; }
+.shortcut-error, .shortcut-warning { grid-column: 1 / -1; }
 
 .field-error { margin: 4px 0 0; color: var(--danger); font-size: 11px; }
 .field-error:empty { display: none; }

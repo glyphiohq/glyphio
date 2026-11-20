@@ -45,6 +45,8 @@ pub struct AppState {
     /// Capture results, exact-once delivery sessions, and their menu-bar lifecycle. Keeping these
     /// under one lock prevents a delayed window acknowledgement from racing a newer capture.
     pub capture_feedback: Mutex<tray::CaptureFeedback>,
+    /// Which chord does what, and whether the system accepted it. See `shortcuts::registry`.
+    pub shortcuts: Mutex<shortcuts::registry::Registry>,
     /// Payloads stashed for bridge-driven windows (`popup` / `form`), keyed by window label;
     /// the window pulls its payload once via `take_pending_payload` on load.
     pub pending_payloads: Mutex<std::collections::HashMap<String, serde_json::Value>>,
@@ -94,6 +96,7 @@ pub fn run() {
         supervisor: Supervisor::new(),
         settings: Mutex::new(settings),
         capture_feedback: Mutex::new(Default::default()),
+        shortcuts: Mutex::new(Default::default()),
         pending_payloads: Mutex::new(std::collections::HashMap::new()),
         palette_view: Mutex::new("clipboard".into()),
         bridge: bridge::BridgeState::default(),
@@ -147,7 +150,8 @@ pub fn run() {
             clipboard::watch(app.handle());
 
             tray::build(app.handle())?;
-            shortcuts::register(app.handle())?;
+            // A refused chord is not fatal; it is recorded, logged and shown in Settings.
+            shortcuts::register(app.handle());
 
             let launch_at_login = app
                 .state::<AppState>()
@@ -269,6 +273,7 @@ pub fn run() {
             commands::close_editor,
             commands::clear_captures,
             commands::trigger_capture,
+            commands::shortcut_status,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,
             commands::app_accessibility_status,
@@ -349,6 +354,11 @@ pub fn run() {
                 event: tauri::WindowEvent::Destroyed,
                 ..
             } => {
+                // The selection overlay going away by any route Glyphio did not ask for (focus
+                // lost, closed by the system) must not leave the capture waiting on it.
+                if windows::scroll_overlay_destroyed_unexpectedly(&label) {
+                    tray::capture_selection_abandoned(app_handle);
+                }
                 windows::sync_activation_policy(app_handle, Some(&label));
             }
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already

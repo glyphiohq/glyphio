@@ -25,6 +25,7 @@ pub mod diag;
 pub mod lifecycle;
 pub mod orchestration;
 pub mod scroll;
+pub mod worker;
 
 use anyhow::anyhow;
 use base64::Engine;
@@ -171,62 +172,104 @@ fn trigger_mode(
     // shortcut must visibly acknowledge that it fired before capture can become slow.
     let activity = crate::tray::capture_started(app, mode)?;
     let delivery = Delivery::resolve(app, delivery);
+    // Everything slow happens on the capture worker; this thread only queues the request. The
+    // picker, the browser's accessibility tree and the scroll loop used to run right here, on
+    // whichever thread the hotkey, tray or palette had put us on — usually the main one.
+    let request = CaptureRequest {
+        mode,
+        delivery,
+        activity,
+    };
+    worker(app).submit(request).map_err(|e| {
+        let e = anyhow::Error::from(e);
+        report_failure_for(app, activity, "capture", &e);
+        e
+    })
+}
+
+/// A capture that has been begun (the lifecycle knows) and is waiting for, or running on, the
+/// worker.
+pub struct CaptureRequest {
+    mode: CaptureMode,
+    delivery: Delivery,
+    activity: lifecycle::CaptureToken,
+}
+
+/// The capture worker, started on first use. It holds an `AppHandle` for the rest of the run.
+fn worker(app: &AppHandle) -> &'static worker::Worker<CaptureRequest> {
+    static WORKER: std::sync::OnceLock<worker::Worker<CaptureRequest>> =
+        std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        let app = app.clone();
+        worker::Worker::spawn(move |request| run_request(&app, request))
+    })
+}
+
+/// Run one request to the point where a window takes over, reporting any failure.
+fn run_request(app: &AppHandle, request: CaptureRequest) {
+    let CaptureRequest {
+        mode,
+        delivery,
+        activity,
+    } = request;
+    let context = match mode {
+        CaptureMode::Scrolling => "scrolling capture selection".to_string(),
+        CaptureMode::PageOnly | CaptureMode::ScrollingPage => "page capture".to_string(),
+        _ => format!("capture ({})", mode.as_str()),
+    };
+    if let Err(e) = capture_request(app, mode, delivery, activity) {
+        report_failure_for(app, activity, &context, &e);
+    }
+}
+
+fn capture_request(
+    app: &AppHandle,
+    mode: CaptureMode,
+    delivery: Delivery,
+    activity: lifecycle::CaptureToken,
+) -> anyhow::Result<()> {
     if mode == CaptureMode::Scrolling {
         // The region is dragged first; the overlay carries the decision back with the rect.
-        return crate::windows::open_scroll_overlay(app, delivery).inspect_err(|e| {
-            report_failure_for(app, activity, "scrolling capture selection", e);
-        });
-    }
-    if matches!(mode, CaptureMode::PageOnly | CaptureMode::ScrollingPage) {
-        // Both walk the AX tree (possible Chromium opt-in retry) and, for scrollingPage,
-        // scroll + settle per frame — never block the main thread.
         let app2 = app.clone();
-        let details = wants_browser_details(app);
-        tauri::async_runtime::spawn(async move {
-            let target =
-                tauri::async_runtime::spawn_blocking(move || page_target(mode, details)).await;
-            let result = match target {
-                // scrollingPage runs off the main thread so its capture loop never blocks the app.
-                Ok(Ok(PageTarget::Scroll {
-                    rect,
-                    title,
-                    browser,
-                })) => run_scrolling(&app2, rect).await.map(|mut shot| {
-                    shot.title = title;
-                    shot.browser = browser;
-                    shot
-                }),
-                Ok(Ok(PageTarget::Done(shot))) => Ok(shot),
-                Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow!("page capture task failed: {e}")),
-            };
-            match result {
-                Ok(shot) => {
-                    let app3 = app2.clone();
-                    if let Err(e) = app2.run_on_main_thread(move || {
-                        if let Err(e) = finish(&app3, shot, mode, delivery, activity) {
-                            report_failure_for(&app3, activity, "page capture", &e);
-                        }
-                    }) {
-                        report_failure_for(
-                            &app2,
-                            activity,
-                            "scheduling page capture delivery",
-                            &anyhow!(e),
-                        );
-                    }
-                }
-                Err(e) => report_failure_for(&app2, activity, "page capture", &e),
-            }
+        return on_main(app, move || {
+            crate::windows::open_scroll_overlay(&app2, delivery)
         });
-        return Ok(());
     }
-    let shot = backend::capture(app, mode.as_str()).inspect_err(|e| {
-        report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
-    })?;
-    finish(app, shot, mode, delivery, activity).inspect_err(|e| {
-        report_failure_for(app, activity, &format!("capture ({})", mode.as_str()), e);
+    let shot = if matches!(mode, CaptureMode::PageOnly | CaptureMode::ScrollingPage) {
+        // Both walk the AX tree (possible Chromium opt-in retry) and, for scrollingPage,
+        // scroll + settle per frame. That is exactly why this runs on the worker.
+        match page_target(mode, wants_browser_details(app))? {
+            PageTarget::Scroll {
+                rect,
+                title,
+                browser,
+            } => {
+                let mut shot = tauri::async_runtime::block_on(run_scrolling(app, rect))?;
+                shot.title = title;
+                shot.browser = browser;
+                shot
+            }
+            PageTarget::Done(shot) => shot,
+        }
+    } else {
+        backend::capture(app, mode.as_str())?
+    };
+    finish(app, shot, mode, delivery, activity)
+}
+
+/// Run `f` on the main thread and wait for its result. Window creation and activation-policy
+/// changes belong there; the worker waits, the main thread does not.
+fn on_main<T: Send + 'static>(
+    app: &AppHandle,
+    f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
     })
+    .map_err(|e| anyhow!("could not reach the main thread: {e}"))?;
+    rx.recv()
+        .map_err(|_| anyhow!("the main thread dropped the window request"))?
 }
 
 /// How long to wait for a browser that builds its accessibility tree on demand.
@@ -405,9 +448,24 @@ impl Drop for ScrollingSession {
     }
 }
 
+/// The user backed out of an interactive picker. Not a failure: nothing is shown.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("capture cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 /// Log a capture failure and expose it through the non-activating menu-bar feedback surface.
 /// The details dialog is shown only if the user chooses "Show details" from that menu.
 pub fn report_failure(app: &AppHandle, context: &str, e: &anyhow::Error) {
+    if e.downcast_ref::<Cancelled>().is_some() {
+        return; // already cleared, for its own token, where it was raised
+    }
     log::error!("{context} failed: {e}");
     if e.downcast_ref::<AlreadyScrolling>().is_some()
         || e.downcast_ref::<lifecycle::CaptureInProgress>().is_some()
@@ -423,6 +481,11 @@ fn report_failure_for(
     context: &str,
     e: &anyhow::Error,
 ) {
+    if e.downcast_ref::<Cancelled>().is_some() {
+        log::info!("{context} cancelled by the user");
+        crate::tray::capture_cancelled_for(app, activity);
+        return;
+    }
     log::error!("{context} failed: {e}");
     if e.downcast_ref::<AlreadyScrolling>().is_some() {
         return;
@@ -472,11 +535,15 @@ pub fn finish(
     };
     let session_id =
         crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
-    if silent {
-        crate::windows::run_silent_capture(app, session_id.as_str())
-    } else {
-        crate::windows::open_editor_session(app, session_id.as_str())
-    }
+    // Only the window needs the main thread; the encoding above does not.
+    let app = app.clone();
+    on_main(&app.clone(), move || {
+        if silent {
+            crate::windows::run_silent_capture(&app, session_id.as_str())
+        } else {
+            crate::windows::open_editor_session(&app, session_id.as_str())
+        }
+    })
 }
 
 fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {

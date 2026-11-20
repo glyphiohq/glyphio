@@ -13,6 +13,7 @@ import {
   formatAccelerator,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
+import { registrationNotice, statusFor } from './shortcut-status.mjs';
 import {
   afterPermissionPrompt,
   initialPermissionState,
@@ -173,8 +174,9 @@ async function init() {
 }
 
 async function reloadAll() {
-  [state.settings, state.snippets, state.groups] = await Promise.all([
+  [state.settings, state.snippets, state.groups, state.shortcutStatus] = await Promise.all([
     invoke('get_settings'), invoke('list_snippets'), invoke('list_groups'),
+    invoke('shortcut_status').catch(() => []),
   ]);
   renderSidebar();
   renderMain();
@@ -2609,7 +2611,24 @@ function renderField(key, type, label, opts) {
   else { input = el('input', { type: 'text' }); input.value = state.settings[key] ?? ''; }
   input.dataset.key = key; input.dataset.type = type;
   field.append(input);
+  if (key.startsWith('shortcut')) field.append(shortcutWarning(key));
   return field;
+}
+
+/** The "not registered" line under one shortcut, kept current by `paintShortcutStatus`. */
+function shortcutWarning(key) {
+  const span = el('span', { className: 'field-error shortcut-warning' });
+  span.dataset.statusKey = key;
+  span.textContent = registrationNotice(statusFor(state.shortcutStatus, key));
+  return span;
+}
+
+/** Show what the system said about each shortcut after a save. */
+function paintShortcutStatus(statuses) {
+  state.shortcutStatus = statuses ?? [];
+  document.querySelectorAll('[data-status-key]').forEach((span) => {
+    span.textContent = registrationNotice(statusFor(state.shortcutStatus, span.dataset.statusKey));
+  });
 }
 
 /** The editor key and the straight-to-clipboard key for one capture mode. */
@@ -2705,7 +2724,8 @@ function hotkeyPair(key, silentKey, label) {
     const actions = el('span', { className: 'shortcut-actions' });
     actions.append(clear, reset);
     box.append(input, record, actions,
-      el('span', { className: 'hotkey-caption', textContent: caption }), error);
+      el('span', { className: 'hotkey-caption', textContent: caption }), error,
+      shortcutWarning(settingsKey));
     return box;
   };
   wrap.append(
@@ -2875,7 +2895,14 @@ async function saveSettings() {
     }
     next.expansionAppOverrides = appOverrides;
   }
-  try { await invoke('save_settings', { settings: next }); state.settings = next; setStatus('Settings saved.', 'ok'); }
+  try {
+    const registered = await invoke('save_settings', { settings: next });
+    state.settings = next;
+    paintShortcutStatus(registered);
+    const refused = (registered ?? []).filter((s) => registrationNotice(s)).length;
+    setStatus(refused ? 'Settings saved. Some shortcuts could not be registered.' : 'Settings saved.',
+      refused ? 'err' : 'ok');
+  }
   catch (e) { setStatus(String(e), 'err'); }
 }
 

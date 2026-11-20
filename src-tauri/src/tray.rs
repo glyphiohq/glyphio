@@ -22,15 +22,34 @@ const FEEDBACK_DURATION: std::time::Duration = std::time::Duration::from_millis(
 pub struct CaptureFeedback {
     orchestration: CaptureOrchestration<PendingCapture>,
     status_item: Option<MenuItem<tauri::Wry>>,
+    /// A shortcut binding was refused or invalid. Shown only while nothing else is going on.
+    shortcut_problem: bool,
 }
 
 fn presentation(app: &AppHandle) -> Presentation {
+    let state = app.state::<crate::AppState>();
+    let feedback = state.capture_feedback.lock().unwrap();
+    with_shortcut_notice(feedback.orchestration.presentation(), feedback.shortcut_problem)
+}
+
+/// The resting presentation, carrying the shortcut notice if there is one. A capture in
+/// progress, or its result, always takes precedence.
+fn with_shortcut_notice(mut value: Presentation, problem: bool) -> Presentation {
+    if problem && value.title.is_empty() {
+        value.tooltip = "Glyphio — Some shortcuts could not be registered — open Settings".into();
+        value.menu_text = "Some shortcuts could not be registered — open Settings".into();
+    }
+    value
+}
+
+/// Record whether any shortcut binding failed, and repaint the menu-bar item.
+pub fn set_shortcut_problem(app: &AppHandle, problem: bool) {
     app.state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
-        .orchestration
-        .presentation()
+        .shortcut_problem = problem;
+    apply(app, presentation(app));
 }
 
 fn apply(app: &AppHandle, value: Presentation) {
@@ -258,14 +277,41 @@ pub fn capture_failed_current(app: &AppHandle, message: String) {
     }
 }
 
-pub fn capture_cancelled(app: &AppHandle) {
+/// The user backed out of capture `token` (Esc in the picker): clear the indicator quietly.
+pub fn capture_cancelled_for(app: &AppHandle, token: CaptureToken) {
     let changed = app
         .state::<crate::AppState>()
         .capture_feedback
         .lock()
         .unwrap()
         .orchestration
-        .cancel_current();
+        .cancel(token);
+    if changed {
+        apply(app, presentation(app));
+    }
+}
+
+/// The scrolling selection overlay produced a rectangle and is about to close to start the
+/// capture; its closing must not be mistaken for an abandoned selection.
+pub fn capture_selection_made(app: &AppHandle, token: CaptureToken) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .selection_made(token);
+}
+
+/// The scrolling selection overlay is gone without a rectangle. Cancels only a capture that
+/// is still waiting on it.
+pub fn capture_selection_abandoned(app: &AppHandle) {
+    let changed = app
+        .state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .cancel_selection();
     if changed {
         apply(app, presentation(app));
     }

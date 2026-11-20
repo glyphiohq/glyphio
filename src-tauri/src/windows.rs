@@ -616,8 +616,30 @@ fn palette_position(app: &AppHandle) -> (f64, f64) {
     )
 }
 
+/// Label of the overlay that is currently the live selection surface. Each overlay gets its own
+/// label so the `Destroyed` event of a replaced one cannot be taken for the live one closing.
+static CURRENT_SCROLL_OVERLAY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SCROLL_OVERLAY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The live selection overlay, if any.
+pub fn scroll_overlay(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let label = CURRENT_SCROLL_OVERLAY.lock().unwrap().clone()?;
+    app.get_webview_window(&label)
+}
+
+/// Called when a window is destroyed: true exactly once, when it was the live selection overlay
+/// and nothing in Glyphio asked for it to close (those paths clear the label first).
+pub fn scroll_overlay_destroyed_unexpectedly(label: &str) -> bool {
+    let mut current = CURRENT_SCROLL_OVERLAY.lock().unwrap();
+    if current.as_deref() == Some(label) {
+        *current = None;
+        return true;
+    }
+    false
+}
+
 /// Open the transparent scrolling-capture selection overlay, sized to the display under the
-/// cursor. Label `scroll-overlay`; it closes itself via the run/cancel commands.
+/// cursor. Label `scroll-overlay-<n>`; it closes itself via the run/cancel commands.
 ///
 /// `delivery` rides along in the URL and comes back with the selected rect: the user chose
 /// how this capture should be delivered before they started dragging, and dragging a region
@@ -626,9 +648,7 @@ pub fn open_scroll_overlay(
     app: &AppHandle,
     delivery: crate::capture::Delivery,
 ) -> anyhow::Result<()> {
-    if let Some(win) = app.get_webview_window("scroll-overlay") {
-        win.close().ok(); // stale one — restart fresh
-    }
+    close_scroll_overlay(app); // a stale one — restart fresh
     // Born where the user is, not where Settings is — see `summoned`.
     summoned(app, || {
         let (origin, size) = crate::capture::display_bounds_under_cursor();
@@ -637,7 +657,12 @@ pub fn open_scroll_overlay(
         } else {
             "scroll-overlay/index.html"
         };
-        let win = WebviewWindowBuilder::new(app, "scroll-overlay", WebviewUrl::App(url.into()))
+        let label = format!(
+            "scroll-overlay-{}",
+            SCROLL_OVERLAY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        *CURRENT_SCROLL_OVERLAY.lock().unwrap() = Some(label.clone());
+        let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
             .title("Select scrolling region")
             .position(origin.0, origin.1)
             .inner_size(size.0, size.1)
@@ -652,9 +677,11 @@ pub fn open_scroll_overlay(
     })
 }
 
-/// Close the selection overlay if present.
+/// Close the selection overlay if present, on purpose: its destruction is then not reported
+/// as an abandoned selection.
 pub fn close_scroll_overlay(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("scroll-overlay") {
+    let label = CURRENT_SCROLL_OVERLAY.lock().unwrap().take();
+    if let Some(win) = label.and_then(|l| app.get_webview_window(&l)) {
         let _ = win.close();
     }
 }

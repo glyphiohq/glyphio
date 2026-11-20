@@ -116,6 +116,33 @@ pinned images stay. Emptying the system clipboard goes through `clipboard::empty
 change as our own so the watcher does not record it; the choice is stored as
 `clipboardClearAlsoEmptiesPasteboard`.
 
+### Shortcut registry
+
+`shortcuts::registry::Registry` (in `AppState`) owns the table of bindings (a capture mode with
+its silent twin, open history, open palette, open clipboard), the chords the system has accepted,
+and how each binding fared. `apply` diffs the settings against what is held: only removed or
+changed chords are unregistered and only new ones registered, so saving an unrelated setting makes
+no register call and never touches Escape, which a scrolling capture borrows separately. A chord
+the system refused is asked for again on the next save, since whatever held it may have let go.
+The key handler resolves a press by lookup, not by parsing accelerator strings, and ignores the
+same action again within 250 ms. If two bindings share a chord, the first listed wins and the
+other is reported as unusable. `save_settings` returns each binding's result and `shortcut_status`
+returns them on demand; Settings shows "Not registered" with the reason beside any refused or
+invalid binding, and the tray tooltip and status row say "Some shortcuts could not be registered
+— open Settings" while the app is otherwise idle.
+
+### Capture worker
+
+Captures run on one dedicated thread (`capture::worker`), never on the main thread. A hotkey,
+the palette, the tray or the `trigger_capture` command only begins the lifecycle and queues a
+request (`capture::trigger`), then returns. The worker runs the interactive picker, the browser
+accessibility lookup, the scroll loop and PNG encoding, and hops to the main thread
+(`capture::on_main`) only to create windows, waiting there itself so the main thread never waits
+on it. While the region picker is open the tray menu and Settings therefore stay live. Requests
+run one at a time; a second capture is already refused by the lifecycle, and the single scrolling
+capture flag is unchanged. A panicking request is logged and the worker carries on; the capture
+deadline below clears its indicator.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture
@@ -124,6 +151,12 @@ the rest, 20 s once pixels exist and delivery has begun. Scrolling frames call a
 pushes the deadline 20 s ahead, capped at 5 minutes from the start. A watchdog in `tray.rs` checks
 by capture token; an expired capture becomes `Failed` (logged at error level with mode and phase)
 and a stale watchdog never touches a newer capture. Tray **Reload** resets the lifecycle to idle.
+
+Backing out is not failing. A cancelled interactive picker surfaces as `capture::Cancelled` and
+clears the indicator for its own capture token. The scrolling selection overlay carries a
+`selecting` flag in the lifecycle: if the overlay is destroyed, blurred or hidden before it
+reports a rectangle, the capture is cancelled; closing it to start a capture is not. Each overlay
+has its own label so a replaced overlay's destruction cannot cancel its successor.
 
 ### Single instance
 

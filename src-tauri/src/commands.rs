@@ -195,7 +195,7 @@ pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
-fn set_login_item(_app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
+pub(crate) fn set_login_item(_app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
     let outcome = crate::platform::current().autostart.set_enabled(want);
     let failure = match &outcome {
         crate::autostart::Outcome::Failed(e) => Some(e.clone()),

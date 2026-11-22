@@ -185,13 +185,17 @@ pub fn run() {
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
 
-            let launch_at_login = app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .unwrap()
-                .launch_at_login;
-            login_item_at_launch(app.handle(), launch_at_login, existing_install);
+            let (launch_at_login, setup_done) = {
+                let state = app.state::<AppState>();
+                let s = state.settings.lock().unwrap();
+                (s.launch_at_login, s.onboarding_completed)
+            };
+            // The setup window asks first; a fresh install registers nothing until it is answered.
+            login_item_at_launch(
+                app.handle(),
+                launch_at_login && startup::may_register_login_item(setup_done),
+                existing_install,
+            );
 
             // Notify open windows on store changes. Remote-origin changes (applied by the sync
             // engine, bypassing the command layer) must also regenerate the engine's config here.
@@ -313,6 +317,8 @@ pub fn run() {
             onboarding::onboarding_state,
             onboarding::onboarding_update,
             onboarding::open_setup,
+            onboarding::onboarding_set_login_item,
+            onboarding::onboarding_open_team,
             permissions::permission_status,
             permissions::permission_watch,
             permissions::permission_request,

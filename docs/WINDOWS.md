@@ -109,6 +109,8 @@ capture is the most-used mode.
 
 - **UI copy**: ~30 hardcoded `⌘` references and ~26 macOS-permission strings need platform
   branching. Worth a small helper rather than 56 conditionals.
+- **Setup window**: `ui/setup/steps.mjs` already lists only Shortcuts and Finish for Windows; the window and
+  its commands need the Windows platform implementations (PLAT-A2) before it can be run there.
 - **Launch at login**: `platform/macos/autostart.rs` has the macOS backend (`SMAppService`) and a no-op elsewhere;
   the Windows one is the `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` value, written only on toggle
   and read back at launch, behind the same `LoginItem` trait. `tauri-plugin-autostart` was removed

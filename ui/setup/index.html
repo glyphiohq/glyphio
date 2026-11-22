@@ -24,6 +24,21 @@
     .state[data-phase="granted"] { color: var(--success); }
     .state[data-phase="stale"] { color: var(--danger); }
     .row { display: flex; align-items: center; }
+    ul.shortcuts { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+    ul.shortcuts li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; }
+    ul.shortcuts li > span:first-child { flex: 1; color: var(--text); }
+    kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface-2); }
+    .tryit { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+    .tryit[data-phase="done"] { color: var(--success); }
+    label.switch { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 4px; }
+    .cards { display: grid; gap: 8px; margin-bottom: 14px; }
+    button.card { display: grid; gap: 2px; text-align: left; padding: 10px 12px; border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; }
+    button.card span { font-size: 12px; color: var(--text-secondary); }
+    button.card[aria-pressed="true"] { border-color: var(--accent); }
+    .row.invite { gap: 8px; margin-bottom: 14px; }
+    .row.invite input { flex: 1; }
+    .row.finish { gap: 8px; }
     .note { margin-top: 10px; font-size: 12px; color: var(--text-secondary); }
     footer { display: flex; justify-content: space-between; align-items: center; padding: 16px 32px 22px; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

@@ -163,12 +163,24 @@ moves to this model (ONB-02).
 `onboardingCompleted` is false; it replaces the Settings window on first launch (`startup::launch_surface`),
 and a login launch still shows nothing. A `settings.json` written before the key existed counts as
 completed, so existing installs skip setup. Steps (pure logic in `ui/setup/steps.mjs`, row presentation
-in `ui/settings/permissions.mjs`): Accessibility, Screen Recording, Finish. The window turns on the
+in `ui/settings/permissions.mjs`): Accessibility, Screen Recording, Shortcuts, Finish; a small platform
+table in `steps.mjs` (`stepsFor`, `loginItemCopy`) gives Windows only Shortcuts and Finish. The window turns on the
 permission watcher while open, shows each native grant's single remedy (prompt, open System Settings,
 **Fix it** for a stale grant, **Relaunch to finish** only when needed), comes forward when a grant lands,
 and announces changes in a live region. `onboardingStep` and `onboardingSkipped` persist so a relaunch
-resumes on the same step and moves on by itself if that permission is now granted. Shortcuts, the
-try-it capture, the login-item switch and the team choice are ONB-03.
+resumes on the same step and moves on by itself if that permission is now granted.
+
+**Shortcuts** lists the capture, palette and clipboard shortcuts with the registration result from
+`shortcut_status` (`shortcutRows`). The **try-it** line completes only on the `capture-delivered` event,
+which `tray::capture_delivery_finished` emits when a capture reached the editor or History, so a shortcut
+that merely fired, or a capture that failed, does not count (`reduceTryIt`). **Launch at login** is a
+switch, on by default and explained in the platform's words; nothing is registered until the user presses
+Continue, which calls `onboarding_set_login_item`. Until setup is finished `startup::may_register_login_item`
+stops launch from registering the item, so an installation that quits mid-setup has still not been
+registered. **Finish** offers just me, I have an invite and set up team sync (`teamAction`); the last two
+call `onboarding_open_team`, which opens Settings and sends `show-sync`, or the same `invite-link` event
+the system's link handler sends, so a pasted invite is confirmed in Settings and never applied from here.
+Setup sets `glyphio-welcomed` so Settings does not show its own welcome as well.
 
 ### Login item
 

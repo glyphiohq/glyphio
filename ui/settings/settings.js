@@ -898,6 +898,11 @@ function historyCard(item, redraw) {
 
 async function wireInvites() {
   await listen('invite-link', (e) => confirmInvite(String(e.payload)));
+  // From the setup window's "Set up team sync".
+  await listen('show-sync', () => {
+    state.selected = 'settings'; state.settingsTab = 'sync';
+    renderSidebar(); renderMain();
+  });
   await listen('show-history', () => {
     state.selected = 'history';
     renderSidebar(); renderMain();

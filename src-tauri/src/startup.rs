@@ -41,6 +41,12 @@ pub fn launch_surface(opens_a_window: bool, onboarding_completed: bool) -> Launc
     }
 }
 
+/// Whether launch may register the login item by itself. Until setup is finished the user has
+/// not been asked, so the setup window's switch is the only thing that registers it.
+pub fn may_register_login_item(onboarding_completed: bool) -> bool {
+    onboarding_completed
+}
+
 /// Whether startup should present the regular Settings window. A login launch is recognised by
 /// the launch event (the native login item) or, for one more release, by the arguments the old
 /// backends passed.
@@ -77,9 +83,15 @@ pub fn second_launch_action(args: impl IntoIterator<Item = impl AsRef<str>>) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        is_login_item_property, launch_surface, second_launch_action, should_open_settings, LaunchSurface,
-        SecondLaunch,
+        is_login_item_property, launch_surface, may_register_login_item, second_launch_action,
+        should_open_settings, LaunchSurface, SecondLaunch,
     };
+
+    #[test]
+    fn launch_registers_the_login_item_only_after_setup_is_finished() {
+        assert!(!may_register_login_item(false));
+        assert!(may_register_login_item(true));
+    }
 
     #[test]
     fn a_second_user_launch_surfaces_settings_in_the_running_copy() {

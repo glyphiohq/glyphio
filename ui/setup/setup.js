@@ -1,12 +1,18 @@
-// First-run setup window (ONB-02): Accessibility and Screen Recording, then finish.
+// First-run setup window (ONB-02, ONB-03): permissions, shortcuts with a try-it capture and the
+// Launch at Login choice, then the team choice.
 // Step logic is in steps.mjs and row presentation in ../settings/permissions.mjs; this file
 // only draws them and talks to the native permission model.
 
 import { PERMISSION_KIND, grantPresentation } from '../settings/permissions.mjs';
+import { IS_MAC } from '../shared/shortcuts.js';
 import {
-  STEP, STEPS, advanceIfGranted, announcement, canContinue, initialStep, kindOfStep,
-  nextStep, progressLabel, skipStep,
+  STEP, TRY_IT, advanceIfGranted, announcement, canContinue, initialStep, kindOfStep, loginItemCopy,
+  nextStep, progressLabel, reduceTryIt, shortcutRows, skipStep, stepsFor, teamAction,
 } from './steps.mjs';
+
+const platform = IS_MAC ? 'macos' : 'windows';
+const STEPS = stepsFor(platform);
+const loginCopy = loginItemCopy(platform);
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -20,11 +26,18 @@ const LEGACY_PROMPTED = {
 const TITLES = {
   [STEP.ACCESSIBILITY]: 'Accessibility',
   [STEP.SCREEN_RECORDING]: 'Screen Recording',
+  [STEP.SHORTCUTS]: 'Shortcuts',
   [STEP.FINISH]: 'Finish',
 };
 
 const state = {
-  step: STEP.ACCESSIBILITY,
+  step: STEPS[0],
+  settings: {},
+  shortcutStatus: [],
+  tryIt: TRY_IT.WAITING,
+  loginItem: loginCopy.defaultOn,
+  team: null, // the option chosen on the finish step
+  inviteOpen: false,
   skipped: [],
   grants: { [PERMISSION_KIND.ACCESSIBILITY]: null, [PERMISSION_KIND.SCREEN_RECORDING]: null },
 };
@@ -53,7 +66,7 @@ function applyStatus(status) {
 }
 
 function render() {
-  $('progress').textContent = progressLabel(state.step);
+  $('progress').textContent = progressLabel(state.step, STEPS);
   $('steps').innerHTML = STEPS.map((step) => {
     const kind = kindOfStep(step);
     const done = kind ? state.grants[kind] === 'granted' : false;
@@ -75,19 +88,57 @@ function render() {
         ${row.actions.map((a) => `<button type="button" class="${a.style}" data-action="${a.id}">${a.label}</button>`).join('')}
         <span class="state" data-phase="${row.phase}">${row.status}</span>
       </div>`;
+  } else if (state.step === STEP.SHORTCUTS) {
+    const rows = shortcutRows(state.settings, state.shortcutStatus, platform);
+    const snip = rows[0];
+    panel.innerHTML = `
+      <h2 id="panel-title">Shortcuts</h2>
+      <p>These work from any app. You can change them in Settings.</p>
+      <ul class="shortcuts">${rows.map((r) => `
+        <li><span>${r.label}</span><kbd>${r.keys}</kbd>
+        <span class="state" data-phase="${r.ok ? 'granted' : r.notice ? 'stale' : 'pending'}">${r.ok ? 'Ready' : r.notice ? 'Not registered' : 'Checking…'}</span>
+        ${r.notice ? `<span class="note">${r.notice}</span>` : ''}</li>`).join('')}
+      </ul>
+      <p class="tryit" data-phase="${state.tryIt}">${state.tryIt === TRY_IT.DONE
+        ? '✓ That worked — your capture was delivered.'
+        : `Try it: press <kbd>${snip.keys}</kbd> and drag over something.`}</p>
+      <label class="switch"><input type="checkbox" id="login" ${state.loginItem ? 'checked' : ''}>
+        <span>Launch Glyphio at login</span></label>
+      <p class="note">${loginCopy.explanation}</p>`;
   } else {
     const left = state.skipped.length;
+    const cards = [
+      ['personal', 'Just me', 'Everything stays on this device. You can join a team any time later.'],
+      ['invite', 'I have an invite', 'Paste the invite link or code from your team admin.'],
+      ['setup', 'Set up team sync', "Connect to your organization's server or single sign-on."],
+    ];
     panel.innerHTML = `
-      <h2 id="panel-title">You're set</h2>
-      <p>${left ? 'Anything you skipped stays available in Settings.' : 'Glyphio is ready.'}</p>
-      <div class="row">
+      <h2 id="panel-title">${left ? 'Almost done' : "You're set"}</h2>
+      <p>${left ? 'Anything you skipped stays available in Settings. ' : ''}How will you use Glyphio?</p>
+      <div class="cards" role="group" aria-label="How will you use Glyphio?">${cards.map(([id, t, d]) => `
+        <button type="button" class="card" data-team="${id}" aria-pressed="${state.team === id}">
+          <strong>${t}</strong><span>${d}</span></button>`).join('')}</div>
+      ${state.inviteOpen ? `<div class="row invite"><input type="text" id="invite" placeholder="glyphio://join?server=…" spellcheck="false" autocomplete="off" aria-label="Invite link">
+        <button type="button" class="primary" data-action="invite">Continue</button></div>` : ''}
+      <div class="row finish">
         <button type="button" class="primary" data-action="open">Open Glyphio</button>
         <button type="button" class="ghost" data-action="menubar">Keep in menu bar</button>
       </div>`;
   }
-  $('skip').hidden = state.step === STEP.FINISH;
+  const isPermission = kind !== null;
+  $('skip').hidden = !isPermission;
   $('continue').hidden = state.step === STEP.FINISH;
   $('continue').disabled = !canContinue(state.step, state.grants);
+}
+
+/** Mark setup done, run `then`, stop the permission watcher and close the window. */
+async function finish(then) {
+  await save({ completed: true });
+  // Settings must not show its own welcome on top of this one.
+  try { localStorage.setItem('glyphio-welcomed', '1'); } catch { /* storage unavailable */ }
+  await then();
+  if (platform === 'macos') await invoke('permission_watch', { active: false });
+  await window.__TAURI__.window.getCurrentWindow().close();
 }
 
 async function perform(action) {
@@ -100,10 +151,10 @@ async function perform(action) {
       await save({ step: state.step }); // reopen on this step; it advances itself once granted
       await invoke('relaunch_app');
     } else if (action === 'open' || action === 'menubar') {
-      await save({ completed: true });
-      if (action === 'open') await invoke('open_window', { name: 'settings' });
-      await invoke('permission_watch', { active: false });
-      await window.__TAURI__.window.getCurrentWindow().close();
+      await finish(() => (action === 'open' ? invoke('open_window', { name: 'settings' }) : null));
+    } else if (action === 'invite') {
+      const act = teamAction('invite', $('invite')?.value ?? '');
+      if (act.kind === 'open-team') await finish(() => invoke('onboarding_open_team', { invite: act.invite }));
     }
   } catch (e) {
     $('live').textContent = `Something went wrong: ${e}`;
@@ -111,38 +162,78 @@ async function perform(action) {
 }
 
 $('panel').addEventListener('click', (e) => {
+  const team = e.target.closest('[data-team]');
+  if (team) return chooseTeam(team.dataset.team);
   const button = e.target.closest('[data-action]');
   if (button) perform(button.dataset.action);
 });
-$('continue').addEventListener('click', () => setStep(nextStep(state.step)));
+$('panel').addEventListener('change', (e) => {
+  if (e.target.id === 'login') state.loginItem = e.target.checked;
+});
+
+async function chooseTeam(choice) {
+  state.team = choice;
+  const act = teamAction(choice);
+  state.inviteOpen = act.kind === 'ask-invite';
+  if (act.kind === 'open-team') {
+    try { await finish(() => invoke('onboarding_open_team', { invite: act.invite })); }
+    catch (e) { $('live').textContent = `Something went wrong: ${e}`; }
+    return;
+  }
+  render();
+  if (state.inviteOpen) $('invite')?.focus();
+}
+
+$('continue').addEventListener('click', async () => {
+  if (state.step === STEP.SHORTCUTS) {
+    // The login item is registered here, once the user has seen what it does and chosen.
+    try {
+      const note = await invoke('onboarding_set_login_item', { want: state.loginItem });
+      if (note) $('live').textContent = note;
+    } catch (e) {
+      $('live').textContent = String(e);
+    }
+  }
+  setStep(nextStep(state.step, STEPS));
+});
 $('skip').addEventListener('click', () => {
   state.skipped = skipStep(state.step, state.skipped);
   save({ skipped: state.skipped });
-  setStep(nextStep(state.step));
+  setStep(nextStep(state.step, STEPS));
 });
 
 async function init() {
-  // One-time import of the old web-storage "already prompted" flags.
-  if (!localStorage.getItem(LEGACY_FLAGS_IMPORTED)) {
-    await invoke('permission_import_legacy_flags', {
-      accessibility: Boolean(localStorage.getItem(LEGACY_PROMPTED[PERMISSION_KIND.ACCESSIBILITY])),
-      screenRecording: Boolean(localStorage.getItem(LEGACY_PROMPTED[PERMISSION_KIND.SCREEN_RECORDING])),
-    });
-    localStorage.setItem(LEGACY_FLAGS_IMPORTED, '1');
-  }
   const persisted = await invoke('onboarding_state');
   state.skipped = persisted.skipped;
-  const status = await invoke('permission_status');
-  for (const kind of Object.values(PERMISSION_KIND)) state.grants[kind] = status[kind];
-  const resumed = initialStep(persisted.step);
-  state.step = advanceIfGranted(resumed, state.grants);
+  if (platform === 'macos') {
+    // One-time import of the old web-storage "already prompted" flags.
+    if (!localStorage.getItem(LEGACY_FLAGS_IMPORTED)) {
+      await invoke('permission_import_legacy_flags', {
+        accessibility: Boolean(localStorage.getItem(LEGACY_PROMPTED[PERMISSION_KIND.ACCESSIBILITY])),
+        screenRecording: Boolean(localStorage.getItem(LEGACY_PROMPTED[PERMISSION_KIND.SCREEN_RECORDING])),
+      });
+      localStorage.setItem(LEGACY_FLAGS_IMPORTED, '1');
+    }
+    const status = await invoke('permission_status');
+    for (const kind of Object.values(PERMISSION_KIND)) state.grants[kind] = status[kind];
+    await listen('permission-status', (e) => applyStatus(e.payload));
+    // Poll only while this window is the one being looked at.
+    await invoke('permission_watch', { active: true });
+    window.addEventListener('beforeunload', () => invoke('permission_watch', { active: false }));
+  }
+  state.settings = await invoke('get_settings');
+  state.shortcutStatus = await invoke('shortcut_status');
+  await listen('capture-delivered', () => {
+    const before = state.tryIt;
+    state.tryIt = reduceTryIt(state.tryIt, 'capture-delivered');
+    if (before !== state.tryIt) $('live').textContent = 'Your capture was delivered.';
+    if (state.step === STEP.SHORTCUTS) render();
+  });
+  const resumed = initialStep(persisted.step, STEPS);
+  state.step = advanceIfGranted(resumed, state.grants, STEPS);
   if (state.step !== resumed) save({ step: state.step });
-  await listen('permission-status', (e) => applyStatus(e.payload));
-  // Poll only while this window is the one being looked at.
-  await invoke('permission_watch', { active: true });
-  window.addEventListener('beforeunload', () => invoke('permission_watch', { active: false }));
   render();
-  $('panel').querySelector('button')?.focus();
+  $('panel').querySelector('button, input')?.focus();
 }
 
 init();

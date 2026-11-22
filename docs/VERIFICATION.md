@@ -103,6 +103,13 @@ Idle CPU and energy: Activity Monitor → Energy column with no windows open, af
 | Clear the web view's storage, reopen setup | The same button is offered as before. | |
 | Tab through the window with the keyboard; use VoiceOver | Every control is reachable; grant changes are announced. | |
 | Skip both permission steps, finish | Setup does not reappear on the next launch; no Automation prompt appeared. | |
+| Shortcuts step, fresh install | Capture, palette and clipboard rows each show Ready, or the system's reason when refused. The login item is not in System Settings → General → Login Items yet. | |
+| Press the capture shortcut and cancel with Esc | The try-it line does not complete. | |
+| Press the capture shortcut and complete a capture | The try-it line completes when the editor opens; the live region announces it. | |
+| Leave Launch at login on and press Continue | Glyphio appears in Login Items (or the approval note is read out); turning it off first leaves nothing registered. | |
+| Quit during setup and relaunch | Setup reopens; Glyphio is still not in Login Items. | |
+| Finish: just me / invite / team sync | Just me closes setup; invite and team sync open Settings (Sync page, or the invite confirmation with nothing applied until Join); Settings shows no second welcome. | |
+| Windows: first launch | Setup starts at Shortcuts (1 of 2); no permission rows. | |
 
 ## Permission model matrix
 

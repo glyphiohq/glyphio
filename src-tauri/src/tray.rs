@@ -3,7 +3,7 @@
 
 use tauri::menu::{IconMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::capture::lifecycle::{
     Action, CaptureInProgress, CaptureMode, CaptureToken, DeadlineCheck, Presentation,
@@ -227,6 +227,7 @@ pub fn capture_delivery_finished(
     } else {
         ResultRoute::Editor
     };
+    let delivered = error.is_none();
     let outcome = match error {
         Some(message) => DeliveryOutcome::Failed {
             message,
@@ -244,6 +245,11 @@ pub fn capture_delivery_finished(
         .orchestration
         .finish_delivery(session_id, outcome);
     if let Some(revision) = revision {
+        // The setup window's "try it" step completes on this, and only this: a capture that
+        // reached the editor or History, not a shortcut that merely fired.
+        if delivered {
+            let _ = app.emit("capture-delivered", ());
+        }
         apply(app, presentation(app));
         schedule_reset(app, revision);
     }

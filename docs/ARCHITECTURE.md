@@ -277,6 +277,21 @@ a capture that ended before the end of the page (limit, stall, pointer) carries 
 Succeeded presentation. The loop talks to its environment through `LoopControl`, so tests run with
 virtual time. The setting has no UI yet; it is read from `settings.json`.
 
+### Scroll stitching
+
+`capture::scroll::stitch` is pure (frames in, image out). With three or more frames it finds rows
+at the top and bottom that are identical in every frame while the middle moved (a fixed header or
+composer bar; flat bands are ignored) and columns that never change (a fixed sidebar). The header is
+kept from the first frame and the footer from the last; the rest are cropped, and bands and
+sidebar columns are left out of the overlap signature. Each join then searches for the overlap:
+when the progress oracle measured the scroll distance, within ±4 px of it; otherwise within ±90 px
+of the nominal distance, and over the full range for the final frame (whose scroll is usually
+partial) or whenever the narrow window has no confident match. The full range is a coarse pass on
+every 4th row and offset followed by refinement of the best few, with ties settled toward the
+expected overlap so repeated content does not pull the join. The loop records the oracle's offset
+change between kept frames for this. Not yet done (needs PIPE-04): streaming rows to the encoder
+and reusing one capture session across frames, so memory still holds every frame.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

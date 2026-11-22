@@ -4,8 +4,8 @@
 //!
 //! Fully in-app and application-agnostic — no browser extension, no DOM access: it works on
 //! web pages, Slack threads, PDFs, terminals, IDE panes… anything that responds to a scroll
-//! wheel. Trade-off vs DOM stitching: sticky headers/parallax elements can ghost at seams
-//! (documented limitation).
+//! wheel. Fixed headers and footers are detected and kept once (see `stitch`); parallax
+//! elements can still ghost at seams.
 //!
 //! Requires TWO macOS permissions: Screen Recording (capture — shared with all capture modes)
 //! and Accessibility **for the app itself** (posting synthetic scroll events; separate from
@@ -19,20 +19,18 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
 use image::RgbaImage;
 
 use super::Shot;
+use stitch::{band_gray, mad, stitch};
 use crate::platform::Progress;
+
+mod stitch;
 
 /// Default height limit in points; `scrollMaxHeightPt` overrides it.
 pub const DEFAULT_MAX_HEIGHT_PT: f64 = 30_000.0;
 /// Fraction of the region height scrolled between frames (leaves ~40% overlap to match on).
 const SCROLL_FRACTION: f64 = 0.6;
-/// How far (px) around the expected overlap the stitcher searches.
-const OVERLAP_SEARCH: i64 = 90;
-/// Mean-absolute-difference (0-255) below which two rows bands are "the same".
-const MATCH_THRESHOLD: f64 = 8.0;
 /// How far outside the region the pointer may stray before the capture hands it back. A hand
 /// resting on a trackpad twitches; a deliberate move away from the region does not.
 const POINTER_SLACK: f64 = 24.0;
@@ -318,6 +316,8 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
     frames.push(first);
     ctl.progress(progress_text(frames.len(), progress));
     let mut stalls = 0u32;
+    // Measured page movement between consecutive kept frames, in pixels, when the oracle knew.
+    let mut scrolls: Vec<Option<i64>> = Vec::new();
 
     let reason = 'scrolling: loop {
         if let Some(reason) = ctl.before_scroll(frames.len()) {
@@ -382,6 +382,10 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
             Some(p) => p.offset + p.viewport,
             None => covered_pt + job.rect.3 * SCROLL_FRACTION,
         };
+        scrolls.push(match (progress, now) {
+            (Some(a), Some(b)) => Some(((b.offset - a.offset) * dpr).round() as i64),
+            _ => None,
+        });
         progress = now.or(progress);
         frames.push(frame);
         ctl.progress(progress_text(frames.len(), progress));
@@ -393,12 +397,9 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
         covered_pt
     );
 
-    let first = frames
-        .first()
-        .ok_or_else(|| anyhow!("no frames captured"))?;
-    let expected_scroll = (job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i64;
-    let expected_overlap = first.height() as i64 - expected_scroll;
-    let stitched = stitch(frames, expected_overlap);
+    anyhow::ensure!(!frames.is_empty(), "no frames captured");
+    let nominal_scroll = (job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i64;
+    let stitched = stitch(frames, &scrolls, nominal_scroll);
     let (width, height) = stitched.dimensions();
     Ok(Outcome {
         shot: Shot {
@@ -487,122 +488,16 @@ fn nap(total: Duration) -> bool {
     }
 }
 
-// ---- stitching -----------------------------------------------------------------
-
-/// Downsampled grayscale of every 4th pixel of a row band — cheap, alignment-stable signature.
-fn band_gray(img: &RgbaImage, from_row: u32, rows: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity(((rows * img.width()) / 4 + 1) as usize);
-    for y in from_row..(from_row + rows).min(img.height()) {
-        for x in (0..img.width()).step_by(4) {
-            let p = img.get_pixel(x, y);
-            out.push(((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8);
-        }
-    }
-    out
-}
-
-fn mad(a: &[u8], b: &[u8]) -> f64 {
-    if a.is_empty() || a.len() != b.len() {
-        return f64::MAX;
-    }
-    let sum: u64 = a.iter().zip(b).map(|(x, y)| (*x as i64 - *y as i64).unsigned_abs()).sum();
-    sum as f64 / a.len() as f64
-}
+// ---- stitching (see `stitch`) --------------------------------------------------
 
 fn frames_identical(a: &RgbaImage, b: &RgbaImage) -> bool {
     a.dimensions() == b.dimensions()
         && mad(&band_gray(a, 0, a.height()), &band_gray(b, 0, b.height())) < 1.0
 }
 
-/// Find how many of `prev`'s bottom rows reappear at `next`'s top, searching around the
-/// expected overlap, and append only the fresh rows of each frame.
-fn stitch(frames: Vec<RgbaImage>, expected_overlap: i64) -> RgbaImage {
-    let mut iter = frames.into_iter();
-    let first = iter.next().expect("stitch called with ≥1 frame");
-    let (w, h) = first.dimensions();
-    // Match always against the previous FULL frame (an output fragment can be shorter than
-    // the probe band); output accumulates first + fresh fragments.
-    let mut prev_full = first.clone();
-    let mut rows: Vec<RgbaImage> = vec![first];
-
-    for next in iter {
-        let prev = &prev_full;
-        let prev_h = prev.height();
-        // Match on a fixed-height probe band: prev's bottom `probe` rows must reappear as
-        // next's rows [o-probe, o) when the true overlap is o. O(search × band); probing the
-        // *end* of the overlap keeps sticky headers at the top of `next` out of the signature.
-        let probe: u32 = 48.min(h / 4).max(8);
-        let lo = (expected_overlap - OVERLAP_SEARCH).clamp(probe as i64, h as i64 - 8) as u32;
-        let hi = (expected_overlap + OVERLAP_SEARCH).clamp(probe as i64, h as i64 - 8) as u32;
-        let prev_sig = band_gray(prev, prev_h - probe, probe);
-        let mut best = (f64::MAX, expected_overlap.clamp(probe as i64, h as i64 - 8) as u32);
-        for o in lo..=hi {
-            let d = mad(&prev_sig, &band_gray(&next, o - probe, probe));
-            if d < best.0 {
-                best = (d, o);
-            }
-        }
-        let overlap = if best.0 <= MATCH_THRESHOLD {
-            best.1
-        } else {
-            // No confident match (animation? end bounce?) — fall back to the expected value.
-            expected_overlap.clamp(8, h as i64 - 8) as u32
-        };
-        // Keep only the fresh rows below the overlap.
-        let fresh_h = next.height().saturating_sub(overlap);
-        if fresh_h > 0 {
-            rows.push(image::imageops::crop_imm(&next, 0, overlap, w, fresh_h).to_image());
-        }
-        prev_full = next;
-    }
-
-    let total_h: u32 = rows.iter().map(|r| r.height()).sum();
-    let mut out = RgbaImage::new(w, total_h);
-    let mut y = 0;
-    for r in rows {
-        image::imageops::overlay(&mut out, &r, 0, y as i64);
-        y += r.height();
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a tall synthetic "page", cut overlapping viewport frames from it, stitch, and
-    /// require the reconstruction to match the original content.
-    #[test]
-    fn stitch_reconstructs_a_tall_page_from_overlapping_frames() {
-        let (w, page_h, view_h) = (64u32, 600u32, 200u32);
-        let mut page = RgbaImage::new(w, page_h);
-        for y in 0..page_h {
-            for x in 0..w {
-                // High-frequency deterministic pattern so overlaps are unambiguous.
-                let v = ((x * 7 + y * 13) % 251) as u8;
-                page.put_pixel(x, y, image::Rgba([v, v.wrapping_mul(3), v ^ 0x5a, 255]));
-            }
-        }
-        let scroll = 120; // 60% of view → overlap 80
-        let mut frames = Vec::new();
-        let mut top = 0;
-        while top + view_h <= page_h {
-            frames.push(image::imageops::crop_imm(&page, 0, top, w, view_h).to_image());
-            top += scroll;
-        }
-        let expected_overlap = (view_h - scroll) as i64;
-        let out = stitch(frames.clone(), expected_overlap);
-
-        assert_eq!(out.width(), w);
-        let covered = view_h + (frames.len() as u32 - 1) * scroll;
-        assert_eq!(out.height(), covered);
-        // Every stitched pixel must equal the source page pixel.
-        for y in (0..covered).step_by(7) {
-            for x in (0..w).step_by(5) {
-                assert_eq!(out.get_pixel(x, y), page.get_pixel(x, y), "mismatch at {x},{y}");
-            }
-        }
-    }
 
     #[test]
     fn the_capture_scrolls_only_while_the_pointer_is_its_own() {
@@ -831,12 +726,22 @@ mod tests {
         ticks: u32,
         /// The oracle never moves (scrolling is stuck).
         frozen: bool,
+        /// Fixed header and footer drawn over every frame.
+        bars: Option<(RgbaImage, RgbaImage)>,
     }
 
     fn textured(w: u32, h: u32) -> RgbaImage {
+        textured_seed(w, h, 0)
+    }
+
+    fn textured_seed(w: u32, h: u32, seed: u32) -> RgbaImage {
+        // A hash of the position: no row repeats, as on a real page.
         RgbaImage::from_fn(w, h, |x, y| {
-            let v = ((x * 11 + y * 17 + (y / 50) * 29) % 251) as u8;
-            image::Rgba([v, v.wrapping_mul(3), v ^ 0x5a, 255])
+            let mut v = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA6B) ^ seed.wrapping_mul(0xC2B2_AE35);
+            v ^= v >> 15;
+            v = v.wrapping_mul(0x2C1B_3C6D);
+            v ^= v >> 12;
+            image::Rgba([(v & 0xff) as u8, ((v >> 8) & 0xff) as u8, ((v >> 16) & 0xff) as u8, 255])
         })
     }
 
@@ -853,6 +758,7 @@ mod tests {
                 animate_at_end: false,
                 ticks: 0,
                 frozen: false,
+                bars: None,
             }
         }
         fn at_end(&self) -> bool {
@@ -864,14 +770,20 @@ mod tests {
         fn capture(&mut self, _: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
             // A read during smooth scrolling shows a half-moved position.
             let off = if self.stale_reads > 0 {
+                // Each read is further along than the last, as a smooth scroll would be.
+                let step = (self.reads_to_settle - self.stale_reads + 1) as u32;
                 self.stale_reads -= 1;
-                self.shown_offset + (self.offset - self.shown_offset) / 2
+                self.shown_offset + (self.offset - self.shown_offset) * step / (self.reads_to_settle as u32 + 1)
             } else {
                 self.shown_offset = self.offset;
                 self.offset
             };
             let mut img =
                 image::imageops::crop_imm(&self.page, 0, off, self.page.width(), self.view_h).to_image();
+            if let Some((header, footer)) = &self.bars {
+                image::imageops::replace(&mut img, header, 0, 0);
+                image::imageops::replace(&mut img, footer, 0, (self.view_h - footer.height()) as i64);
+            }
             if self.animate_at_end && self.at_end() {
                 self.ticks += 1;
                 img.put_pixel(0, 0, image::Rgba([(self.ticks % 251) as u8, 1, 2, 255]));
@@ -951,6 +863,41 @@ mod tests {
         page.frozen = true;
         let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
         assert_eq!(out.reason, StopReason::Stalled);
+    }
+
+    #[test]
+    fn a_long_page_ends_once_with_no_repeated_band_at_the_bottom() {
+        // 1 600 px viewport, 3 300 px page: the loop's last scroll is partial.
+        for oracle in [false, true] {
+            let mut page = Page::new(48, 3300, 1600);
+            page.oracle = oracle;
+            let expected = page.page.clone();
+            let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+            assert_eq!(out.reason, StopReason::ReachedEnd, "oracle {oracle}");
+            let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+            assert!(got == expected, "oracle {oracle}: height {}", got.height());
+        }
+    }
+
+    #[test]
+    fn a_fixed_header_and_footer_appear_once_in_a_captured_page() {
+        for oracle in [false, true] {
+            let mut page = Page::new(48, 3300, 1600);
+            page.oracle = oracle;
+            let header = textured_seed(48, 80, 11);
+            let footer = textured_seed(48, 100, 12);
+            page.bars = Some((header.clone(), footer.clone()));
+            let doc = page.page.clone();
+            let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+            assert_eq!(out.reason, StopReason::ReachedEnd, "oracle {oracle}");
+            let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+            // header, the document rows the bars leave visible, footer
+            assert_eq!(got.height(), 80 + (3300 - 100 - 80) + 100, "oracle {oracle}");
+            assert!(image::imageops::crop_imm(&got, 0, 0, 48, 80).to_image() == header);
+            assert!(image::imageops::crop_imm(&got, 0, 80, 48, 3120).to_image()
+                == image::imageops::crop_imm(&doc, 0, 80, 48, 3120).to_image());
+            assert!(image::imageops::crop_imm(&got, 0, 3200, 48, 100).to_image() == footer);
+        }
     }
 
     #[test]

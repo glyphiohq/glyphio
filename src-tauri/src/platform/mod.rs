@@ -20,7 +20,7 @@ use crate::capture::Shot;
 
 pub mod reserved;
 pub mod types;
-pub use types::{BrowserMeta, FrontWindow, PageGeometry};
+pub use types::{BrowserMeta, FrontWindow, PageGeometry, Progress};
 
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -72,6 +72,10 @@ pub trait WindowQuery: Send + Sync {
 pub trait PageInspector: Send + Sync {
     fn page_geometry(&self, pid: i32, budget: Duration) -> Option<PageGeometry>;
     fn browser_meta(&self, pid: i32, app_name: &str) -> BrowserMeta;
+    /// Scroll position of the container under `point` (global points): the page's web area
+    /// when there is one, else the nearest native scroll area. Keeps the browser's tree warm.
+    /// `None` when the platform cannot tell; callers then fall back to comparing pixels.
+    fn scroll_progress(&self, point: (f64, f64)) -> Option<Progress>;
     /// Undo any accessibility opt-in still outstanding on a browser.
     fn release(&self);
 }

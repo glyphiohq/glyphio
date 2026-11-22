@@ -249,6 +249,19 @@ run one at a time; a second capture is already refused by the lifecycle, and the
 capture flag is unchanged. A panicking request is logged and the worker carries on; the capture
 deadline below clears its indicator.
 
+### Scroll progress oracle
+
+The scrolling loop (`capture::scroll`) can ask its `ScrollDriver` for a `Progress` (offset, extent,
+viewport in points) that does not come from the pixels. The production driver asks
+`PageInspector::scroll_progress` at the region centre, where the wheel events land. On macOS
+(`platform/macos/inspect.rs`) that walks up from the accessibility element under the point: a
+page's `AXWebArea` wins wherever it sits in the chain (its frame against the window gives the
+offset, so a nested scroller inside the page moves nothing), otherwise the nearest `AXScrollArea`
+answers from its vertical scroll bar. The owning browser's tree is kept warm on every ask and
+released by the existing cooldown. Everywhere else, or when nothing answers, it is `None` and the
+loop uses pixel comparison alone. The arithmetic is pure (`platform::types::Progress`). For now
+the loop only logs whether the page advanced; stop reasons use it in SCROLL-03.
+
 ### Capture deadlines
 
 A capture cannot block the next one indefinitely. `capture::lifecycle` gives every active capture

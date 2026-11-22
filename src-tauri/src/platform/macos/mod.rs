@@ -7,7 +7,7 @@ use std::time::Duration;
 use image::RgbaImage;
 
 use super::{
-    AppShell, Autostart, BrowserMeta, DisplayBounds, FrontWindow, InputInjector, PageGeometry, PageInspector,
+    AppShell, Autostart, BrowserMeta, DisplayBounds, FrontWindow, InputInjector, PageGeometry, PageInspector, Progress,
     Pasteboard, PermissionKind, Permissions, PickKind, Platform, RegionPicker,
     ScreenCapturer, WindowQuery,
 };
@@ -91,6 +91,9 @@ impl PageInspector for Macos {
     }
     fn browser_meta(&self, pid: i32, app_name: &str) -> BrowserMeta {
         inspect::browser_meta(pid, app_name)
+    }
+    fn scroll_progress(&self, point: (f64, f64)) -> Option<Progress> {
+        inspect::scroll_progress(point)
     }
     fn release(&self) {
         inspect::restore_web_accessibility()

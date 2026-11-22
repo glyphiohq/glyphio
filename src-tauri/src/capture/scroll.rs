@@ -25,13 +25,10 @@ use image::RgbaImage;
 use super::Shot;
 use crate::platform::Progress;
 
-/// Upper bound on captured frames (≈ MAX_FRAMES × 60% × region-height of content).
-const MAX_FRAMES: usize = 30;
+/// Default height limit in points; `scrollMaxHeightPt` overrides it.
+pub const DEFAULT_MAX_HEIGHT_PT: f64 = 30_000.0;
 /// Fraction of the region height scrolled between frames (leaves ~40% overlap to match on).
 const SCROLL_FRACTION: f64 = 0.6;
-/// Settle time after a scroll before the next capture (rendering, inertia none — we use
-/// discrete wheel events, but slow pages need paint time).
-const SETTLE: Duration = Duration::from_millis(300);
 /// How far (px) around the expected overlap the stitcher searches.
 const OVERLAP_SEARCH: i64 = 90;
 /// Mean-absolute-difference (0-255) below which two rows bands are "the same".
@@ -73,6 +70,14 @@ pub fn clear_stop() {
 pub struct Job {
     /// Region to photograph, in global points (top-left origin).
     pub rect: (f64, f64, f64, f64),
+    /// Stop once this much content (points) is gathered.
+    pub max_height_pt: f64,
+}
+
+impl Job {
+    pub fn new(rect: (f64, f64, f64, f64)) -> Self {
+        Self { rect, max_height_pt: DEFAULT_MAX_HEIGHT_PT }
+    }
 }
 
 /// Pixel capture and scroll dispatch used by the feedback loop.
@@ -125,8 +130,13 @@ pub fn require_accessibility_with(permissions: &dyn crate::platform::Permissions
 /// Capture a scrolling region. The rect is in global screen coordinates in points (top-left
 /// origin), as reported by the selection overlay or by the page's accessibility geometry.
 ///
-/// `heartbeat` is called once per frame so a watchdog can tell a long page from a stuck one.
-pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
+/// `heartbeat` is called often enough (every settle read) that a watchdog can tell a long page
+/// from a stuck one; `progress` receives the text for the menu bar.
+pub fn capture(
+    job: Job,
+    heartbeat: impl Fn(),
+    progress: impl Fn(String),
+) -> anyhow::Result<Outcome> {
     let (x, y, w, h) = job.rect;
     require_accessibility()?;
     if w < 40.0 || h < 40.0 {
@@ -141,15 +151,8 @@ pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
     std::thread::sleep(Duration::from_millis(120));
 
     let mut driver = PlatformDriver;
-    let result = capture_loop(
-        &job,
-        &mut driver,
-        |frames| !stopping() && wait_for_pointer(&job, frames, &heartbeat),
-        || {
-            heartbeat();
-            nap(SETTLE)
-        },
-    );
+    let mut control = LiveControl { job: &job, heartbeat: &heartbeat, progress: &progress };
+    let result = capture_loop(&job, &mut driver, &mut control);
     // Give the pointer back where we found it — but only if it is still where we put it. If the
     // user has moved it themselves (that's what pauses the capture), yanking it back would be
     // the rudest possible ending.
@@ -164,61 +167,231 @@ pub fn capture(job: Job, heartbeat: impl Fn()) -> anyhow::Result<Shot> {
 /// Run the feedback loop with a replaceable pixel/scroll adapter.
 ///
 /// The production entry point adds permission, pointer, and Escape policy around this seam.
-pub fn capture_with_driver<D: ScrollDriver>(job: Job, driver: &mut D) -> anyhow::Result<Shot> {
+/// Waits are virtual here, so settling and retry logic runs instantly under test.
+pub fn capture_with_driver<D: ScrollDriver>(job: Job, driver: &mut D) -> anyhow::Result<Outcome> {
     let (_, _, w, h) = job.rect;
     if w < 40.0 || h < 40.0 {
         anyhow::bail!("selection too small");
     }
-    capture_loop(&job, driver, |_| true, || true)
+    capture_loop(&job, driver, &mut Unattended)
 }
 
-fn capture_loop<D, W, S>(
+/// The environment the loop runs in: whether it may continue, how to wait, where to report.
+trait LoopControl {
+    /// Checked before every scroll. `Some` ends the capture with that reason.
+    fn before_scroll(&mut self, frames: usize) -> Option<StopReason>;
+    /// Wait `d`, keeping the capture's deadline alive. False when an Esc cut the wait short.
+    fn pause(&mut self, d: Duration) -> bool;
+    /// Progress text for the menu bar.
+    fn progress(&mut self, text: String);
+}
+
+struct Unattended;
+
+impl LoopControl for Unattended {
+    fn before_scroll(&mut self, _: usize) -> Option<StopReason> {
+        None
+    }
+    fn pause(&mut self, _: Duration) -> bool {
+        true
+    }
+    fn progress(&mut self, _: String) {}
+}
+
+struct LiveControl<'a, H: Fn(), P: Fn(String)> {
+    job: &'a Job,
+    heartbeat: &'a H,
+    progress: &'a P,
+}
+
+impl<H: Fn(), P: Fn(String)> LoopControl for LiveControl<'_, H, P> {
+    fn before_scroll(&mut self, frames: usize) -> Option<StopReason> {
+        if stopping() {
+            return Some(StopReason::Stopped);
+        }
+        if wait_for_pointer(self.job, frames, self.heartbeat) {
+            return None;
+        }
+        Some(if stopping() { StopReason::Stopped } else { StopReason::PointerLeft })
+    }
+    fn pause(&mut self, d: Duration) -> bool {
+        (self.heartbeat)();
+        nap(d)
+    }
+    fn progress(&mut self, text: String) {
+        (self.progress)(text);
+    }
+}
+
+/// Why a scrolling capture ended. Logged for every capture and surfaced when it matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// The bottom of the content: the oracle said so, or nothing changed after retries.
+    ReachedEnd,
+    /// Escape.
+    Stopped,
+    /// The pointer stayed away from the region until the pause limit.
+    PointerLeft,
+    /// The height limit was reached; there is more below.
+    LimitReached,
+    /// The oracle says more remains but scrolling made no progress.
+    Stalled,
+}
+
+impl StopReason {
+    /// One line for the log and, when the capture is incomplete, for the menu bar.
+    pub fn describe(self) -> &'static str {
+        match self {
+            StopReason::ReachedEnd => "reached the end of the page",
+            StopReason::Stopped => "stopped early",
+            StopReason::PointerLeft => "stopped because the pointer left the region",
+            StopReason::LimitReached => "stopped at the height limit; more of the page remains",
+            StopReason::Stalled => "stopped because the page stopped scrolling",
+        }
+    }
+
+    /// Whether the user got less than the whole scrollable content, and should be told.
+    pub fn is_incomplete(self) -> bool {
+        !matches!(self, StopReason::ReachedEnd)
+    }
+}
+
+/// A finished scrolling capture and the reason it ended.
+pub struct Outcome {
+    pub shot: Shot,
+    pub reason: StopReason,
+}
+
+/// Wait between reads while a page settles after a scroll.
+const SETTLE_INTERVAL: Duration = Duration::from_millis(80);
+/// Reads before giving up on a page that never settles (≈1.5 s of waiting).
+const SETTLE_READS: usize = 19;
+/// Base of the extra waits before a frame that looks like the end is believed (doubled each time).
+const END_RETRY_BASE: Duration = Duration::from_millis(300);
+/// Retries before "nothing changed" means the end, when there is no oracle.
+const END_RETRIES: u32 = 2;
+/// Scrolls with no oracle progress, while it says more remains, before giving up.
+const STALL_LIMIT: u32 = 3;
+
+/// Menu-bar text: a percentage when the oracle knows how far along the page we are, otherwise
+/// the frame count.
+fn progress_text(frames: usize, p: Option<Progress>) -> String {
+    match p {
+        Some(p) => format!("{}%", (p.fraction() * 100.0).round() as u32),
+        None => format!("{frames} frame{}", if frames == 1 { "" } else { "s" }),
+    }
+}
+
+/// Capture until two consecutive reads match (smooth scrolling, lazy rendering), or the read
+/// budget runs out, in which case the last read is used. `None` when Esc interrupted.
+fn settled_frame<D: ScrollDriver, C: LoopControl>(
+    driver: &mut D,
+    ctl: &mut C,
+    rect: (f64, f64, f64, f64),
+) -> anyhow::Result<Option<(RgbaImage, f64)>> {
+    let mut prev: Option<RgbaImage> = None;
+    for _ in 0..SETTLE_READS {
+        if !ctl.pause(SETTLE_INTERVAL) {
+            return Ok(None);
+        }
+        let (frame, dpr) = driver.capture(rect)?;
+        if prev.as_ref().is_some_and(|p| frames_identical(p, &frame)) {
+            return Ok(Some((frame, dpr)));
+        }
+        prev = Some(frame);
+    }
+    // Never settled (an animation, a video): take the latest and let the oracle judge.
+    let (frame, dpr) = driver.capture(rect)?;
+    Ok(Some((frame, dpr)))
+}
+
+fn capture_loop<D: ScrollDriver, C: LoopControl>(
     job: &Job,
     driver: &mut D,
-    mut before_scroll: W,
-    mut settle: S,
-) -> anyhow::Result<Shot>
-where
-    D: ScrollDriver,
-    W: FnMut(usize) -> bool,
-    S: FnMut() -> bool,
-{
+    ctl: &mut C,
+) -> anyhow::Result<Outcome> {
     let mut frames: Vec<RgbaImage> = Vec::new();
-    let mut capture_dpr;
-    let mut last_progress = driver.progress(job.rect);
-    loop {
-        let (frame, frame_dpr) = driver.capture(job.rect)?;
-        capture_dpr = frame_dpr;
-        if let Some(prev) = frames.last() {
-            if frames_identical(prev, &frame) {
-                break;
+    let mut progress = driver.progress(job.rect);
+    let (first, mut capture_dpr) = driver.capture(job.rect)?;
+    // Height gathered so far in points, the basis for the height limit.
+    let mut covered_pt = first.height() as f64 / capture_dpr;
+    frames.push(first);
+    ctl.progress(progress_text(frames.len(), progress));
+    let mut stalls = 0u32;
+
+    let reason = 'scrolling: loop {
+        if let Some(reason) = ctl.before_scroll(frames.len()) {
+            break reason;
+        }
+        if progress.is_some_and(|p| p.at_end()) {
+            break StopReason::ReachedEnd;
+        }
+        if covered_pt >= job.max_height_pt {
+            break StopReason::LimitReached;
+        }
+        let delta = -((job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i32);
+        dispatch_scroll(driver, delta)?;
+        let Some((mut frame, mut dpr)) = settled_frame(driver, ctl, job.rect)? else {
+            break StopReason::Stopped;
+        };
+        let now = driver.progress(job.rect);
+        let moved = match (progress, now) {
+            (Some(_), Some(_)) => progress_advanced(progress, now),
+            _ => !frames.last().is_some_and(|prev| frames_identical(prev, &frame)),
+        };
+
+        if now.is_some() && progress.is_some() {
+            if !moved {
+                stalls += 1;
+                if now.is_some_and(|p| p.at_end()) {
+                    break StopReason::ReachedEnd;
+                }
+                if stalls >= STALL_LIMIT {
+                    break StopReason::Stalled;
+                }
+                continue; // the pixels may have changed (a nested scroller): don't keep them
+            }
+        } else if !moved {
+            // No oracle and nothing changed: believe it is the end only after waiting longer,
+            // twice, in case the page was merely slow.
+            let mut wait = END_RETRY_BASE;
+            let mut changed = false;
+            for _ in 0..END_RETRIES {
+                wait *= 2;
+                if !ctl.pause(wait) {
+                    break 'scrolling StopReason::Stopped;
+                }
+                let Some((f, d)) = settled_frame(driver, ctl, job.rect)? else {
+                    break 'scrolling StopReason::Stopped;
+                };
+                let differs = !frames.last().is_some_and(|prev| frames_identical(prev, &f));
+                frame = f;
+                dpr = d;
+                if differs {
+                    changed = true;
+                    break;
+                }
+            }
+            if !changed {
+                break StopReason::ReachedEnd;
             }
         }
+        stalls = 0;
+        capture_dpr = dpr;
+        covered_pt = match now {
+            Some(p) => p.offset + p.viewport,
+            None => covered_pt + job.rect.3 * SCROLL_FRACTION,
+        };
+        progress = now.or(progress);
         frames.push(frame);
-        if frames.len() >= MAX_FRAMES {
-            log::info!("scrolling capture reached the {MAX_FRAMES}-frame cap");
-            break;
-        }
-        if !before_scroll(frames.len()) {
-            break;
-        }
-        let delta = -((job.rect.3 * SCROLL_FRACTION * frame_dpr).round() as i32);
-        dispatch_scroll(driver, delta)?;
-        if !settle() {
-            break;
-        }
-        let now = driver.progress(job.rect);
-        if let Some(p) = now {
-            log::debug!(
-                "scrolling capture progress: offset {:.0} of {:.0} (viewport {:.0}){}",
-                p.offset,
-                p.extent,
-                p.viewport,
-                if progress_advanced(last_progress, now) { "" } else { " — did not advance" }
-            );
-        }
-        last_progress = now.or(last_progress);
-    }
+        ctl.progress(progress_text(frames.len(), progress));
+    };
+    log::info!(
+        "scrolling capture ended: {} ({} frame(s), {:.0} pt)",
+        reason.describe(),
+        frames.len(),
+        covered_pt
+    );
 
     let first = frames
         .first()
@@ -227,13 +400,16 @@ where
     let expected_overlap = first.height() as i64 - expected_scroll;
     let stitched = stitch(frames, expected_overlap);
     let (width, height) = stitched.dimensions();
-    Ok(Shot {
-        rgba: stitched.into_raw(),
-        width,
-        height,
-        dpr: capture_dpr,
-        title: String::new(),
-        browser: Default::default(),
+    Ok(Outcome {
+        shot: Shot {
+            rgba: stitched.into_raw(),
+            width,
+            height,
+            dpr: capture_dpr,
+            title: String::new(),
+            browser: Default::default(),
+        },
+        reason,
     })
 }
 
@@ -430,7 +606,7 @@ mod tests {
 
     #[test]
     fn the_capture_scrolls_only_while_the_pointer_is_its_own() {
-        let job = Job { rect: (100.0, 100.0, 800.0, 600.0) };
+        let job = Job::new((100.0, 100.0, 800.0, 600.0));
         assert!(may_scroll(&job, (500.0, 400.0)), "middle of the region");
         assert!(may_scroll(&job, (100.0, 100.0)), "top-left corner counts as inside");
         // A twitch just outside the edge must not hand the pointer back.
@@ -500,13 +676,10 @@ mod tests {
             scrolls: 0,
         };
 
-        let shot = capture_with_driver(
-            Job {
-                rect: (0.0, 0.0, w as f64, view_h as f64),
-            },
-            &mut driver,
-        )
-        .expect("synthetic capture should complete");
+        let outcome = capture_with_driver(Job::new((0.0, 0.0, w as f64, view_h as f64)), &mut driver)
+            .expect("synthetic capture should complete");
+        assert_eq!(outcome.reason, StopReason::ReachedEnd);
+        let shot = outcome.shot;
 
         assert!(driver.scrolls > 0);
         assert!(shot.height > view_h, "capture must advance beyond its first frame");
@@ -536,15 +709,20 @@ mod tests {
 
         // `before_scroll` is the same seam through which the production Escape flag stops the
         // loop. It is deliberately a finish, not a cancellation: the first frame is returned.
-        let shot = capture_loop(
-            &Job {
-                rect: (0.0, 0.0, w as f64, view_h as f64),
-            },
-            &mut driver,
-            |_| false,
-            || true,
-        )
-        .expect("an early stop should still produce the captured content");
+        struct StopNow;
+        impl LoopControl for StopNow {
+            fn before_scroll(&mut self, _: usize) -> Option<StopReason> {
+                Some(StopReason::Stopped)
+            }
+            fn pause(&mut self, _: Duration) -> bool {
+                true
+            }
+            fn progress(&mut self, _: String) {}
+        }
+        let outcome = capture_loop(&Job::new((0.0, 0.0, w as f64, view_h as f64)), &mut driver, &mut StopNow)
+            .expect("an early stop should still produce the captured content");
+        assert_eq!(outcome.reason, StopReason::Stopped);
+        let shot = outcome.shot;
 
         assert_eq!(driver.scrolls, 0);
         assert_eq!((shot.width, shot.height), (w, view_h));
@@ -574,12 +752,7 @@ mod tests {
             frame: RgbaImage::from_pixel(64, 64, image::Rgba([20, 40, 60, 255])),
         };
 
-        let error = match capture_with_driver(
-            Job {
-                rect: (0.0, 0.0, 64.0, 64.0),
-            },
-            &mut driver,
-        ) {
+        let error = match capture_with_driver(Job::new((0.0, 0.0, 64.0, 64.0)), &mut driver) {
             Ok(_) => panic!("a scroll failure must not return a successful capture"),
             Err(error) => error,
         };
@@ -640,6 +813,152 @@ mod tests {
         let mut d = FailingScrollDriver { frame: RgbaImage::new(8, 8) };
         assert!(d.progress((0.0, 0.0, 8.0, 8.0)).is_none());
         assert!(!progress_advanced(None, None));
+    }
+
+    /// A tall page behind a viewport, with the behaviours the loop must survive: slow
+    /// settling, an oracle, an animation at the bottom.
+    struct Page {
+        page: RgbaImage,
+        offset: u32,
+        view_h: u32,
+        /// Reads after a scroll that still show the previous position (needs several reads).
+        reads_to_settle: usize,
+        stale_reads: usize,
+        shown_offset: u32,
+        oracle: bool,
+        /// Pixels keep changing once at the bottom, as an animation would.
+        animate_at_end: bool,
+        ticks: u32,
+        /// The oracle never moves (scrolling is stuck).
+        frozen: bool,
+    }
+
+    fn textured(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_fn(w, h, |x, y| {
+            let v = ((x * 11 + y * 17 + (y / 50) * 29) % 251) as u8;
+            image::Rgba([v, v.wrapping_mul(3), v ^ 0x5a, 255])
+        })
+    }
+
+    impl Page {
+        fn new(w: u32, page_h: u32, view_h: u32) -> Self {
+            Self {
+                page: textured(w, page_h),
+                offset: 0,
+                view_h,
+                reads_to_settle: 0,
+                stale_reads: 0,
+                shown_offset: 0,
+                oracle: false,
+                animate_at_end: false,
+                ticks: 0,
+                frozen: false,
+            }
+        }
+        fn at_end(&self) -> bool {
+            self.offset + self.view_h >= self.page.height()
+        }
+    }
+
+    impl ScrollDriver for Page {
+        fn capture(&mut self, _: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+            // A read during smooth scrolling shows a half-moved position.
+            let off = if self.stale_reads > 0 {
+                self.stale_reads -= 1;
+                self.shown_offset + (self.offset - self.shown_offset) / 2
+            } else {
+                self.shown_offset = self.offset;
+                self.offset
+            };
+            let mut img =
+                image::imageops::crop_imm(&self.page, 0, off, self.page.width(), self.view_h).to_image();
+            if self.animate_at_end && self.at_end() {
+                self.ticks += 1;
+                img.put_pixel(0, 0, image::Rgba([(self.ticks % 251) as u8, 1, 2, 255]));
+                for x in 0..img.width() {
+                    img.put_pixel(x, 1, image::Rgba([(self.ticks * 7 % 251) as u8, 9, 9, 255]));
+                }
+            }
+            Ok((img, 1.0))
+        }
+        fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
+            if self.frozen {
+                return Ok(());
+            }
+            self.shown_offset = self.offset;
+            self.offset = (self.offset + delta.unsigned_abs()).min(self.page.height() - self.view_h);
+            self.stale_reads = self.reads_to_settle;
+            Ok(())
+        }
+        fn progress(&mut self, _: (f64, f64, f64, f64)) -> Option<Progress> {
+            self.oracle.then(|| Progress {
+                offset: self.offset as f64,
+                extent: self.page.height() as f64,
+                viewport: self.view_h as f64,
+            })
+        }
+    }
+
+    fn run(page: &mut Page, max_height_pt: f64) -> Outcome {
+        let rect = (0.0, 0.0, page.page.width() as f64, page.view_h as f64);
+        capture_with_driver(Job { rect, max_height_pt }, page).expect("capture")
+    }
+
+    #[test]
+    fn a_page_that_needs_several_reads_to_settle_is_not_cut_short_or_torn() {
+        let mut page = Page::new(64, 600, 200);
+        page.reads_to_settle = 3;
+        let expected = page.page.clone();
+        let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+        assert_eq!(out.reason, StopReason::ReachedEnd);
+        assert_eq!(out.shot.height, 600);
+        let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+        assert_eq!(got, expected, "no half-moved frame may reach the stitch");
+    }
+
+    #[test]
+    fn the_oracle_ending_the_page_wins_over_pixels_that_never_stop_changing() {
+        let mut page = Page::new(64, 600, 200);
+        page.oracle = true;
+        page.animate_at_end = true;
+        let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+        assert_eq!(out.reason, StopReason::ReachedEnd);
+        assert!(out.shot.height >= 600);
+    }
+
+    #[test]
+    fn without_an_oracle_an_unchanged_page_ends_after_the_retries() {
+        let mut page = Page::new(64, 600, 200);
+        let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+        assert_eq!(out.reason, StopReason::ReachedEnd);
+        assert!(!out.reason.is_incomplete());
+    }
+
+    #[test]
+    fn a_page_taller_than_the_limit_ends_at_the_limit_and_says_so() {
+        let mut page = Page::new(64, 20_000, 200);
+        let out = run(&mut page, 1000.0);
+        assert_eq!(out.reason, StopReason::LimitReached);
+        assert!(out.reason.is_incomplete());
+        assert!(out.reason.describe().contains("limit"));
+        assert!(out.shot.height >= 1000 && out.shot.height < 1400, "{}", out.shot.height);
+    }
+
+    #[test]
+    fn an_oracle_that_says_more_remains_but_never_moves_is_a_stall() {
+        let mut page = Page::new(64, 2000, 200);
+        page.oracle = true;
+        page.frozen = true;
+        let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+        assert_eq!(out.reason, StopReason::Stalled);
+    }
+
+    #[test]
+    fn progress_is_a_percentage_with_an_oracle_and_a_frame_count_without() {
+        let p = Progress { offset: 400.0, extent: 1400.0, viewport: 400.0 };
+        assert_eq!(progress_text(3, Some(p)), "40%");
+        assert_eq!(progress_text(1, None), "1 frame");
+        assert_eq!(progress_text(4, None), "4 frames");
     }
 
     #[test]

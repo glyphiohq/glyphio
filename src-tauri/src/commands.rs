@@ -487,7 +487,9 @@ pub async fn scroll_capture_run(
     // selection overlay, and it was closed four lines ago — a returned `Err` resolves into a
     // dead webview, so a capture that failed simply looked like a capture that never happened.
     let outcome = match crate::capture::run_scrolling(&app, (gx, gy, w, h)).await {
-        Ok(shot) => {
+        Ok(scrolled) => {
+            crate::capture::note_scroll_end(&app, scrolled.reason);
+            let shot = scrolled.shot;
             let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
             crate::capture::finish(
                 &app,

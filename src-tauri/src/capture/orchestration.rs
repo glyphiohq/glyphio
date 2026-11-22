@@ -94,6 +94,14 @@ impl<T> CaptureOrchestration<T> {
         self.lifecycle.check_deadline(token, now)
     }
 
+    pub fn set_progress(&mut self, text: String) {
+        self.lifecycle.set_progress(text);
+    }
+
+    pub fn set_result_note(&mut self, text: String) {
+        self.lifecycle.set_result_note(text);
+    }
+
     pub fn heartbeat(&mut self) {
         self.lifecycle.heartbeat();
     }

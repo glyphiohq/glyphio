@@ -248,7 +248,9 @@ fn capture_request(
                 title,
                 browser,
             } => {
-                let mut shot = tauri::async_runtime::block_on(run_scrolling(app, rect))?;
+                let outcome = tauri::async_runtime::block_on(run_scrolling(app, rect))?;
+                note_scroll_end(app, outcome.reason);
+                let mut shot = outcome.shot;
                 shot.title = title;
                 shot.browser = browser;
                 shot
@@ -388,7 +390,7 @@ static SCROLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 pub(crate) async fn run_scrolling(
     app: &AppHandle,
     rect: (f64, f64, f64, f64),
-) -> anyhow::Result<Shot> {
+) -> anyhow::Result<scroll::Outcome> {
     use std::sync::atomic::Ordering;
     // Both checks happen before the capture starts.
     scroll::require_accessibility()?;
@@ -412,12 +414,26 @@ pub(crate) async fn run_scrolling(
     crate::shortcuts::arm_stop_key(app);
 
     let beat = app.clone();
+    let shown = app.clone();
+    let max_height_pt =
+        f64::from(app.state::<AppState>().settings.lock().unwrap().scroll_max_height_pt.max(1));
     let out = tauri::async_runtime::spawn_blocking(move || {
-        scroll::capture(scroll::Job { rect }, || crate::tray::capture_heartbeat(&beat))
+        scroll::capture(
+            scroll::Job { rect, max_height_pt },
+            || crate::tray::capture_heartbeat(&beat),
+            |text| crate::tray::capture_progress(&shown, text),
+        )
     })
     .await;
 
     out.map_err(|e| anyhow!("scrolling capture task failed: {e}"))?
+}
+
+/// Tell the user when a scrolling capture ended before the end of the page.
+pub(crate) fn note_scroll_end(app: &AppHandle, reason: scroll::StopReason) {
+    if reason.is_incomplete() && reason != scroll::StopReason::Stopped {
+        crate::tray::capture_result_note(app, reason.describe().to_string());
+    }
 }
 
 /// Asked for a scrolling capture while one was already running.

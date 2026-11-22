@@ -103,6 +103,10 @@ pub enum Phase {
         mode: CaptureMode,
         delivery_session: Option<String>,
         notice: Option<String>,
+        /// Latest progress of a scrolling capture ("40%", "3 frames").
+        progress: Option<String>,
+        /// Why a scrolling capture ended early, carried into its result.
+        result_note: Option<String>,
         deadline: Instant,
         /// A region-drag capture is waiting on its selection overlay; set until the overlay
         /// reports a rectangle.
@@ -113,6 +117,8 @@ pub enum Phase {
     Succeeded {
         revision: u64,
         route: ResultRoute,
+        /// The capture is usable but incomplete, and this says why.
+        note: Option<String>,
     },
     Failed {
         revision: u64,
@@ -206,6 +212,8 @@ impl Lifecycle {
             mode: requested,
             delivery_session: None,
             notice: None,
+            progress: None,
+            result_note: None,
             deadline: now + initial_budget(requested),
             selecting: requested == CaptureMode::Scrolling,
             cap: matches!(requested, CaptureMode::Scrolling | CaptureMode::ScrollingPage)
@@ -259,15 +267,33 @@ impl Lifecycle {
             return None;
         }
         let revision = self.take_revision();
+        let note = match &mut self.phase {
+            Phase::Active { result_note, .. } => result_note.take(),
+            _ => None,
+        };
         self.phase = match outcome {
             DeliveryOutcome::Failed { message, recovery } => Phase::Failed {
                 revision,
                 message,
                 recovery,
             },
-            DeliveryOutcome::Succeeded { route } => Phase::Succeeded { revision, route },
+            DeliveryOutcome::Succeeded { route } => Phase::Succeeded { revision, route, note },
         };
         Some(revision)
+    }
+
+    /// Show how far a scrolling capture has got.
+    pub fn set_progress(&mut self, text: String) {
+        if let Phase::Active { progress, .. } = &mut self.phase {
+            *progress = Some(text);
+        }
+    }
+
+    /// Remember why a scrolling capture ended early, to show with its result.
+    pub fn set_result_note(&mut self, text: String) {
+        if let Phase::Active { result_note, .. } = &mut self.phase {
+            *result_note = Some(text);
+        }
     }
 
     /// A scrolling capture is still making progress: push its deadline out, up to the cap.
@@ -437,17 +463,26 @@ impl Lifecycle {
                 menu_enabled: false,
                 action: Action::None,
             },
-            Phase::Active { mode, .. } => Presentation {
+            Phase::Active { mode, progress, .. } => {
+                let suffix = progress.as_ref().map(|p| format!(" {p}")).unwrap_or_default();
+                Presentation {
                 title: "●",
-                tooltip: format!("Glyphio — Capturing {}…", mode.label()),
-                menu_text: format!("Capturing {}…", mode.label()),
+                tooltip: format!("Glyphio — Capturing {}…{suffix}", mode.label()),
+                menu_text: format!("Capturing {}…{suffix}", mode.label()),
                 menu_enabled: false,
                 action: Action::None,
+                }
             },
-            Phase::Succeeded { route, .. } => Presentation {
+            Phase::Succeeded { route, note, .. } => Presentation {
                 title: "✓",
-                tooltip: "Glyphio — Capture ready. Click for the result.".into(),
-                menu_text: "Capture ready — Open result".into(),
+                tooltip: match note {
+                    Some(note) => format!("Glyphio — Capture ready, but {note}. Click for the result."),
+                    None => "Glyphio — Capture ready. Click for the result.".into(),
+                },
+                menu_text: match note {
+                    Some(note) => format!("Capture ready, but {note} — Open result"),
+                    None => "Capture ready — Open result".into(),
+                },
                 menu_enabled: true,
                 action: Action::OpenResult(route.clone()),
             },

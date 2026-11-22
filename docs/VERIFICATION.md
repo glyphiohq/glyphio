@@ -175,6 +175,11 @@ after the menu-bar indicator changes.
 | Progress oracle per browser: `cargo run --example page_probe -- --capture` over a long page in Safari, Chrome, Edge, Arc and Firefox | Each frame line prints `progress offset=… extent=… viewport=…` with the offset rising between frames; record the result per browser in the pull request. A browser that prints `NONE` falls back to pixels. | |
 | Progress oracle over a nested scroller (a code block under the pointer) | The offset does not move while the nested block scrolls and the page does not. | |
 | Progress oracle in a native scroll view (Notes, Mail) | The offset rises as the list scrolls; `NONE` is acceptable and means pixels only. | |
+| Scrolling Page on an infinite feed (Safari, Chrome) | Ends at the height limit; the menu bar says the capture is ready but stopped at the height limit; the log has `scrolling capture ended: stopped at the height limit`. | |
+| Scrolling Page with progress | While capturing, the menu row reads `Capturing … N%` on a page with an oracle (or a frame count without one) and rises. | |
+| Scrolling Page on a lazily rendered or smooth-scrolling page | No torn or half-moved frame in the result and the capture is not cut short. | |
+| Scrolling Page where scrolling is blocked (modal open) | Ends as stalled with the reason shown, not after the 5-minute cap. | |
+| Set `scrollMaxHeightPt` to 3000 in settings.json, restart, capture a long page | The capture ends at about 3000 pt and says so. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

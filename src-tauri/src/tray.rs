@@ -136,6 +136,27 @@ pub fn capture_heartbeat(app: &AppHandle) {
         .heartbeat();
 }
 
+/// Show a scrolling capture's progress in the menu bar.
+pub fn capture_progress(app: &AppHandle, text: String) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .set_progress(text);
+    apply(app, presentation(app));
+}
+
+/// Record why a scrolling capture ended early, so its result says so.
+pub fn capture_result_note(app: &AppHandle, text: String) {
+    app.state::<crate::AppState>()
+        .capture_feedback
+        .lock()
+        .unwrap()
+        .orchestration
+        .set_result_note(text);
+}
+
 /// Return the menu-bar capture state to idle, abandoning any stuck capture. Wired to Reload.
 pub fn capture_reset(app: &AppHandle) {
     app.state::<crate::AppState>()

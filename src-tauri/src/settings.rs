@@ -128,11 +128,14 @@ pub struct Settings {
     pub onboarding_step: String,
     /// Steps the user skipped, for the checklist that follows.
     pub onboarding_skipped: Vec<String>,
+    /// Longest scrolling capture, in points of page height. Ends with a stated reason.
+    pub scroll_max_height_pt: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            scroll_max_height_pt: 30_000,
             enable_visible_capture: true,
             enable_snip_capture: true,
             enable_full_window_capture: true,

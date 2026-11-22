@@ -180,6 +180,10 @@ after the menu-bar indicator changes.
 | Scrolling Page on a lazily rendered or smooth-scrolling page | No torn or half-moved frame in the result and the capture is not cut short. | |
 | Scrolling Page where scrolling is blocked (modal open) | Ends as stalled with the reason shown, not after the 5-minute cap. | |
 | Set `scrollMaxHeightPt` to 3000 in settings.json, restart, capture a long page | The capture ends at about 3000 pt and says so. | |
+| Scrolling Page on a window with a fixed header, a fixed composer bar and sidebars (chat app or web app) | The header and composer bar appear once, at the top and bottom; no content block is duplicated; fixed sidebars are not used to join frames (they may still repeat down the image: pick the main pane with Scrolling Area). | |
+| Scrolling Page on a long article, last scroll partial (Safari, Chrome) | The page reaches the footer once with no repeated band at the bottom. | |
+| Scrolling Page with a sticky header (Safari, Chrome) | The header appears once. | |
+| Scrolling Page on a page with a repeated block (cookie-cutter cards, duplicated code sample) | The block appears as many times as on the page, not more. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

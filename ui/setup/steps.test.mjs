@@ -99,7 +99,7 @@ test('the shortcuts step can always continue and leaves nothing to resolve later
 
 const settings = {
   shortcutCaptureSnip: 'Alt+Shift+X',
-  shortcutOpenPalette: 'Alt+Space',
+  shortcutOpenPalette: 'Control+Shift+Space',
   shortcutOpenClipboard: 'Alt+Shift+C',
 };
 
@@ -117,6 +117,31 @@ test('each default shortcut is listed with how the system answered', () => {
   // No answer yet is not a failure and not a success.
   assert.equal(rows[2].ok, false);
   assert.equal(rows[2].notice, '');
+});
+
+test('a refused shortcut offers ordered alternatives that are valid and unused', () => {
+  const rows = shortcutRows(settings, [
+    { key: 'shortcutOpenPalette', state: 'refused', reason: 'another app holds it' },
+    { key: 'shortcutCaptureSnip', state: 'registered' },
+  ], 'macos');
+  const palette = rows[1];
+  assert.deepEqual(palette.alternatives.map((a) => a.accelerator), [
+    'Control+Alt+Space', 'Alt+Shift+Space', 'Control+Shift+P',
+  ]);
+  assert.equal(palette.alternatives[0].keys, '⌃⌥Space');
+  // A working shortcut offers nothing, and neither does one with no answer yet.
+  assert.deepEqual(rows[0].alternatives, []);
+  assert.deepEqual(shortcutRows(settings, [], 'macos')[1].alternatives, []);
+});
+
+test('an invalid binding also offers alternatives; a chord already in use is not offered', () => {
+  const rows = shortcutRows(
+    { ...settings, shortcutOpenClipboard: 'Control+Alt+Space' },
+    [{ key: 'shortcutOpenPalette', state: 'invalid', reason: 'taken' }],
+    'windows',
+  );
+  assert.equal(rows[1].alternatives.some((a) => a.accelerator === 'Control+Alt+Space'), false);
+  assert.ok(rows[1].alternatives.length > 0);
 });
 
 test('Windows shows chords as written', () => {

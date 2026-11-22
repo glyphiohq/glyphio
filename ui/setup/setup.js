@@ -5,6 +5,7 @@
 
 import { PERMISSION_KIND, grantPresentation } from '../settings/permissions.mjs';
 import { IS_MAC } from '../shared/shortcuts.js';
+import { acceleratorFromKeyboardEvent, validateAccelerator } from '../settings/shortcut-recorder.mjs';
 import {
   STEP, TRY_IT, advanceIfGranted, announcement, canContinue, initialStep, kindOfStep, loginItemCopy,
   nextStep, progressLabel, reduceTryIt, shortcutRows, skipStep, stepsFor, teamAction,
@@ -38,6 +39,7 @@ const state = {
   loginItem: loginCopy.defaultOn,
   team: null, // the option chosen on the finish step
   inviteOpen: false,
+  recording: null, // the shortcut key being recorded, if any
   skipped: [],
   grants: { [PERMISSION_KIND.ACCESSIBILITY]: null, [PERMISSION_KIND.SCREEN_RECORDING]: null },
 };
@@ -97,7 +99,9 @@ function render() {
       <ul class="shortcuts">${rows.map((r) => `
         <li><span>${r.label}</span><kbd>${r.keys}</kbd>
         <span class="state" data-phase="${r.ok ? 'granted' : r.notice ? 'stale' : 'pending'}">${r.ok ? 'Ready' : r.notice ? 'Not registered' : 'Checking…'}</span>
-        ${r.notice ? `<span class="note">${r.notice}</span>` : ''}</li>`).join('')}
+        ${r.notice ? `<span class="note">${r.notice}</span>
+        <span class="alts">${r.alternatives.map((a) => `<button type="button" class="secondary" data-use="${r.key}|${a.accelerator}">Use ${a.keys}</button>`).join('')}
+        <button type="button" class="ghost" data-record="${r.key}">${state.recording === r.key ? 'Press the new shortcut… (Esc cancels)' : 'Record another'}</button></span>` : ''}</li>`).join('')}
       </ul>
       <p class="tryit" data-phase="${state.tryIt}">${state.tryIt === TRY_IT.DONE
         ? '✓ That worked — your capture was delivered.'
@@ -162,6 +166,13 @@ async function perform(action) {
 }
 
 $('panel').addEventListener('click', (e) => {
+  const use = e.target.closest('[data-use]');
+  if (use) return applyShortcut(...use.dataset.use.split('|'));
+  const record = e.target.closest('[data-record]');
+  if (record) {
+    state.recording = state.recording === record.dataset.record ? null : record.dataset.record;
+    return render();
+  }
   const team = e.target.closest('[data-team]');
   if (team) return chooseTeam(team.dataset.team);
   const button = e.target.closest('[data-action]');
@@ -169,6 +180,35 @@ $('panel').addEventListener('click', (e) => {
 });
 $('panel').addEventListener('change', (e) => {
   if (e.target.id === 'login') state.loginItem = e.target.checked;
+});
+
+/** Save one shortcut change and show how the system answered. */
+async function applyShortcut(key, accelerator) {
+  state.recording = null;
+  const next = { ...state.settings, [key]: accelerator };
+  try {
+    state.shortcutStatus = await invoke('save_settings', { settings: next });
+    state.settings = next;
+    $('live').textContent = 'Shortcut changed.';
+  } catch (e) {
+    $('live').textContent = String(e);
+  }
+  render();
+}
+
+// Recording listens on the document: WebKit does not reliably focus a button after a click.
+document.addEventListener('keydown', (e) => {
+  if (!state.recording) return;
+  e.preventDefault();
+  if (e.key === 'Escape') { state.recording = null; return render(); }
+  const recorded = acceleratorFromKeyboardEvent(e);
+  if (recorded.error) { if (!['Alt', 'Control', 'Meta', 'Shift'].includes(e.key)) $('live').textContent = recorded.error; return; }
+  const key = state.recording;
+  const others = ['shortcutCaptureSnip', 'shortcutOpenPalette', 'shortcutOpenClipboard']
+    .filter((k) => k !== key).map((k) => ({ value: state.settings[k], label: k }));
+  const check = validateAccelerator(recorded.accelerator, others, platform);
+  if (!check.ok) { $('live').textContent = check.error; return; }
+  applyShortcut(key, recorded.accelerator);
 });
 
 async function chooseTeam(choice) {

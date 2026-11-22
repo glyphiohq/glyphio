@@ -98,3 +98,12 @@ test('accepts cleared and distinct shortcuts', () => {
     { value: 'Alt+Shift+P', label: 'Scrolling page' },
   ]), { ok: true });
 });
+
+test('reserved chords are validated per platform', () => {
+  assert.equal(validateAccelerator('Alt+Space', [], 'macos').ok, true);
+  assert.match(validateAccelerator('Alt+Space', [], 'windows').error, /window menu/);
+  assert.match(validateAccelerator('Command+Space', [], 'macos').error, /Spotlight/);
+  assert.match(validateAccelerator('Control+Alt+Delete', [], 'windows').error, /security screen/);
+  assert.equal(validateAccelerator('Control+Shift+Space', [], 'windows').ok, true);
+  assert.equal(validateAccelerator('Control+Shift+Space', [], 'macos').ok, true);
+});

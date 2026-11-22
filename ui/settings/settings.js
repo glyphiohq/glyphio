@@ -4,6 +4,7 @@
 // engine's config, which hot-reloads. Rich snippets use the engine's native rich injection.
 
 import { icon } from '../shared/icons.js';
+import { IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 import {
@@ -27,6 +28,7 @@ import {
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+const PLATFORM_ID = IS_MAC ? 'macos' : 'windows';
 const app = document.getElementById('app');
 const shortcutCaptureController = createShortcutCaptureController(document);
 
@@ -2727,7 +2729,7 @@ function hotkeyPair(key, silentKey, label) {
           showError(recorded.error);
           return;
         }
-        const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey));
+        const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey), PLATFORM_ID);
         if (!result.ok) {
           showError(result.error);
           return;
@@ -2761,7 +2763,7 @@ function hotkeyPair(key, silentKey, label) {
     reset.addEventListener('click', () => {
       input.value = CAPTURE_SHORTCUT_DEFAULTS[settingsKey] ?? '';
       showValue();
-      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey));
+      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
       showError(result.ok ? '' : result.error);
     });
     const actions = el('span', { className: 'shortcut-actions' });
@@ -2803,7 +2805,7 @@ function validateCaptureRecorders() {
   document.querySelectorAll('#settings-form .shortcut-box').forEach((box) => {
     const input = box.querySelector('input[data-key]');
     const error = box.querySelector('.shortcut-error');
-    const result = validateAccelerator(input.value, configuredShortcuts(input.dataset.key));
+    const result = validateAccelerator(input.value, configuredShortcuts(input.dataset.key), PLATFORM_ID);
     error.textContent = result.ok ? '' : result.error;
     if (!result.ok) valid = false;
   });

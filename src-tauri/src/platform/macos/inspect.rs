@@ -12,7 +12,7 @@
 //! never saw it. Uses the same app-level Accessibility grant as scrolling capture — no new
 //! permission.
 
-use crate::platform::{BrowserMeta, PageGeometry};
+use crate::platform::{BrowserMeta, PageGeometry, Progress};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -42,6 +42,12 @@ const SETTLE: Duration = Duration::from_millis(600);
 extern "C" {
     fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    fn AXUIElementCopyElementAtPosition(
+        element: AXUIElementRef,
+        x: f32,
+        y: f32,
+        out: *mut AXUIElementRef,
+    ) -> i32;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> i32;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
@@ -208,6 +214,70 @@ fn read_geometry(app: &CFType) -> Option<PageGeometry> {
         .and_then(bounds)
         .and_then(|web| intersect(web, frame));
     Some(PageGeometry { window: frame, web_visible, tree_still_building: false })
+}
+
+/// Scroll position of the container under `point`, read from the accessibility tree.
+///
+/// Walks up from the element under the point. A page's `AXWebArea` wins wherever it sits in
+/// the chain, so a nested scroller inside the page moves nothing here; otherwise the nearest
+/// `AXScrollArea` answers from its vertical scroll bar. The owning browser's tree is kept
+/// warm for as long as the capture keeps asking, and released by the usual cooldown.
+pub(crate) fn scroll_progress(point: (f64, f64)) -> Option<Progress> {
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        return None;
+    }
+    let system = unsafe { CFType::wrap_under_create_rule(system) };
+    let mut out: AXUIElementRef = std::ptr::null();
+    let err = unsafe {
+        AXUIElementCopyElementAtPosition(system.as_CFTypeRef(), point.0 as f32, point.1 as f32, &mut out)
+    };
+    if err != 0 || out.is_null() {
+        return None;
+    }
+    let mut el = unsafe { CFType::wrap_under_create_rule(out) };
+    let mut pid: i32 = 0;
+    if unsafe { AXUIElementGetPid(el.as_CFTypeRef(), &mut pid) } == 0 {
+        keep_warm(pid);
+    }
+    let mut scroll_area: Option<CFType> = None;
+    for _ in 0..40 {
+        match role(&el).as_deref() {
+            Some("AXWebArea") => return web_progress(&el),
+            Some("AXScrollArea") if scroll_area.is_none() => scroll_area = Some(el.clone()),
+            _ => {}
+        }
+        match copy_attr(&el, "AXParent") {
+            Some(parent) => el = parent,
+            None => break,
+        }
+    }
+    scroll_area.as_ref().and_then(scroll_area_progress)
+}
+
+/// A web area reports its full document frame; the visible part is that frame clipped to the
+/// window, so the gap between the two tops is the offset.
+fn web_progress(web: &CFType) -> Option<Progress> {
+    let frame = bounds(web)?;
+    let win = bounds(&copy_attr(web, "AXWindow")?)?;
+    let visible = intersect(frame, win)?;
+    Progress::from_web_area(frame, visible)
+}
+
+/// A native scroll view: vertical scroll bar value plus the content's own height.
+fn scroll_area_progress(area: &CFType) -> Option<Progress> {
+    let viewport = bounds(area)?.3;
+    let bar = copy_attr(area, "AXVerticalScrollBar")?;
+    let value = copy_attr(&bar, "AXValue")?.downcast::<core_foundation::number::CFNumber>()?.to_f64()?;
+    let content = copy_attr(area, "AXContents")
+        .map(|v| children_of_array(&v))
+        .or_else(|| Some(children(area)))?
+        .iter()
+        .filter(|c| role(c).as_deref() != Some("AXScrollBar"))
+        .filter_map(bounds)
+        .map(|b| b.3)
+        .fold(0.0_f64, f64::max);
+    Progress::from_scroll_bar(value, content, viewport)
 }
 
 /// The pid of the application holding keyboard focus. Unlike walking the window list this is
@@ -408,9 +478,10 @@ fn role(el: &CFType) -> Option<String> {
 }
 
 fn children(el: &CFType) -> Vec<CFType> {
-    let Some(v) = copy_attr(el, "AXChildren") else {
-        return Vec::new();
-    };
+    copy_attr(el, "AXChildren").map(|v| children_of_array(&v)).unwrap_or_default()
+}
+
+fn children_of_array(v: &CFType) -> Vec<CFType> {
     if v.type_of() != unsafe { CFArrayGetTypeID() } {
         return Vec::new();
     }

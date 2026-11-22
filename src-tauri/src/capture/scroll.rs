@@ -23,6 +23,7 @@ use anyhow::anyhow;
 use image::RgbaImage;
 
 use super::Shot;
+use crate::platform::Progress;
 
 /// Upper bound on captured frames (≈ MAX_FRAMES × 60% × region-height of content).
 const MAX_FRAMES: usize = 30;
@@ -78,6 +79,12 @@ pub struct Job {
 pub trait ScrollDriver {
     fn capture(&mut self, rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)>;
     fn scroll(&mut self, delta: i32) -> anyhow::Result<()>;
+    /// Where the main scroll container is, read from something other than the pixels (the
+    /// accessibility tree). `None` when the platform cannot tell; the loop then relies on
+    /// pixel comparison alone.
+    fn progress(&mut self, _rect: (f64, f64, f64, f64)) -> Option<Progress> {
+        None
+    }
 }
 
 struct PlatformDriver;
@@ -89,6 +96,12 @@ impl ScrollDriver for PlatformDriver {
 
     fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
         crate::platform::current().input.post_scroll(delta)
+    }
+
+    /// Asked at the point the wheel events land: the region's centre, where the pointer is
+    /// parked. Also keeps the browser's accessibility tree warm for the whole capture.
+    fn progress(&mut self, rect: (f64, f64, f64, f64)) -> Option<Progress> {
+        crate::platform::current().inspector.scroll_progress((rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0))
     }
 }
 
@@ -172,6 +185,7 @@ where
 {
     let mut frames: Vec<RgbaImage> = Vec::new();
     let mut capture_dpr;
+    let mut last_progress = driver.progress(job.rect);
     loop {
         let (frame, frame_dpr) = driver.capture(job.rect)?;
         capture_dpr = frame_dpr;
@@ -193,6 +207,17 @@ where
         if !settle() {
             break;
         }
+        let now = driver.progress(job.rect);
+        if let Some(p) = now {
+            log::debug!(
+                "scrolling capture progress: offset {:.0} of {:.0} (viewport {:.0}){}",
+                p.offset,
+                p.extent,
+                p.viewport,
+                if progress_advanced(last_progress, now) { "" } else { " — did not advance" }
+            );
+        }
+        last_progress = now.or(last_progress);
     }
 
     let first = frames
@@ -210,6 +235,15 @@ where
         title: String::new(),
         browser: Default::default(),
     })
+}
+
+/// Whether the oracle saw the page move between two readings (1 pt of rounding allowed).
+/// Unknown on either side counts as "cannot say", reported as no advance.
+fn progress_advanced(before: Option<Progress>, after: Option<Progress>) -> bool {
+    match (before, after) {
+        (Some(a), Some(b)) => (b.offset - a.offset).abs() > 1.0,
+        _ => false,
+    }
 }
 
 fn dispatch_scroll<D: ScrollDriver>(driver: &mut D, mut delta: i32) -> anyhow::Result<()> {
@@ -551,6 +585,61 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "injected scroll failure");
+    }
+
+    /// A page with a nested scroller (a code block) under the centre of the window and a
+    /// pointer that decides which container a wheel event reaches. Only the page is
+    /// reported by the oracle.
+    struct TwoContainers {
+        page_offset: f64,
+        nested_offset: f64,
+        pointer_over_nested: bool,
+    }
+
+    impl ScrollDriver for TwoContainers {
+        fn capture(&mut self, _: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+            // Pixels change whichever container moved — that is what fools a pixel check.
+            let v = ((self.page_offset + self.nested_offset) as u32 % 250) as u8;
+            Ok((RgbaImage::from_pixel(64, 64, image::Rgba([v, v, v, 255])), 1.0))
+        }
+        fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
+            let d = delta.unsigned_abs() as f64;
+            if self.pointer_over_nested {
+                self.nested_offset += d;
+            } else {
+                self.page_offset = (self.page_offset + d).min(2400.0);
+            }
+            Ok(())
+        }
+        fn progress(&mut self, _: (f64, f64, f64, f64)) -> Option<Progress> {
+            Some(Progress { offset: self.page_offset, extent: 3000.0, viewport: 600.0 })
+        }
+    }
+
+    #[test]
+    fn progress_advances_with_the_page_and_not_with_a_nested_scroller() {
+        let rect = (0.0, 0.0, 64.0, 64.0);
+        let mut d = TwoContainers { page_offset: 0.0, nested_offset: 0.0, pointer_over_nested: true };
+        let before = d.progress(rect);
+        let pixels_before = d.capture(rect).unwrap().0;
+        d.scroll(-10).unwrap();
+        assert_ne!(d.capture(rect).unwrap().0, pixels_before, "the nested scroller changed pixels");
+        assert!(!progress_advanced(before, d.progress(rect)), "but the page did not move");
+
+        d.pointer_over_nested = false;
+        let before = d.progress(rect);
+        for _ in 0..5 {
+            d.scroll(-10).unwrap();
+        }
+        assert!(progress_advanced(before, d.progress(rect)));
+        assert_eq!(d.progress(rect).unwrap().offset, 50.0);
+    }
+
+    #[test]
+    fn a_driver_without_an_oracle_reports_no_progress() {
+        let mut d = FailingScrollDriver { frame: RgbaImage::new(8, 8) };
+        assert!(d.progress((0.0, 0.0, 8.0, 8.0)).is_none());
+        assert!(!progress_advanced(None, None));
     }
 
     #[test]

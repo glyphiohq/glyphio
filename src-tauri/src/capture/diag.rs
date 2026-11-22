@@ -106,6 +106,14 @@ fn probe_captures(x: f64, y: f64, w: f64, h: f64) {
                 return;
             }
         }
+        // The progress oracle (SCROLL-01): record per browser whether it answers and advances.
+        match platform::current().inspector.scroll_progress((x + w / 2.0, y + h / 2.0)) {
+            Some(p) => println!(
+                "frame {i}: progress offset={:.0} extent={:.0} viewport={:.0} end={}",
+                p.offset, p.extent, p.viewport, p.at_end()
+            ),
+            None => println!("frame {i}: progress NONE (pixel comparison only)"),
+        }
         if i < 2 {
             if let Err(e) = scroll_once(x + w / 2.0, y + h / 2.0, (h * 0.6) as i32) {
                 println!("scroll after frame {i} FAILED: {e}");

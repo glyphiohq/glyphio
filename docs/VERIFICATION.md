@@ -172,6 +172,9 @@ after the menu-bar indicator changes.
 | Scrolling Area: close the selection overlay without dragging (Esc, click another app, Mission Control, switch Space) | The menu-bar icon returns to ready within a moment and the next capture starts; no failure indicator. | |
 | Scrolling Area: drag a selection | The capture runs; closing the overlay to start it does not cancel it. | |
 | Area or Window picker: press Esc | The menu-bar icon returns to ready with no `!` and no failure details. | |
+| Progress oracle per browser: `cargo run --example page_probe -- --capture` over a long page in Safari, Chrome, Edge, Arc and Firefox | Each frame line prints `progress offset=… extent=… viewport=…` with the offset rising between frames; record the result per browser in the pull request. A browser that prints `NONE` falls back to pixels. | |
+| Progress oracle over a nested scroller (a code block under the pointer) | The offset does not move while the nested block scrolls and the page does not. | |
+| Progress oracle in a native scroll view (Notes, Mail) | The offset rises as the list scrolls; `NONE` is acceptable and means pixels only. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native

@@ -24,6 +24,23 @@ pub fn note_launch_event() {
     log::info!("launched by login item: {by_login}");
 }
 
+/// What a launch should put on screen. Setup replaces Settings until it is finished, and a
+/// login launch shows nothing either way.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LaunchSurface {
+    Setup,
+    Settings,
+    Nothing,
+}
+
+pub fn launch_surface(opens_a_window: bool, onboarding_completed: bool) -> LaunchSurface {
+    match (opens_a_window, onboarding_completed) {
+        (false, _) => LaunchSurface::Nothing,
+        (true, false) => LaunchSurface::Setup,
+        (true, true) => LaunchSurface::Settings,
+    }
+}
+
 /// Whether startup should present the regular Settings window. A login launch is recognised by
 /// the launch event (the native login item) or, for one more release, by the arguments the old
 /// backends passed.
@@ -59,7 +76,10 @@ pub fn second_launch_action(args: impl IntoIterator<Item = impl AsRef<str>>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{is_login_item_property, second_launch_action, should_open_settings, SecondLaunch};
+    use super::{
+        is_login_item_property, launch_surface, second_launch_action, should_open_settings, LaunchSurface,
+        SecondLaunch,
+    };
 
     #[test]
     fn a_second_user_launch_surfaces_settings_in_the_running_copy() {
@@ -100,5 +120,13 @@ mod tests {
         assert!(is_login_item_property(Some(u32::from_be_bytes(*b"lgit"))));
         assert!(!is_login_item_property(Some(u32::from_be_bytes(*b"abcd"))));
         assert!(!is_login_item_property(None));
+    }
+
+    #[test]
+    fn setup_replaces_settings_until_finished_and_a_login_launch_shows_nothing() {
+        assert_eq!(launch_surface(true, false), LaunchSurface::Setup);
+        assert_eq!(launch_surface(true, true), LaunchSurface::Settings);
+        assert_eq!(launch_surface(false, false), LaunchSurface::Nothing);
+        assert_eq!(launch_surface(false, true), LaunchSurface::Nothing);
     }
 }

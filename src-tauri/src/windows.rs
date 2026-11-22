@@ -37,7 +37,7 @@ fn spec(name: &str) -> Option<Spec> {
 /// popup/form surfaces and the capture overlay deliberately don't count: they're summoned
 /// over whatever you're working in and must never steal an app slot in the Dock.
 fn is_main_window(label: &str) -> bool {
-    label == "settings" || label == "editor" || label.starts_with("capture-")
+    label == "settings" || label == "setup" || label == "editor" || label.starts_with("capture-")
 }
 
 /// Re-derive the macOS activation policy from what's on screen. `ignoring` excludes a window
@@ -285,6 +285,25 @@ pub fn open_capture(app: &AppHandle, id: &str) -> anyhow::Result<()> {
     // A menu-bar agent isn't active when a window is built, so a fresh window would appear
     // BEHIND the frontmost app. Take the regular-app policy first, then set_focus activates
     // us (activateIgnoringOtherApps).
+    sync_activation_policy(app, None);
+    win.set_focus()?;
+    Ok(())
+}
+
+/// The first-run setup window: fixed size, centred, built as a summoned surface so it opens on
+/// the Space the user is on. Focused again if already open.
+pub fn open_setup(app: &AppHandle) -> anyhow::Result<()> {
+    if let Some(win) = app.get_webview_window("setup") {
+        return present(app, &win);
+    }
+    let win = summoned(app, || {
+        Ok(WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("setup/index.html".into()))
+            .title("Set up Glyphio")
+            .inner_size(560.0, 640.0)
+            .resizable(false)
+            .center()
+            .build()?)
+    })?;
     sync_activation_policy(app, None);
     win.set_focus()?;
     Ok(())

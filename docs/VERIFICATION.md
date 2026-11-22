@@ -91,6 +91,19 @@ Idle CPU and energy: Activity Monitor → Energy column with no windows open, af
 | Cold launch with the item already registered | `sudo fs_usage -w -f exec` shows no `osascript` or `pkill`. | |
 | Upgrade with an old `~/Library/LaunchAgents/*.plist` for Glyphio (any install path) | The plist is removed; a plist for another app with a similar name is left. | |
 
+## Setup window matrix
+
+| State and action | Expected observation | Result / evidence |
+| --- | --- | --- |
+| Fresh install, first launch | The setup window opens on Accessibility; the Settings window does not. | |
+| Upgrade from an existing install | No setup window; Settings opens as before. | |
+| Press the Accessibility button, then switch it on in System Settings | The row turns to Granted within 2 s, the setup window comes forward, and a typed snippet expands within 3 s, with no manual restart. | |
+| Screen Recording: grant, then return | Granted at once, or one **Relaunch to finish** button; after relaunch the window is on Screen Recording and moves on by itself. | |
+| Re-sign the app with another certificate | The affected row says macOS is blocking it and offers **Fix it**; one click and one prompt later it works. | |
+| Clear the web view's storage, reopen setup | The same button is offered as before. | |
+| Tab through the window with the keyboard; use VoiceOver | Every control is reachable; grant changes are announced. | |
+| Skip both permission steps, finish | Setup does not reappear on the next launch; no Automation prompt appeared. | |
+
 ## Permission model matrix
 
 Run on macOS 14, 15 and 26.

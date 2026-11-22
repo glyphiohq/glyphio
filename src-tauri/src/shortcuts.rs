@@ -70,21 +70,9 @@ fn validate_one<'a>(
     let shortcut = Shortcut::from_str(accelerator)
         .map_err(|error| anyhow::anyhow!("{label}: invalid shortcut {accelerator:?}: {error}"))?;
     if is_capture {
-        for (reserved, reason) in [
-            ("Command+Space", "reserved for Spotlight"),
-            ("Command+Tab", "reserved for switching applications"),
-            ("Command+Shift+3", "reserved for macOS screenshots"),
-            ("Command+Shift+4", "reserved for macOS screenshots"),
-            (
-                "Command+Shift+5",
-                "reserved for macOS screenshots and recording",
-            ),
-            ("Control+Command+Q", "reserved for locking your Mac"),
-            ("Alt+Command+Escape", "reserved for Force Quit"),
-        ] {
-            if Shortcut::from_str(reserved).is_ok_and(|value| value == shortcut) {
-                anyhow::bail!("{label}: {accelerator} is {reason}");
-            }
+        let os = crate::platform::reserved::current_os();
+        if let Some(reason) = crate::platform::reserved::reason(os, &shortcut) {
+            anyhow::bail!("{label}: {accelerator} is {reason}");
         }
     }
     if let Some((other, _)) = configured.iter().find(|(_, value)| *value == shortcut) {

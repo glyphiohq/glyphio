@@ -18,6 +18,7 @@ use image::RgbaImage;
 use crate::autostart::{Migration, Outcome};
 use crate::capture::Shot;
 
+pub mod reserved;
 pub mod types;
 pub use types::{BrowserMeta, FrontWindow, PageGeometry};
 

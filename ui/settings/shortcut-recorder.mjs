@@ -74,16 +74,35 @@ const DISPLAY_KEYS = new Map([
   ['Semicolon', ';'], ['Slash', '/'],
 ]);
 
-// These combinations belong to macOS itself and cannot be dependable Glyphio bindings.
-const RESERVED = new Map([
-  ['Command+Space', 'Command-Space is reserved for Spotlight.'],
-  ['Command+Tab', 'Command-Tab is reserved for switching applications.'],
-  ['Shift+Command+3', 'Command-Shift-3 is reserved for macOS screenshots.'],
-  ['Shift+Command+4', 'Command-Shift-4 is reserved for macOS screenshots.'],
-  ['Shift+Command+5', 'Command-Shift-5 is reserved for macOS screenshots and recording.'],
-  ['Control+Command+Q', 'Control-Command-Q is reserved for locking your Mac.'],
-  ['Alt+Command+Escape', 'Option-Command-Escape is reserved for Force Quit.'],
-]);
+// These combinations belong to the operating system and cannot be dependable Glyphio bindings.
+// Keep in step with `platform/reserved.rs`; a test asserts the two lists agree on what they hold.
+const RESERVED = Object.freeze({
+  macos: new Map([
+    ['Command+Space', 'Command-Space is reserved for Spotlight.'],
+    ['Command+Tab', 'Command-Tab is reserved for switching applications.'],
+    ['Shift+Command+3', 'Command-Shift-3 is reserved for macOS screenshots.'],
+    ['Shift+Command+4', 'Command-Shift-4 is reserved for macOS screenshots.'],
+    ['Shift+Command+5', 'Command-Shift-5 is reserved for macOS screenshots and recording.'],
+    ['Control+Command+Q', 'Control-Command-Q is reserved for locking your Mac.'],
+    ['Alt+Command+Escape', 'Option-Command-Escape is reserved for Force Quit.'],
+  ]),
+  windows: new Map([
+    ['Alt+Space', 'Alt+Space is reserved for the window menu.'],
+    ['Alt+Tab', 'Alt+Tab is reserved for switching windows.'],
+    ['Alt+F4', 'Alt+F4 is reserved for closing windows.'],
+    ['Control+Alt+Delete', 'Ctrl+Alt+Delete is reserved for the security screen.'],
+    ['Control+Shift+Escape', 'Ctrl+Shift+Esc is reserved for Task Manager.'],
+    ['Command+L', 'Win+L is reserved for locking the PC.'],
+    ['Command+D', 'Win+D is reserved for showing the desktop.'],
+    ['Command+Space', 'Win+Space is reserved for switching input language.'],
+  ]),
+});
+
+/** The reason a chord is the system's on this platform, or null. */
+export function reservedReason(accelerator, platform = 'macos') {
+  const normalized = normalizeAccelerator(accelerator);
+  return (RESERVED[platform] ?? RESERVED.macos).get(normalized) ?? null;
+}
 
 const MODIFIER_ORDER = ['Control', 'Alt', 'Shift', 'Command'];
 
@@ -199,11 +218,11 @@ export function acceleratorFromKeyboardEvent(event) {
  * Validate one recorded shortcut. `configured` contains all of Glyphio's other shortcuts,
  * including the unrelated text fields that this feature deliberately leaves unchanged.
  */
-export function validateAccelerator(accelerator, configured = []) {
+export function validateAccelerator(accelerator, configured = [], platform = 'macos') {
   if (!accelerator) return { ok: true };
   const normalized = normalizeAccelerator(accelerator);
   if (!normalized) return { ok: false, error: 'Glyphio does not recognise that shortcut.' };
-  const reserved = RESERVED.get(normalized);
+  const reserved = reservedReason(accelerator, platform);
   if (reserved) return { ok: false, error: reserved };
   const collision = configured.find(({ value }) => value && normalizeAccelerator(value) === normalized);
   if (collision) {

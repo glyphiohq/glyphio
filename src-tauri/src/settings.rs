@@ -178,7 +178,7 @@ impl Default for Settings {
             shortcut_capture_scroll: "Alt+Shift+L".into(),       // L = long/scrolling area
             shortcut_capture_scroll_page: "Alt+Shift+P".into(),  // P = whole page/window
             shortcut_open_history: "Alt+Shift+H".into(),
-            shortcut_open_palette: "Alt+Space".into(),
+            shortcut_open_palette: "Control+Shift+Space".into(),
             shortcut_open_clipboard: "Alt+Shift+C".into(), // C = clipboard
             shortcut_capture_visible_silent: String::new(),
             shortcut_capture_snip_silent: String::new(),

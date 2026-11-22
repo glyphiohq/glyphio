@@ -24,7 +24,7 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   were in. Pin what you want to keep; entry and size caps evict the rest. **Content a password
   manager marks concealed is never recorded**, apps can be excluded by name, and none of it
   syncs.
-- **One palette for all of it** — `Alt+Space` (or the single menu-bar entry) opens a
+- **One palette for all of it** — `Control+Shift+Space` (or the single menu-bar entry) opens a
   searchable window with three lists: **Clipboard** (where it opens), **Capture** modes, and
   **Snippets**. `Tab` or `⌘1`/`⌘2`/`⌘3` between them; `↩` does the obvious thing for whichever
   list you're in and `⌘↩` the useful alternative. In-app, **History** shows screenshots and

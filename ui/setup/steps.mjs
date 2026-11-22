@@ -3,6 +3,7 @@
 import { GRANT, PERMISSION_KIND } from '../settings/permissions.mjs';
 import { formatAccelerator } from '../settings/shortcut-recorder.mjs';
 import { registrationNotice, statusFor } from '../settings/shortcut-status.mjs';
+import { alternativesFor } from '../settings/shortcut-defaults.mjs';
 
 export const STEP = Object.freeze({
   ACCESSIBILITY: 'accessibility',
@@ -133,14 +134,23 @@ export function displayChord(accelerator, platform) {
  * from the app; a binding with no answer yet is neither shown as working nor as failed.
  */
 export function shortcutRows(settings, statuses, platform) {
+  const configured = SHORTCUT_ROWS.map(({ key, label }) => ({ value: settings[key], label }));
   return SHORTCUT_ROWS.map(({ key, label }) => {
     const status = statusFor(statuses, key);
+    const notice = registrationNotice(status);
+    const others = configured.filter((c) => c.label !== label);
     return {
       key,
       label,
       keys: displayChord(settings[key], platform),
       ok: status?.state === 'registered',
-      notice: registrationNotice(status),
+      notice,
+      alternatives: notice
+        ? alternativesFor(key, { platform, configured: others }).map((accelerator) => ({
+            accelerator,
+            keys: displayChord(accelerator, platform),
+          }))
+        : [],
     };
   });
 }

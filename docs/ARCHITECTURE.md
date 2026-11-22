@@ -226,6 +226,17 @@ returns them on demand; Settings shows "Not registered" with the reason beside a
 invalid binding, and the tray tooltip and status row say "Some shortcuts could not be registered
 — open Settings" while the app is otherwise idle.
 
+Reserved chords are per-platform data in `platform/reserved.rs` (`reserved_for(Os)`), used by
+`validate_settings`; `ui/settings/shortcut-recorder.mjs` keeps the matching table for the recorder
+(`validateAccelerator(accelerator, configured, platform)`). On Windows `Alt+Space` (the window menu),
+`Alt+Tab`, `Alt+F4`, `Ctrl+Alt+Delete`, `Ctrl+Shift+Esc` and common Win chords are reserved; macOS keeps
+Spotlight, screenshots, lock and Force Quit. The palette default is `Control+Shift+Space` on both. Existing
+installs keep the chord they already have stored (including the old `Alt+Space`): the default only applies
+to a settings file that has no palette shortcut, so nothing changes silently. In the setup window a
+refused or invalid default shows the system's reason, up to three ordered alternatives
+(`ui/settings/shortcut-defaults.mjs`, filtered by the same validation) and **Record another**; choosing one
+saves it through `save_settings` and shows the new result.
+
 ### Capture worker
 
 Captures run on one dedicated thread (`capture::worker`), never on the main thread. A hotkey,

@@ -193,6 +193,10 @@ for the exact failure payload and recovery target.
 | Refused chord is visible | Bind a capture action to a chord another app holds (for example a launcher's), save: Settings shows "Not registered" with a reason beside it, the log has one line for it, and the tray status row reads "Some shortcuts could not be registered — open Settings". | |
 | Saving an unrelated setting | Change a non-shortcut setting and save: every working shortcut keeps firing, and no shortcut is dropped even briefly. | |
 | Save during a scrolling capture | Save any setting while a scrolling capture runs: Esc still stops the capture. | |
+| Setup: refuse a default (hold the palette chord in another app first) | The setup row says "Not registered" with the reason and offers up to three alternatives plus **Record another**; choosing one registers it and the row turns Ready. | |
+| Setup: record a reserved chord (macOS Command-Space; Windows Alt+Space) | The recorder explains the reservation and keeps the old chord. | |
+| Fresh install palette default | `Control+Shift+Space` opens the palette on macOS and Windows; `Alt+Space` still opens the window menu on Windows. | |
+| Upgrade from a build whose palette shortcut was `Alt+Space` | The stored `Alt+Space` is kept; Settings still shows it. | |
 | Key held down | Holding a capture shortcut starts one capture, not several. | |
 
 ## Clipboard palette matrix

@@ -132,9 +132,6 @@ const GENERAL_SECTIONS = [
   { title: 'Startup', fields: [
     ['launchAtLogin', 'toggle', 'Launch Glyphio at login'],
   ]},
-];
-
-const SNIPPET_SECTIONS = [
   { title: 'Hotkeys', fields: [
     ['shortcutOpenPalette', 'text', 'Snippet search (Spotlight-style)'],
   ]},
@@ -2451,7 +2448,6 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
-  renderSections(form, SNIPPET_SECTIONS);
 }
 
 /**

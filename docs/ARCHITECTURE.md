@@ -271,7 +271,7 @@ that wait 600 ms and 1.2 s), `Stopped` (Escape), `PointerLeft` (the 30 s pause l
 more remains but three scrolls moved nothing) and `Resized` (a frame came back at another size, so
 its rows cannot join the image; the frames before it are kept). After each scroll the loop settles by reading frames
 80 ms apart until two consecutive reads match, up to about 1.5 s; an animation that never settles
-uses the last read and the oracle decides. When an oracle exists a frame is kept only if the offset
+uses the last read and the oracle decides. An oracle that already reports the end before the first scroll describes the viewport, not the page (some browsers expose no document extent), so it is ignored for that capture and the pixels decide. When an oracle exists a frame is kept only if the offset
 advanced, so a nested scroller that changes pixels is dropped. Each read calls the capture heartbeat.
 Progress ("40%" with an oracle, else a frame count) is written to the active capture's menu text, and
 a capture that ended before the end of the page (limit, stall, pointer) carries the reason into its

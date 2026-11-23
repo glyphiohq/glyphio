@@ -1,0 +1,91 @@
+# Publishes the sync server image for amd64 and arm64 to GitHub Container Registry.
+#
+#   main      → ghcr.io/glyphiohq/glyphio-server:main  (and :sha-<short>)
+#   tag vX.Y.Z → :X.Y.Z, :X.Y and :latest
+#
+# Each push carries SLSA build provenance, and the image is labelled with the sync protocol
+# version it speaks (io.glyphio.protocol, from server/Dockerfile).
+name: Server image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - server/**
+      - src-tauri/crates/sync-proto/**
+      - .github/workflows/server-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/glyphio-server
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            io.glyphio.protocol=v1
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Prove the published image starts and reports healthy on this runner's architecture.
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' smoke)
+            [ "$status" = healthy ] && exit 0
+            sleep 2
+          done
+          docker logs smoke
+          exit 1

@@ -69,6 +69,7 @@ pub(crate) fn screencapture_interactive(flags: &[&str]) -> anyhow::Result<Shot> 
     let (width, height) = img.dimensions();
     Ok(Shot {
         rgba: img.into_raw(),
+        png: None,
         width,
         height,
         dpr: cursor_display_scale(),
@@ -112,6 +113,7 @@ pub(crate) fn capture_display_under_cursor() -> anyhow::Result<Shot> {
         .map_err(|e| anyhow!("reading captured pixels failed: {e:?}"))?;
     Ok(Shot {
         rgba,
+        png: None,
         width,
         height,
         dpr,
@@ -134,6 +136,7 @@ pub(crate) fn capture_front_window(with_browser_details: bool) -> anyhow::Result
     let (width, height) = img.dimensions();
     Ok(Shot {
         rgba: img.into_raw(),
+        png: None,
         width,
         height,
         dpr,
@@ -165,77 +168,123 @@ pub(crate) fn capture_rect_image(
     w: f64,
     h: f64,
 ) -> anyhow::Result<(image::RgbaImage, f64)> {
-    let content = SCShareableContent::get().map_err(|e| {
-        anyhow!("screen capture unavailable — grant Screen Recording permission in System Settings > Privacy & Security, then retry ({e:?})")
-    })?;
-    let displays = content.displays();
-    let windows = content.windows();
-    let ours = our_windows(&windows);
-
-    // (display, intersection with the requested rect), sharpest display first so the output
-    // scale is settled before anything is captured.
-    let mut pieces: Vec<DisplayPiece<'_>> = displays
-        .iter()
-        .filter_map(|d| {
-            let b = CGDisplay::new(d.display_id()).bounds();
-            let bounds = (b.origin.x, b.origin.y, b.size.width, b.size.height);
-            intersect((x, y, w, h), bounds).map(|r| (d, r))
-        })
-        .collect();
-    if pieces.is_empty() {
-        anyhow::bail!("selection is outside every display");
-    }
-    pieces.sort_by(|a, b| {
-        backing_scale(b.0.display_id()).total_cmp(&backing_scale(a.0.display_id()))
-    });
-    let scale = backing_scale(pieces[0].0.display_id());
-
-    if pieces.len() == 1 {
-        let (d, (cx, cy, cw, ch)) = pieces[0];
-        let img = capture_display_rect(d, &ours, cx, cy, cw, ch, scale)?;
-        let pw = img.width();
-        return Ok((img, pw as f64 / cw));
-    }
-
-    // Union of the covered pieces: the rect minus whatever falls off the desktop.
-    let (ux, uy) = (
-        pieces.iter().map(|p| p.1 .0).fold(f64::MAX, f64::min),
-        pieces.iter().map(|p| p.1 .1).fold(f64::MAX, f64::min),
-    );
-    let (ux2, uy2) = (
-        pieces
-            .iter()
-            .map(|p| p.1 .0 + p.1 .2)
-            .fold(f64::MIN, f64::max),
-        pieces
-            .iter()
-            .map(|p| p.1 .1 + p.1 .3)
-            .fold(f64::MIN, f64::max),
-    );
-    let mut out = image::RgbaImage::new(
-        ((ux2 - ux) * scale).round().max(1.0) as u32,
-        ((uy2 - uy) * scale).round().max(1.0) as u32,
-    );
-    let spanned = pieces.len();
-    for (d, (cx, cy, cw, ch)) in pieces {
-        let piece = capture_display_rect(d, &ours, cx, cy, cw, ch, scale)?;
-        image::imageops::overlay(
-            &mut out,
-            &piece,
-            ((cx - ux) * scale).round() as i64,
-            ((cy - uy) * scale).round() as i64,
-        );
-    }
-    log::info!(
-        "capture rect spanned {spanned} displays -> {}x{} @{scale}x",
-        out.width(),
-        out.height()
-    );
-    Ok((out, scale))
+    RectPlan::new(x, y, w, h)?.shoot()
 }
 
-/// One display's share of a rect, rendered at `scale` pixels per point.
-fn capture_display_rect(
+/// Everything a capture of one rect needs, settled once: which displays it falls on, which of
+/// our windows to leave out, and for each display the filter and configuration to ask
+/// ScreenCaptureKit with. Asking for the shareable content is a window-server round trip that
+/// costs more than the picture, so a scrolling capture plans once and shoots every frame from
+/// the same plan (see `capture::scroll`).
+///
+/// Our windows are the ones open when the plan is made. Glyphio opens none during a scrolling
+/// capture, and the menu-bar indicator is not a window the content filter sees.
+pub(crate) struct RectPlan {
+    /// Each display's piece and where it lands in the output, sharpest display first.
+    pieces: Vec<PlannedPiece>,
+    /// Output size in pixels, when the rect spans more than one display.
+    composite: Option<(u32, u32)>,
+    /// Width in points of a single piece, for its effective pixels-per-point scale.
+    points_wide: f64,
+    /// The sharpest display's scale, which every piece is rendered at.
+    scale: f64,
+}
+
+struct PlannedPiece {
+    filter: SCContentFilter,
+    config: SCStreamConfiguration,
+    at: (i64, i64),
+}
+
+impl RectPlan {
+    pub(crate) fn new(x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<Self> {
+        let content = SCShareableContent::get().map_err(|e| {
+            anyhow!("screen capture unavailable — grant Screen Recording permission in System Settings > Privacy & Security, then retry ({e:?})")
+        })?;
+        let displays = content.displays();
+        let windows = content.windows();
+        let ours = our_windows(&windows);
+
+        // (display, intersection with the requested rect), sharpest display first so the
+        // output scale is settled before anything is captured.
+        let mut pieces: Vec<DisplayPiece<'_>> = displays
+            .iter()
+            .filter_map(|d| {
+                let b = CGDisplay::new(d.display_id()).bounds();
+                let bounds = (b.origin.x, b.origin.y, b.size.width, b.size.height);
+                intersect((x, y, w, h), bounds).map(|r| (d, r))
+            })
+            .collect();
+        if pieces.is_empty() {
+            anyhow::bail!("selection is outside every display");
+        }
+        pieces.sort_by(|a, b| {
+            backing_scale(b.0.display_id()).total_cmp(&backing_scale(a.0.display_id()))
+        });
+        let scale = backing_scale(pieces[0].0.display_id());
+
+        // Union of the covered pieces: the rect minus whatever falls off the desktop.
+        let (ux, uy) = (
+            pieces.iter().map(|p| p.1 .0).fold(f64::MAX, f64::min),
+            pieces.iter().map(|p| p.1 .1).fold(f64::MAX, f64::min),
+        );
+        let (ux2, uy2) = (
+            pieces
+                .iter()
+                .map(|p| p.1 .0 + p.1 .2)
+                .fold(f64::MIN, f64::max),
+            pieces
+                .iter()
+                .map(|p| p.1 .1 + p.1 .3)
+                .fold(f64::MIN, f64::max),
+        );
+        let composite = (pieces.len() > 1).then(|| {
+            (
+                ((ux2 - ux) * scale).round().max(1.0) as u32,
+                ((uy2 - uy) * scale).round().max(1.0) as u32,
+            )
+        });
+        let points_wide = pieces[0].1 .2;
+        let planned = pieces
+            .iter()
+            .map(|&(d, (cx, cy, cw, ch))| {
+                let (filter, config) = display_rect_request(d, &ours, cx, cy, cw, ch, scale);
+                PlannedPiece {
+                    filter,
+                    config,
+                    at: (((cx - ux) * scale).round() as i64, ((cy - uy) * scale).round() as i64),
+                }
+            })
+            .collect();
+        if let Some((pw, ph)) = composite {
+            log::info!("capture rect spans {} displays -> {pw}x{ph} @{scale}x", pieces.len());
+        }
+        Ok(Self { pieces: planned, composite, points_wide, scale })
+    }
+
+    /// The rect now, plus its effective pixels-per-point scale.
+    pub(crate) fn shoot(&self) -> anyhow::Result<(image::RgbaImage, f64)> {
+        let Some((pw, ph)) = self.composite else {
+            let img = grab(&self.pieces[0])?;
+            let pw = img.width();
+            return Ok((img, pw as f64 / self.points_wide));
+        };
+        let mut out = image::RgbaImage::new(pw, ph);
+        for piece in &self.pieces {
+            image::imageops::overlay(&mut out, &grab(piece)?, piece.at.0, piece.at.1);
+        }
+        Ok((out, self.scale))
+    }
+}
+
+impl crate::platform::RectSession for RectPlan {
+    fn frame(&mut self) -> anyhow::Result<(image::RgbaImage, f64)> {
+        self.shoot()
+    }
+}
+
+/// How to ask for one display's share of a rect, rendered at `scale` pixels per point.
+fn display_rect_request(
     display: &SCDisplay,
     exclude: &[&SCWindow],
     cx: f64,
@@ -243,7 +292,7 @@ fn capture_display_rect(
     cw: f64,
     ch: f64,
     scale: f64,
-) -> anyhow::Result<image::RgbaImage> {
+) -> (SCContentFilter, SCStreamConfiguration) {
     let b = CGDisplay::new(display.display_id()).bounds();
     let filter = SCContentFilter::create()
         .with_display(display)
@@ -266,7 +315,11 @@ fn capture_display_rect(
             },
         })
         .with_shows_cursor(false);
-    let image = SCScreenshotManager::capture_image(&filter, &config)
+    (filter, config)
+}
+
+fn grab(piece: &PlannedPiece) -> anyhow::Result<image::RgbaImage> {
+    let image = SCScreenshotManager::capture_image(&piece.filter, &piece.config)
         .map_err(|e| anyhow!("capture failed: {e:?} — is Screen Recording granted?"))?;
     let (pw, ph) = (image.width() as u32, image.height() as u32);
     let rgba = image

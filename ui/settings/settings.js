@@ -9,7 +9,7 @@ import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shar
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 import {
   acceleratorFromKeyboardEvent,
-  CAPTURE_SHORTCUT_DEFAULTS,
+  SHORTCUT_DEFAULTS,
   createShortcutCaptureController,
   formatAccelerator,
   validateAccelerator,
@@ -124,19 +124,19 @@ const CAPTURE_SECTIONS = [
     ['shortcutCapturePage', 'hotkeys', 'Browser page (content only)', 'shortcutCapturePageSilent'],
     ['shortcutCaptureScroll', 'hotkeys', 'Scrolling area', 'shortcutCaptureScrollSilent'],
     ['shortcutCaptureScrollPage', 'hotkeys', 'Scrolling page (frontmost window)', 'shortcutCaptureScrollPageSilent'],
-    ['shortcutOpenHistory', 'text', 'Open capture history'],
   ]},
 ];
 
+// The shortcuts that open a Glyphio window live together under General: they are app-wide,
+// not tied to one tab's feature. Capture shortcuts stay on Capture, beside their modes.
 const GENERAL_SECTIONS = [
   { title: 'Startup', fields: [
     ['launchAtLogin', 'toggle', 'Launch Glyphio at login'],
   ]},
-];
-
-const SNIPPET_SECTIONS = [
-  { title: 'Hotkeys', fields: [
-    ['shortcutOpenPalette', 'text', 'Snippet search (Spotlight-style)'],
+  { title: 'Hotkeys', hint: 'Select a shortcut, then press its keys together.', fields: [
+    ['shortcutOpenPalette', 'hotkey', 'Snippet search (Spotlight-style)'],
+    ['shortcutOpenClipboard', 'hotkey', 'Open clipboard history'],
+    ['shortcutOpenHistory', 'hotkey', 'Open capture history'],
   ]},
 ];
 
@@ -151,7 +151,6 @@ const CLIPBOARD_SECTIONS = [
     ['clipboardHistory', 'toggle', 'Remember what I copy'],
     ['clipboardMaxItems', 'number', 'Entries kept'],
     ['clipboardMaxMb', 'number', 'Megabytes of copied images kept'],
-    ['shortcutOpenClipboard', 'text', 'Open clipboard history'],
   ]},
   { title: 'Never record from these apps', hint: `One name per line, matched loosely —
     <code>bank</code> catches “Banking”.`, fields: [
@@ -2451,7 +2450,7 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
-  renderSections(form, SNIPPET_SECTIONS);
+  renderSections(form, []); // just the shared Save button, for the delivery settings above
 }
 
 /**
@@ -2642,6 +2641,11 @@ function renderField(key, type, label, opts) {
     field.append(hotkeyPair(key, opts, label));
     return field;
   }
+  // One app-wide shortcut, recorded from a key press exactly like the capture shortcuts.
+  if (type === 'hotkey') {
+    field.append(shortcutRecorder(key, label, '', 'Not set'));
+    return field;
+  }
   let input;
   if (type === 'toggle') { input = el('input', { type: 'checkbox' }); input.checked = Boolean(state.settings[key]); }
   else if (type === 'select') { input = renderSelect(key, opts); }
@@ -2679,105 +2683,111 @@ function paintShortcutStatus(statuses) {
 /** The editor key and the straight-to-clipboard key for one capture mode. */
 function hotkeyPair(key, silentKey, label) {
   const wrap = el('div', { className: 'hotkey-pair' });
-  const buildRecorder = (settingsKey, caption, placeholder) => {
-    const box = el('div', { className: 'shortcut-box' });
-    const input = el('input', { type: 'hidden' });
-    input.value = state.settings[settingsKey] ?? '';
-    input.dataset.key = settingsKey;
-    input.dataset.type = 'text';
-    input.dataset.label = `${label} (${caption})`;
-
-    const record = el('button', {
-      type: 'button',
-      className: 'shortcut-recorder',
-      textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
-      title: `Record ${label.toLowerCase()} shortcut ${caption}`,
-    });
-    record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
-    const error = el('span', { className: 'field-error shortcut-error' });
-    error.setAttribute('role', 'alert');
-
-    const showValue = () => {
-      shortcutCaptureController.stop(recorderSession);
-      record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
-      record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
-      delete record.dataset.recording;
-    };
-    const showError = (message) => { error.textContent = message; };
-    const beginRecording = () => {
-      record.dataset.recording = 'yes';
-      record.textContent = 'Press shortcut…';
-      record.setAttribute('aria-label', `${label}, ${caption}: press a shortcut. Escape cancels.`);
-      showError('Press the keys together. Escape cancels.');
-      shortcutCaptureController.start(recorderSession);
-      record.focus({ preventScroll: true });
-    };
-
-    const recorderSession = {
-      cancel() {
-        showValue();
-        showError('');
-      },
-      handleKeydown(event) {
-        if (event.code === 'Escape') {
-          showValue();
-          showError('');
-          return;
-        }
-        const recorded = acceleratorFromKeyboardEvent(event);
-        if (recorded.error) {
-          showError(recorded.error);
-          return;
-        }
-        const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey), PLATFORM_ID);
-        if (!result.ok) {
-          showError(result.error);
-          return;
-        }
-        input.value = recorded.accelerator;
-        showValue();
-        showError('');
-      },
-    };
-
-    record.addEventListener('click', () => {
-      if (record.dataset.recording === 'yes') {
-        showValue();
-        showError('');
-      } else beginRecording();
-    });
-    record.addEventListener('blur', () => {
-      if (record.dataset.recording === 'yes') {
-        showValue();
-        showError('');
-      }
-    });
-
-    const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
-    clear.addEventListener('click', () => {
-      input.value = '';
-      showValue();
-      showError('');
-    });
-    const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
-    reset.addEventListener('click', () => {
-      input.value = CAPTURE_SHORTCUT_DEFAULTS[settingsKey] ?? '';
-      showValue();
-      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
-      showError(result.ok ? '' : result.error);
-    });
-    const actions = el('span', { className: 'shortcut-actions' });
-    actions.append(clear, reset);
-    box.append(input, record, actions,
-      el('span', { className: 'hotkey-caption', textContent: caption }), error,
-      shortcutWarning(settingsKey));
-    return box;
-  };
   wrap.append(
-    buildRecorder(key, 'opens the editor', ''),
-    buildRecorder(silentKey, 'to the clipboard', 'not set'),
+    shortcutRecorder(key, label, 'opens the editor', ''),
+    shortcutRecorder(silentKey, label, 'to the clipboard', 'not set'),
   );
   return wrap;
+}
+
+/**
+ * One shortcut field: select it, press the keys together, and the chord is validated and
+ * stored in a hidden input that `saveSettings` collects like any other field.
+ */
+function shortcutRecorder(settingsKey, label, caption, placeholder) {
+  const spoken = caption ? `${label}, ${caption}` : label;
+  const box = el('div', { className: 'shortcut-box' });
+  const input = el('input', { type: 'hidden' });
+  input.value = state.settings[settingsKey] ?? '';
+  input.dataset.key = settingsKey;
+  input.dataset.type = 'text';
+  input.dataset.label = caption ? `${label} (${caption})` : label;
+
+  const record = el('button', {
+    type: 'button',
+    className: 'shortcut-recorder',
+    textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
+    title: `Record ${label.toLowerCase()} shortcut${caption ? ` ${caption}` : ''}`,
+  });
+  record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
+  const error = el('span', { className: 'field-error shortcut-error' });
+  error.setAttribute('role', 'alert');
+
+  const showValue = () => {
+    shortcutCaptureController.stop(recorderSession);
+    record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
+    record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
+    delete record.dataset.recording;
+  };
+  const showError = (message) => { error.textContent = message; };
+  const beginRecording = () => {
+    record.dataset.recording = 'yes';
+    record.textContent = 'Press shortcut…';
+    record.setAttribute('aria-label', `${spoken}: press a shortcut. Escape cancels.`);
+    showError('Press the keys together. Escape cancels.');
+    shortcutCaptureController.start(recorderSession);
+    record.focus({ preventScroll: true });
+  };
+
+  const recorderSession = {
+    cancel() {
+      showValue();
+      showError('');
+    },
+    handleKeydown(event) {
+      if (event.code === 'Escape') {
+        showValue();
+        showError('');
+        return;
+      }
+      const recorded = acceleratorFromKeyboardEvent(event);
+      if (recorded.error) {
+        showError(recorded.error);
+        return;
+      }
+      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey), PLATFORM_ID);
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      input.value = recorded.accelerator;
+      showValue();
+      showError('');
+    },
+  };
+
+  record.addEventListener('click', () => {
+    if (record.dataset.recording === 'yes') {
+      showValue();
+      showError('');
+    } else beginRecording();
+  });
+  record.addEventListener('blur', () => {
+    if (record.dataset.recording === 'yes') {
+      showValue();
+      showError('');
+    }
+  });
+
+  const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
+  clear.addEventListener('click', () => {
+    input.value = '';
+    showValue();
+    showError('');
+  });
+  const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
+  reset.addEventListener('click', () => {
+    input.value = SHORTCUT_DEFAULTS[settingsKey] ?? '';
+    showValue();
+    const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
+    showError(result.ok ? '' : result.error);
+  });
+  const actions = el('span', { className: 'shortcut-actions' });
+  actions.append(clear, reset);
+  box.append(input, record, actions);
+  if (caption) box.append(el('span', { className: 'hotkey-caption', textContent: caption }));
+  box.append(error, shortcutWarning(settingsKey));
+  return box;
 }
 
 /** Current values for every other Glyphio shortcut, including fields on other settings tabs. */
@@ -2905,7 +2915,7 @@ function deviceLocale() {
 
 async function saveSettings() {
   if (!validateCaptureRecorders()) {
-    setStatus('Fix the highlighted capture shortcuts before saving.', 'err');
+    setStatus('Fix the highlighted shortcuts before saving.', 'err');
     return;
   }
   const next = { ...state.settings };

@@ -20,6 +20,17 @@ export const CAPTURE_SHORTCUT_DEFAULTS = Object.freeze({
   shortcutCaptureScrollPageSilent: '',
 });
 
+// The app-wide shortcuts that open a Glyphio window rather than take a capture. Same values
+// as the Rust defaults in settings.rs.
+export const APP_SHORTCUT_DEFAULTS = Object.freeze({
+  shortcutOpenPalette: 'Control+Shift+Space',
+  shortcutOpenClipboard: 'Alt+Shift+C',
+  shortcutOpenHistory: 'Alt+Shift+H',
+});
+
+/** Every recordable shortcut's default, used by each recorder's Reset button. */
+export const SHORTCUT_DEFAULTS = Object.freeze({ ...CAPTURE_SHORTCUT_DEFAULTS, ...APP_SHORTCUT_DEFAULTS });
+
 const MODIFIER_ALIASES = new Map([
   ['alt', 'Alt'], ['option', 'Alt'],
   ['control', 'Control'], ['ctrl', 'Control'],

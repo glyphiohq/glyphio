@@ -1,6 +1,8 @@
 //! Scrolling capture: select a region (a whole page, or just a scrollable panel inside one),
 //! then the app repeatedly captures that exact rect while injecting scroll-wheel events at its
-//! centre, stitches the frames on their overlap, and hands the tall result to the editor.
+//! centre, stitches the frames on their overlap as they arrive, and hands the tall result to the
+//! editor. Rows are encoded as they are stitched, so only a few frames and the compressed image
+//! are ever in memory, and every frame comes from one capture session.
 //!
 //! Fully in-app and application-agnostic — no browser extension, no DOM access: it works on
 //! web pages, Slack threads, PDFs, terminals, IDE panes… anything that responds to a scroll
@@ -22,9 +24,13 @@ use std::time::{Duration, Instant};
 use image::RgbaImage;
 
 use super::Shot;
-use stitch::{band_gray, mad, stitch};
-use crate::platform::Progress;
+use png_stream::PngStream;
+use stitch::{band_gray, mad, SizeChanged, Stitcher};
+use crate::platform::{Progress, RectSession};
 
+#[cfg(test)]
+mod fixtures;
+mod png_stream;
 mod stitch;
 
 /// Default height limit in points; `scrollMaxHeightPt` overrides it.
@@ -90,11 +96,15 @@ pub trait ScrollDriver {
     }
 }
 
-struct PlatformDriver;
+/// The platform's capturer and input, with one capture session for the whole capture.
+#[derive(Default)]
+struct PlatformDriver {
+    session: Reused,
+}
 
 impl ScrollDriver for PlatformDriver {
     fn capture(&mut self, rect: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
-        crate::platform::current().capturer.rect_image(rect.0, rect.1, rect.2, rect.3)
+        self.session.frame(|| crate::platform::current().capturer.rect_session(rect))
     }
 
     fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
@@ -105,6 +115,41 @@ impl ScrollDriver for PlatformDriver {
     /// parked. Also keeps the browser's accessibility tree warm for the whole capture.
     fn progress(&mut self, rect: (f64, f64, f64, f64)) -> Option<Progress> {
         crate::platform::current().inspector.scroll_progress((rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0))
+    }
+}
+
+/// One capture session reused for every frame of a capture.
+///
+/// Deciding what to capture (which displays the region falls on, which windows to leave out)
+/// is a round trip to the window server that costs more than taking the picture, and the loop
+/// takes several pictures per scroll while the page settles. So it is done once, when the first
+/// frame is asked for. If a frame fails (a display was unplugged or rearranged mid-capture) the
+/// session is begun again once before the error is believed.
+#[derive(Default)]
+struct Reused {
+    session: Option<Box<dyn RectSession + 'static>>,
+}
+
+impl Reused {
+    fn frame(
+        &mut self,
+        begin: impl Fn() -> anyhow::Result<Box<dyn RectSession + 'static>>,
+    ) -> anyhow::Result<(RgbaImage, f64)> {
+        let fresh = self.session.is_none();
+        let session = match &mut self.session {
+            Some(s) => s,
+            slot => slot.insert(begin()?),
+        };
+        match session.frame() {
+            Ok(frame) => Ok(frame),
+            Err(e) if fresh => Err(e),
+            Err(e) => {
+                log::info!("scrolling capture: frame failed ({e:#}); beginning a new capture session");
+                self.session = None;
+                let session = self.session.insert(begin()?);
+                session.frame()
+            }
+        }
     }
 }
 
@@ -148,7 +193,7 @@ pub fn capture(
     input.warp_cursor((x + w / 2.0, y + h / 2.0));
     std::thread::sleep(Duration::from_millis(120));
 
-    let mut driver = PlatformDriver;
+    let mut driver = PlatformDriver::default();
     let mut control = LiveControl { job: &job, heartbeat: &heartbeat, progress: &progress };
     let result = capture_loop(&job, &mut driver, &mut control);
     // Give the pointer back where we found it — but only if it is still where we put it. If the
@@ -234,6 +279,8 @@ pub enum StopReason {
     LimitReached,
     /// The oracle says more remains but scrolling made no progress.
     Stalled,
+    /// The region came back at another size (a resize, a move to a display of another scale).
+    Resized,
 }
 
 impl StopReason {
@@ -245,6 +292,7 @@ impl StopReason {
             StopReason::PointerLeft => "stopped because the pointer left the region",
             StopReason::LimitReached => "stopped at the height limit; more of the page remains",
             StopReason::Stalled => "stopped because the page stopped scrolling",
+            StopReason::Resized => "stopped because the captured region changed size",
         }
     }
 
@@ -308,19 +356,21 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
     driver: &mut D,
     ctl: &mut C,
 ) -> anyhow::Result<Outcome> {
-    let mut frames: Vec<RgbaImage> = Vec::new();
     let mut progress = driver.progress(job.rect);
     let (first, mut capture_dpr) = driver.capture(job.rect)?;
     // Height gathered so far in points, the basis for the height limit.
     let mut covered_pt = first.height() as f64 / capture_dpr;
-    frames.push(first);
-    ctl.progress(progress_text(frames.len(), progress));
+    // How far each scroll asks the page to move, in pixels, and so the expected overlap.
+    let nominal_scroll = (job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i64;
+    // Frames are joined as they come and their fresh rows encoded straight away: only the last
+    // couple of frames and the compressed image are ever held.
+    let mut stitcher = Stitcher::new(PngStream::new(first.width()), nominal_scroll);
+    stitcher.push(first, None)?;
+    ctl.progress(progress_text(stitcher.frames(), progress));
     let mut stalls = 0u32;
-    // Measured page movement between consecutive kept frames, in pixels, when the oracle knew.
-    let mut scrolls: Vec<Option<i64>> = Vec::new();
 
     let reason = 'scrolling: loop {
-        if let Some(reason) = ctl.before_scroll(frames.len()) {
+        if let Some(reason) = ctl.before_scroll(stitcher.frames()) {
             break reason;
         }
         if progress.is_some_and(|p| p.at_end()) {
@@ -337,7 +387,7 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
         let now = driver.progress(job.rect);
         let moved = match (progress, now) {
             (Some(_), Some(_)) => progress_advanced(progress, now),
-            _ => !frames.last().is_some_and(|prev| frames_identical(prev, &frame)),
+            _ => !stitcher.last().is_some_and(|prev| frames_identical(prev, &frame)),
         };
 
         if now.is_some() && progress.is_some() {
@@ -364,7 +414,7 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
                 let Some((f, d)) = settled_frame(driver, ctl, job.rect)? else {
                     break 'scrolling StopReason::Stopped;
                 };
-                let differs = !frames.last().is_some_and(|prev| frames_identical(prev, &f));
+                let differs = !stitcher.last().is_some_and(|prev| frames_identical(prev, &f));
                 frame = f;
                 dpr = d;
                 if differs {
@@ -376,34 +426,39 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
                 break StopReason::ReachedEnd;
             }
         }
+        // Measured page movement since the last kept frame, in pixels, when the oracle knew.
+        let scroll_px = match (progress, now) {
+            (Some(a), Some(b)) => Some(((b.offset - a.offset) * dpr).round() as i64),
+            _ => None,
+        };
+        match stitcher.push(frame, scroll_px) {
+            Ok(()) => {}
+            // Rows of another width cannot join the image: keep what is there and say why.
+            Err(e) if e.is::<SizeChanged>() => break StopReason::Resized,
+            Err(e) => return Err(e),
+        }
         stalls = 0;
         capture_dpr = dpr;
         covered_pt = match now {
             Some(p) => p.offset + p.viewport,
             None => covered_pt + job.rect.3 * SCROLL_FRACTION,
         };
-        scrolls.push(match (progress, now) {
-            (Some(a), Some(b)) => Some(((b.offset - a.offset) * dpr).round() as i64),
-            _ => None,
-        });
         progress = now.or(progress);
-        frames.push(frame);
-        ctl.progress(progress_text(frames.len(), progress));
+        ctl.progress(progress_text(stitcher.frames(), progress));
     };
+    let frames = stitcher.frames();
     log::info!(
-        "scrolling capture ended: {} ({} frame(s), {:.0} pt)",
+        "scrolling capture ended: {} ({frames} frame(s), {covered_pt:.0} pt)",
         reason.describe(),
-        frames.len(),
-        covered_pt
     );
 
-    anyhow::ensure!(!frames.is_empty(), "no frames captured");
-    let nominal_scroll = (job.rect.3 * SCROLL_FRACTION * capture_dpr).round() as i64;
-    let stitched = stitch(frames, &scrolls, nominal_scroll);
-    let (width, height) = stitched.dimensions();
+    let png = stitcher.finish()?;
+    let width = png.width();
+    let (png, height) = png.finish()?;
     Ok(Outcome {
         shot: Shot {
-            rgba: stitched.into_raw(),
+            rgba: Vec::new(),
+            png: Some(png),
             width,
             height,
             dpr: capture_dpr,
@@ -499,6 +554,14 @@ fn frames_identical(a: &RgbaImage, b: &RgbaImage) -> bool {
 mod tests {
     use super::*;
 
+    /// The pixels of a finished capture, decoded from the PNG it carries.
+    fn pixels(shot: &Shot) -> RgbaImage {
+        let png = shot.png.as_ref().expect("a scrolling capture arrives encoded");
+        let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).expect("valid PNG").to_rgba8();
+        assert_eq!(img.dimensions(), (shot.width, shot.height), "reported size");
+        img
+    }
+
     #[test]
     fn the_capture_scrolls_only_while_the_pointer_is_its_own() {
         let job = Job::new((100.0, 100.0, 800.0, 600.0));
@@ -579,8 +642,7 @@ mod tests {
         assert!(driver.scrolls > 0);
         assert!(shot.height > view_h, "capture must advance beyond its first frame");
         assert_eq!(shot.height, page_h, "end-of-content must not duplicate a frame band");
-        let stitched = RgbaImage::from_raw(shot.width, shot.height, shot.rgba)
-            .expect("shot pixels should have the reported dimensions");
+        let stitched = pixels(&shot);
         for y in (0..page_h).step_by(11) {
             for x in (0..w).step_by(7) {
                 assert_eq!(stitched.get_pixel(x, y), expected.get_pixel(x, y));
@@ -622,7 +684,7 @@ mod tests {
         assert_eq!(driver.scrolls, 0);
         assert_eq!((shot.width, shot.height), (w, view_h));
         assert_eq!(
-            RgbaImage::from_raw(shot.width, shot.height, shot.rgba).unwrap(),
+            pixels(&shot),
             expected_first
         );
     }
@@ -824,7 +886,7 @@ mod tests {
         let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
         assert_eq!(out.reason, StopReason::ReachedEnd);
         assert_eq!(out.shot.height, 600);
-        let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+        let got = pixels(&out.shot);
         assert_eq!(got, expected, "no half-moved frame may reach the stitch");
     }
 
@@ -874,7 +936,7 @@ mod tests {
             let expected = page.page.clone();
             let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
             assert_eq!(out.reason, StopReason::ReachedEnd, "oracle {oracle}");
-            let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+            let got = pixels(&out.shot);
             assert!(got == expected, "oracle {oracle}: height {}", got.height());
         }
     }
@@ -890,7 +952,7 @@ mod tests {
             let doc = page.page.clone();
             let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
             assert_eq!(out.reason, StopReason::ReachedEnd, "oracle {oracle}");
-            let got = RgbaImage::from_raw(out.shot.width, out.shot.height, out.shot.rgba).unwrap();
+            let got = pixels(&out.shot);
             // header, the document rows the bars leave visible, footer
             assert_eq!(got.height(), 80 + (3300 - 100 - 80) + 100, "oracle {oracle}");
             assert!(image::imageops::crop_imm(&got, 0, 0, 48, 80).to_image() == header);
@@ -917,4 +979,249 @@ mod tests {
 
         assert!(!stopping());
     }
+
+    // ---- pages that look like real ones (see `fixtures`) --------------------------------
+
+    use fixtures::{render, whole, Article, Chrome, Feed, Rows};
+
+    /// A fixture page behind a viewport, at a Retina scale, optionally with fixed chrome.
+    struct Fixture<'a> {
+        page: &'a dyn Rows,
+        chrome: Option<&'a Chrome>,
+        offset: u32,
+        view_h: u32,
+        dpr: f64,
+        oracle: bool,
+        /// The last frame drawn and its offset: the loop reads each position several times.
+        drawn: Option<(u32, RgbaImage)>,
+    }
+
+    impl<'a> Fixture<'a> {
+        fn new(page: &'a dyn Rows, view_h: u32, oracle: bool) -> Self {
+            Self { page, chrome: None, offset: 0, view_h, dpr: 2.0, oracle, drawn: None }
+        }
+
+        fn job(&self) -> Job {
+            Job::new((0.0, 0.0, self.page.width() as f64 / self.dpr, self.view_h as f64 / self.dpr))
+        }
+
+        /// What the stitched result should be: the page with the chrome where the first and
+        /// last frames show it.
+        fn expected(&self) -> RgbaImage {
+            let mut img = whole(self.page);
+            if let Some(c) = self.chrome {
+                let (w, h) = img.dimensions();
+                let last_top = h - self.view_h;
+                let stride = w as usize * 4;
+                for (y, row) in img.chunks_exact_mut(stride).enumerate() {
+                    let y = y as u32;
+                    if y < c.header {
+                        c.row(y, self.view_h, w, row);
+                    } else if y >= h - c.footer {
+                        c.row(y - last_top, self.view_h, w, row);
+                    }
+                }
+            }
+            img
+        }
+    }
+
+    impl ScrollDriver for Fixture<'_> {
+        fn capture(&mut self, _: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+            if let Some((at, img)) = &self.drawn {
+                if *at == self.offset {
+                    return Ok((img.clone(), self.dpr));
+                }
+            }
+            let mut img = render(self.page, self.offset, self.view_h);
+            if let Some(c) = self.chrome {
+                let w = img.width();
+                for (vy, row) in img.chunks_exact_mut(w as usize * 4).enumerate() {
+                    if (vy as u32) < c.header || vy as u32 >= self.view_h - c.footer || c.sidebar > 0 {
+                        c.row(vy as u32, self.view_h, w, row);
+                    }
+                }
+            }
+            self.drawn = Some((self.offset, img.clone()));
+            Ok((img, self.dpr))
+        }
+        fn scroll(&mut self, delta: i32) -> anyhow::Result<()> {
+            self.offset = (self.offset + delta.unsigned_abs()).min(self.page.height() - self.view_h);
+            Ok(())
+        }
+        fn progress(&mut self, _: (f64, f64, f64, f64)) -> Option<Progress> {
+            self.oracle.then(|| Progress {
+                offset: self.offset as f64 / self.dpr,
+                extent: self.page.height() as f64 / self.dpr,
+                viewport: self.view_h as f64 / self.dpr,
+            })
+        }
+    }
+
+    fn capture_fixture(f: &mut Fixture) -> RgbaImage {
+        let out = capture_with_driver(f.job(), f).expect("capture");
+        assert_eq!(out.reason, StopReason::ReachedEnd);
+        assert_eq!(out.shot.dpr, 2.0);
+        pixels(&out.shot)
+    }
+
+    /// Where two images first differ, for a readable failure.
+    fn first_difference(got: &RgbaImage, want: &RgbaImage) -> String {
+        if got.dimensions() != want.dimensions() {
+            return format!("size {:?}, expected {:?}", got.dimensions(), want.dimensions());
+        }
+        let stride = got.width() as usize * 4;
+        let row = got.chunks_exact(stride).zip(want.chunks_exact(stride)).position(|(a, b)| a != b);
+        format!("first differing row {row:?}")
+    }
+
+    #[test]
+    fn a_long_article_with_blank_space_and_code_stitches_exactly() {
+        // 320 pt wide at 2x (a reading column), a 750 pt viewport: paragraphs, headings, code, pictures, rules and
+        // runs of blank rows longer than the overlap probe.
+        for seed in [1, 3] {
+            let page = Article::new(640, 6000, 2, seed);
+            for oracle in [true, false] {
+                let mut f = Fixture::new(&page, 1500, oracle);
+                let want = f.expected();
+                let got = capture_fixture(&mut f);
+                assert!(got == want, "seed {seed}, oracle {oracle}: {}", first_difference(&got, &want));
+            }
+        }
+    }
+
+    #[test]
+    fn a_feed_of_identical_cards_keeps_every_card_once() {
+        // The card layout repeats every 288 px; only the text tells cards apart, so a join
+        // that slips by one card would still match the chrome.
+        let page = Feed::new(640, 24, 2);
+        for oracle in [true, false] {
+            let mut f = Fixture::new(&page, 1400, oracle);
+            let want = f.expected();
+            let got = capture_fixture(&mut f);
+            assert!(got == want, "oracle {oracle}: {}", first_difference(&got, &want));
+        }
+    }
+
+    #[test]
+    fn a_chat_window_keeps_its_header_and_composer_once() {
+        let page = Article::new(640, 5000, 2, 7);
+        let chrome = Chrome::new(112, 136, 0, 2);
+        for oracle in [true, false] {
+            let mut f = Fixture::new(&page, 1500, oracle);
+            f.chrome = Some(&chrome);
+            let want = f.expected();
+            let got = capture_fixture(&mut f);
+            assert!(got == want, "oracle {oracle}: {}", first_difference(&got, &want));
+        }
+    }
+
+    #[test]
+    fn a_fixed_sidebar_does_not_disturb_the_join_of_the_pane_beside_it() {
+        let page = Article::new(720, 5000, 2, 8);
+        let chrome = Chrome::new(112, 136, 180, 2);
+        for oracle in [true, false] {
+            let mut f = Fixture::new(&page, 1500, oracle);
+            f.chrome = Some(&chrome);
+            let want = f.expected();
+            let got = capture_fixture(&mut f);
+            assert_eq!(got.dimensions(), want.dimensions(), "oracle {oracle}");
+            // The sidebar itself repeats down the image (a known limitation); the pane beside
+            // it is exact.
+            let pane = |img: &RgbaImage| image::imageops::crop_imm(img, 180, 112, 540, img.height() - 248).to_image();
+            assert!(pane(&got) == pane(&want), "oracle {oracle}: {}", first_difference(&pane(&got), &pane(&want)));
+        }
+    }
+
+    // ---- one capture session per capture ------------------------------------------------
+
+    /// Counts sessions begun and frames taken; fails the frames it is told to.
+    #[derive(Default)]
+    struct Sessions {
+        begun: std::cell::Cell<u32>,
+        frames: std::rc::Rc<std::cell::Cell<u32>>,
+        fail_on: std::rc::Rc<std::cell::RefCell<Vec<u32>>>,
+    }
+
+    struct CountingSession {
+        frames: std::rc::Rc<std::cell::Cell<u32>>,
+        fail_on: std::rc::Rc<std::cell::RefCell<Vec<u32>>>,
+    }
+
+    impl RectSession for CountingSession {
+        fn frame(&mut self) -> anyhow::Result<(RgbaImage, f64)> {
+            let n = self.frames.get() + 1;
+            self.frames.set(n);
+            if self.fail_on.borrow().contains(&n) {
+                anyhow::bail!("display went away");
+            }
+            Ok((RgbaImage::new(4, 4), 2.0))
+        }
+    }
+
+    impl Sessions {
+        fn begin(&self) -> anyhow::Result<Box<dyn RectSession + 'static>> {
+            self.begun.set(self.begun.get() + 1);
+            Ok(Box::new(CountingSession { frames: self.frames.clone(), fail_on: self.fail_on.clone() }))
+        }
+    }
+
+    #[test]
+    fn every_frame_of_a_capture_comes_from_one_session() {
+        let s = Sessions::default();
+        let mut reused = Reused::default();
+        for _ in 0..25 {
+            reused.frame(|| s.begin()).unwrap();
+        }
+        assert_eq!((s.begun.get(), s.frames.get()), (1, 25));
+    }
+
+    #[test]
+    fn a_failed_frame_begins_the_session_again_once() {
+        let s = Sessions::default();
+        let mut reused = Reused::default();
+        reused.frame(|| s.begin()).unwrap();
+        // A display is unplugged: the next frame fails, a new session takes it.
+        s.fail_on.borrow_mut().push(2);
+        reused.frame(|| s.begin()).unwrap();
+        assert_eq!((s.begun.get(), s.frames.get()), (2, 3));
+        reused.frame(|| s.begin()).unwrap();
+        assert_eq!(s.begun.get(), 2, "the new session is kept");
+        // A failure the new session cannot fix either is reported, not retried forever.
+        s.fail_on.borrow_mut().extend([5, 6]);
+        assert!(reused.frame(|| s.begin()).is_err());
+        assert_eq!(s.begun.get(), 3);
+        // Nor does a session that fails on its very first frame get a second try.
+        let fresh = Sessions::default();
+        fresh.fail_on.borrow_mut().push(1);
+        assert!(Reused::default().frame(|| fresh.begin()).is_err());
+        assert_eq!(fresh.begun.get(), 1);
+    }
+
+    #[test]
+    fn a_region_that_changes_size_ends_the_capture_with_what_it_has() {
+        struct Shrinks(Page);
+        impl ScrollDriver for Shrinks {
+            fn capture(&mut self, r: (f64, f64, f64, f64)) -> anyhow::Result<(RgbaImage, f64)> {
+                let (img, dpr) = self.0.capture(r)?;
+                // The window is resized once the page has scrolled twice.
+                if self.0.offset >= 240 {
+                    return Ok((image::imageops::crop_imm(&img, 0, 0, 40, img.height()).to_image(), dpr));
+                }
+                Ok((img, dpr))
+            }
+            fn scroll(&mut self, d: i32) -> anyhow::Result<()> {
+                self.0.scroll(d)
+            }
+        }
+        let mut d = Shrinks(Page::new(64, 2000, 200));
+        let out = capture_with_driver(Job::new((0.0, 0.0, 64.0, 200.0)), &mut d).unwrap();
+        assert_eq!(out.reason, StopReason::Resized);
+        assert!(out.reason.is_incomplete());
+        let got = pixels(&out.shot);
+        // The first two frames: 200 rows, then 120 fresh ones.
+        assert_eq!(got.dimensions(), (64, 320));
+        assert!(got == image::imageops::crop_imm(&d.0.page, 0, 0, 64, 320).to_image());
+    }
+
 }

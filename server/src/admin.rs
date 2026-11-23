@@ -585,28 +585,18 @@ pub async fn create_invite(
         }
     };
 
-    // 32 random bytes from the OS CSPRNG; only the SHA-256 is persisted.
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let token = hex::encode(bytes);
-    let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(token.as_bytes()));
-
-    let expires_at = body.expires_days.map(|d| {
-        (chrono::Utc::now() + chrono::Duration::days(d.clamp(1, 3650) as i64))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    });
-    let stored = crate::storage::StoredToken {
-        token_sha256: sha,
-        sub: sub.clone(),
-        email: body.email.clone(),
-        teams: vec![team.clone()],
-        role: pinned.map(|r| crate::storage::role_to_str(r).to_string()),
-        created_by: id.sub.clone(),
-        created_at: crate::storage::now_rfc3339(),
-        expires_at: expires_at.clone(),
-        revoked_at: None,
-    };
-    state.storage.store_token(&stored).await.map_err(ApiError::Storage)?;
+    let (token, stored) = mint_invite(
+        state.storage.as_ref(),
+        &id.sub,
+        &team,
+        &sub,
+        body.email.clone(),
+        pinned,
+        body.expires_days,
+    )
+    .await
+    .map_err(ApiError::Storage)?;
+    let expires_at = stored.expires_at.clone();
     rbac::audit_log(
         &state,
         AuditEntry::new(&id.sub, "invite.create").team(&team).target(&sub).detail(format!(
@@ -623,6 +613,65 @@ pub async fn create_invite(
         role: stored.role,
         expires_at,
     }))
+}
+
+/// Mint and store an invite token for `sub` on `team`, returning the plaintext (shown once)
+/// and the stored row. Shared by the admin API and the `invite`/`init` CLI commands.
+pub async fn mint_invite(
+    storage: &dyn crate::storage::Storage,
+    created_by: &str,
+    team: &str,
+    sub: &str,
+    email: Option<String>,
+    role: Option<Role>,
+    expires_days: Option<u32>,
+) -> Result<(String, crate::storage::StoredToken), crate::storage::StorageError> {
+    // 32 random bytes from the OS CSPRNG; only the SHA-256 is persisted.
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    let sha = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(token.as_bytes()));
+    let expires_at = expires_days.map(|d| {
+        (chrono::Utc::now() + chrono::Duration::days(d.clamp(1, 3650) as i64))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    });
+    let stored = crate::storage::StoredToken {
+        token_sha256: sha,
+        sub: sub.to_string(),
+        email,
+        teams: vec![team.to_string()],
+        role: role.map(|r| crate::storage::role_to_str(r).to_string()),
+        created_by: created_by.to_string(),
+        created_at: crate::storage::now_rfc3339(),
+        expires_at,
+        revoked_at: None,
+    };
+    storage.store_token(&stored).await?;
+    Ok((token, stored))
+}
+
+/// Whether `team` is a valid team name: 1-64 chars of `[A-Za-z0-9._-]`.
+pub fn valid_team_name(team: &str) -> bool {
+    !team.is_empty()
+        && team.len() <= 64
+        && team.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// The `glyphio://join` link the app accepts for a token invite on the server at `public_url`.
+pub fn invite_link(public_url: &str, token: &str) -> String {
+    format!(
+        "glyphio://join?server={}&mode=token&token={token}",
+        url_encode(public_url.trim_end_matches('/'))
+    )
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Revoke a member's access to the team: their stored tokens lose this team (revoked outright

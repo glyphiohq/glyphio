@@ -55,6 +55,10 @@ pub trait Storage: Send + Sync {
     /// Remove a role row (the identity falls back to default resolution).
     async fn remove_role(&self, team: &str, sub: &str) -> Result<(), StorageError>;
 
+    /// Whether any team has an owner role row. `init` refuses to run once this is true, and
+    /// the first-run setup page disappears.
+    async fn owner_exists(&self) -> Result<bool, StorageError>;
+
     /// All role rows for `sub` across teams — grants access to teams outside the identity's
     /// claim. Unsorted.
     async fn roles_for_sub(&self, sub: &str) -> Result<Vec<(String, Role)>, StorageError>;

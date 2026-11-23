@@ -15,15 +15,7 @@ import {
   validateAccelerator,
 } from './shortcut-recorder.mjs';
 import { registrationNotice, statusFor } from './shortcut-status.mjs';
-import {
-  afterPermissionPrompt,
-  initialPermissionState,
-  PERMISSION_KIND,
-  PERMISSION_REMEDY,
-  permissionSurface,
-  shouldShowPermissionBanner,
-  withNativePermissionStatus,
-} from './permissions.mjs';
+import { checklistVisible, grantSurface, PERMISSION_KIND } from './permissions.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -32,17 +24,12 @@ const PLATFORM_ID = IS_MAC ? 'macos' : 'windows';
 const app = document.getElementById('app');
 const shortcutCaptureController = createShortcutCaptureController(document);
 
-const PROMPTED_KEY = {
-  [PERMISSION_KIND.ACCESSIBILITY]: 'glyphio-accessibility-prompted',
-  [PERMISSION_KIND.SCREEN_RECORDING]: 'glyphio-screen-recording-prompted',
+// The native grant model (permissions.rs), the same one the setup window shows. `null` until
+// the first reading arrives.
+const grants = {
+  [PERMISSION_KIND.ACCESSIBILITY]: null,
+  [PERMISSION_KIND.SCREEN_RECORDING]: null,
 };
-const PERMISSION_GUIDANCE_MIGRATED_KEY = 'glyphio-permission-guidance-v1';
-
-const permissionState = {
-  [PERMISSION_KIND.ACCESSIBILITY]: initialPermissionState({ promptAvailable: false }),
-  [PERMISSION_KIND.SCREEN_RECORDING]: initialPermissionState({ promptAvailable: false }),
-};
-let permissionGuidanceReady = false;
 
 const state = {
   snippets: [],
@@ -163,7 +150,6 @@ init().catch((e) => setStatus(e.message, 'err'));
 async function init() {
   renderShell();
   await reloadAll();
-  initializePermissionGuidance();
   await wirePermissionGuidance();
   await wireSecureInput();
   await wireEngineStatus();
@@ -208,8 +194,11 @@ function renderShell() {
       <h1>Glyphio</h1>
       <div class="spacer"></div>
     </header>
-    <section class="permission-panel" id="permission-panel" aria-label="macOS permissions" hidden>
-      <div class="permission-panel-title">macOS permissions</div>
+    <section class="permission-panel" id="permission-panel" aria-label="Finish setup" hidden>
+      <div class="permission-panel-head">
+        <div class="permission-panel-title">Finish setup</div>
+        <button type="button" class="ghost sm" data-run-setup>Run setup again</button>
+      </div>
       <div data-permission-rows></div>
     </section>
     <div class="ax-banner" id="si-banner">
@@ -234,41 +223,20 @@ function renderShell() {
 }
 
 // --- Permission guidance ----------------------------------------------------
-
-function initializePermissionGuidance() {
-  // On the first build with unified guidance, classify established installs as having already
-  // used macOS's one-shot prompts. A genuinely new install keeps each prompt available across
-  // restarts until that specific action is clicked.
-  if (!localStorage.getItem(PERMISSION_GUIDANCE_MIGRATED_KEY)) {
-    const establishedInstall = Boolean(
-      localStorage.getItem('glyphio-welcomed') || state.syncConfig?.enabled || state.snippets.length > 2,
-    );
-    if (establishedInstall) {
-      for (const key of Object.values(PROMPTED_KEY)) localStorage.setItem(key, '1');
-    }
-    localStorage.setItem(PERMISSION_GUIDANCE_MIGRATED_KEY, '1');
-  }
-  for (const kind of Object.values(PERMISSION_KIND)) {
-    permissionState[kind] = initialPermissionState({
-      promptAvailable: !localStorage.getItem(PROMPTED_KEY[kind]),
-    });
-  }
-  permissionGuidanceReady = true;
-}
+// One checklist, shared with the setup window: the same grant states and the same single
+// action per row. The global panel appears only while something is unresolved; Settings →
+// General always shows both rows, so a hidden panel never means "unknown".
 
 function renderPermissionGuidance() {
   const panel = document.getElementById('permission-panel');
-  if (!panel || !permissionGuidanceReady) return;
-
-  const surface = permissionSurface(permissionState);
-  // Keep the global guidance quiet once both capabilities work. The same two rows remain
-  // inspectable under Settings → General, so "no banner" never means "unknown status".
+  if (!panel) return;
+  const surface = grantSurface(grants);
   const inspectingInSettings = state.selected === 'settings' && state.settingsTab === 'general';
-  panel.hidden = !shouldShowPermissionBanner(surface, inspectingInSettings);
+  panel.hidden = !checklistVisible(surface, inspectingInSettings);
   const markup = surface.rows.map(([kind, row]) => `
     <div class="perm-row" data-kind="${kind}">
       <div class="perm-info"><strong>${row.name}</strong>
-        <span class="perm-sub">${row.description}</span></div>
+        <span class="perm-sub">${row.explanation || row.description}</span></div>
       <span class="perm-state" data-phase="${row.phase}" role="status" aria-live="polite">${row.status}</span>
       <div class="perm-actions">${row.actions.map((action) =>
         `<button type="button" class="${action.style}" data-permission-action="${action.id}">${action.label}</button>`).join('')}</div>
@@ -276,70 +244,57 @@ function renderPermissionGuidance() {
   document.querySelectorAll('[data-permission-rows]').forEach((rows) => { rows.innerHTML = markup; });
 }
 
+function applyGrants(status) {
+  if (!status) return;
+  for (const kind of Object.values(PERMISSION_KIND)) grants[kind] = status[kind] ?? grants[kind];
+  renderPermissionGuidance();
+}
+
 async function refreshPermissionGuidance() {
-  try {
-    const [accessibility, screenRecording] = await Promise.all([
-      invoke('accessibility_status'),
-      invoke('screen_recording_status'),
-    ]);
-    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
-      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(accessibility),
-    );
-    // A successful first prompt still needs the relaunch it promised, even when preflight starts
-    // returning true. On the next process launch this in-memory remedy is gone and granted wins.
-    if (permissionState[PERMISSION_KIND.SCREEN_RECORDING].remedy !== PERMISSION_REMEDY.RELAUNCH) {
-      permissionState[PERMISSION_KIND.SCREEN_RECORDING] = withNativePermissionStatus(
-        permissionState[PERMISSION_KIND.SCREEN_RECORDING], Boolean(screenRecording),
-      );
-    }
-    renderPermissionGuidance();
-  } catch { /* window closing */ }
+  try { applyGrants(await invoke('permission_status')); } catch { /* window closing */ }
 }
 
 async function handlePermissionAction(event) {
+  const setupButton = event.target.closest('[data-run-setup]');
+  if (setupButton) {
+    try { await invoke('open_setup'); } catch (error) { setStatus(String(error), 'err'); }
+    return;
+  }
   const button = event.target.closest('[data-permission-action]');
   if (!button) return;
-  const row = button.closest('[data-kind]');
-  const kind = row?.dataset.kind;
+  const kind = button.closest('[data-kind]')?.dataset.kind;
   const action = button.dataset.permissionAction;
   if (!kind) return;
 
   button.disabled = true;
   try {
-    if (action === 'request') {
-      localStorage.setItem(PROMPTED_KEY[kind], '1');
-      const command = kind === PERMISSION_KIND.ACCESSIBILITY
-        ? 'request_accessibility' : 'request_screen_recording';
-      const accepted = Boolean(await invoke(command));
-      permissionState[kind] = afterPermissionPrompt(kind, accepted);
-      renderPermissionGuidance();
-    } else if (action === 'settings') {
-      const command = kind === PERMISSION_KIND.ACCESSIBILITY
-        ? 'open_accessibility_settings' : 'open_screen_recording_settings';
-      await invoke(command);
-    } else if (action === 'relaunch') {
-      await invoke('relaunch_app');
-    }
+    if (action === 'request') applyGrants(await invoke('permission_request', { kind }));
+    else if (action === 'settings') await invoke('permission_open_settings', { kind });
+    else if (action === 'repair') applyGrants(await invoke('permission_repair', { kind }));
+    else if (action === 'relaunch') await invoke('relaunch_app');
   } catch (error) {
     setStatus(String(error), 'err');
-    button.disabled = false;
   }
+  button.disabled = false;
 }
 
+// Live while the window is on screen: the native watcher emits `permission-status` on every
+// change (it is how System Settings toggles show up without a click), and it is switched off
+// again when the window is hidden so an idle Settings window costs nothing.
 async function wirePermissionGuidance() {
   renderPermissionGuidance();
-  await listen('accessibility-status', (event) => {
-    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
-      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(event.payload),
-    );
-    renderPermissionGuidance();
-  });
+  await listen('permission-status', (event) => applyGrants(event.payload));
+  // The engine confirming (or losing) its event tap is an Accessibility change too.
+  await listen('accessibility-status', refreshPermissionGuidance);
+  const watch = (active) => invoke('permission_watch', { active }).catch(() => {});
   await refreshPermissionGuidance();
-  // System Settings returns focus/visibility to the existing page; refresh both rows in place.
+  if (!document.hidden) watch(true);
   window.addEventListener('focus', refreshPermissionGuidance);
   document.addEventListener('visibilitychange', () => {
+    watch(!document.hidden);
     if (!document.hidden) refreshPermissionGuidance();
   });
+  window.addEventListener('beforeunload', () => watch(false));
 }
 
 // Secure Input: while ANY app holds it (password fields, a stale lock-screen grab), no
@@ -2422,7 +2377,8 @@ function renderGeneralTab(form) {
   permissions.innerHTML = `
     <h3>macOS permissions</h3>
     <p class="adv-hint">Current access for Glyphio. Actions appear only when macOS needs one.</p>
-    <div data-permission-rows></div>`;
+    <div data-permission-rows></div>
+    <div class="sync-actions"><button type="button" class="secondary" data-run-setup>Run setup again</button></div>`;
   permissions.addEventListener('click', handlePermissionAction);
   renderSections(form, GENERAL_SECTIONS, permissions);
   renderPermissionGuidance();

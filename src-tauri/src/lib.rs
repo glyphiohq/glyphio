@@ -181,6 +181,7 @@ pub fn run() {
 
             tray::build(app.handle())?;
             permissions::start_watcher(app.handle());
+            permissions::sync_tray(app.handle());
             launch::mark("tray-ready");
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());

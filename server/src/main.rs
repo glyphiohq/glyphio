@@ -12,6 +12,7 @@ mod error;
 mod ratelimit;
 mod rbac;
 mod routes;
+mod setup;
 mod storage;
 
 use std::sync::Arc;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub limiter: Arc<ratelimit::RateLimiter>,
     /// Role for identities with team access (claim/config) but no explicit role row.
     pub default_role: sync_proto::Role,
+    /// First-run setup page state (a one-time code while no owner exists).
+    pub setup: Arc<setup::Setup>,
 }
 
 #[tokio::main]
@@ -124,11 +127,24 @@ async fn build_state() -> Result<AppState, String> {
         Ok(v) => storage::role_from_str(v)
             .ok_or_else(|| format!("invalid DEFAULT_ROLE {v:?} (reader|writer|manager|admin|owner)"))?,
     };
+    let setup = if storage.owner_exists().await.map_err(|e| format!("reading roles: {e}"))? {
+        setup::Setup::disabled()
+    } else {
+        let code = setup::Setup::new_code();
+        let url = std::env::var("PUBLIC_URL").unwrap_or_default();
+        tracing::warn!(
+            "no owner yet: open {}/setup and enter the one-time code {code} \
+             (or run `glyphio-server init --team <name>`)",
+            url.trim_end_matches('/')
+        );
+        setup::Setup::with_code(code)
+    };
     Ok(AppState {
         storage,
         auth,
         limiter: Arc::new(ratelimit::RateLimiter::new(per_min)),
         default_role,
+        setup: Arc::new(setup),
     })
 }
 
@@ -171,6 +187,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/admin", get(admin::console))
+        .route("/setup", get(setup::page).post(setup::create))
         .nest("/v1", v1)
         .nest("/admin/v1", admin_api)
         .layer(DefaultBodyLimit::max(sync_proto::limits::MAX_BODY))
@@ -198,6 +215,7 @@ mod tests {
             auth: Arc::new(auth::Authenticator::for_tests(tokens_json)),
             limiter: Arc::new(ratelimit::RateLimiter::new(100_000)),
             default_role: sync_proto::Role::Writer,
+            setup: Arc::new(setup::Setup::disabled()),
         }
     }
 
@@ -236,6 +254,42 @@ mod tests {
             "id": id, "trigger": ":t", "replacement": replacement, "format": "plain",
             "owner": "ignored", "team": "sec", "updatedAt": ts, "version": version
         })
+    }
+
+    /// First-run setup: the code is required, it creates a redeemable owner, and the page is
+    /// gone afterwards.
+    #[tokio::test]
+    async fn first_run_setup_needs_the_code_and_disappears() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = test_state(&dir, "[]");
+        state.setup = Arc::new(setup::Setup::with_code("abcd-ef01".into()));
+        let app = router(state);
+        let get = |app: &Router| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::builder().uri("/setup").body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(get(&app).await, StatusCode::OK);
+
+        let body = |code: &str| Some(serde_json::json!({"code": code, "team": "eng", "email": "o@x.y"}));
+        let (status, _) = req(&app, "POST", "/setup", "", body("wrong")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Spaces, case and dashes don't matter.
+        let (status, json) = req(&app, "POST", "/setup", "", body("ABCD EF01")).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let token = json["token"].as_str().unwrap().to_string();
+        let (status, me) = req(&app, "GET", "/v1/me", &token, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(me["roles"]["eng"], "owner");
+
+        assert_eq!(get(&app).await, StatusCode::NOT_FOUND);
+        let (status, _) = req(&app, "POST", "/setup", "", body("abcd-ef01")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     /// RBAC: bootstrap-owner, pinned reader 403 on push, writer-cannot-touch-others
@@ -865,6 +919,7 @@ mod tests {
             auth: Arc::new(auth::Authenticator::for_tests(&tokens)),
             limiter: Arc::new(ratelimit::RateLimiter::new(1000)),
             default_role: sync_proto::Role::Writer,
+            setup: Arc::new(setup::Setup::disabled()),
         };
         let app = router(state);
 

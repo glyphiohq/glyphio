@@ -46,6 +46,7 @@ impl PngStream {
         self.width
     }
 
+    #[cfg(test)]
     pub fn height(&self) -> u32 {
         self.height
     }

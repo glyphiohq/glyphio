@@ -73,7 +73,11 @@ pub fn display_bounds_containing(x: f64, y: f64) -> Option<((f64, f64), (f64, f6
 
 /// A captured, un-annotated frame handed to the editor webview.
 pub struct Shot {
+    /// RGBA8 pixels, row-major. Empty when the capture arrives already encoded (`png`).
     pub rgba: Vec<u8>,
+    /// The capture as a PNG file, when it was encoded as it was taken: a scrolling capture
+    /// streams its rows into the encoder and never holds the whole page uncompressed.
+    pub png: Option<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     /// Backing-scale factor (2.0 on Retina) so the banner/editor can size text correctly.
@@ -360,6 +364,7 @@ fn page_target(mode: CaptureMode, with_browser_details: bool) -> anyhow::Result<
         let (width, height) = img.dimensions();
         return Ok(PageTarget::Done(Shot {
             rgba: img.into_raw(),
+            png: None,
             width,
             height,
             dpr,
@@ -531,14 +536,17 @@ pub fn trigger_or_report(app: &AppHandle, mode: &str, delivery: Option<Delivery>
 /// open and annotate afterwards.
 pub fn finish(
     app: &AppHandle,
-    shot: Shot,
+    mut shot: Shot,
     mode: CaptureMode,
     delivery: Delivery,
     activity: lifecycle::CaptureToken,
 ) -> anyhow::Result<()> {
     trace::mark_if_missing(trace::Stage::Acquire); // page and scrolling modes acquire off this path
     trace::set_size(shot.width, shot.height);
-    let png = encode_png(&shot)?;
+    let png = match shot.png.take() {
+        Some(png) => png,
+        None => encode_png(&shot)?,
+    };
     trace::mark(trace::Stage::Encode);
     let data_url = format!(
         "data:image/png;base64,{}",
@@ -575,6 +583,9 @@ pub fn finish(
 }
 
 pub fn encode_png(shot: &Shot) -> anyhow::Result<Vec<u8>> {
+    if let Some(png) = &shot.png {
+        return Ok(png.clone());
+    }
     let buf = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
         .ok_or_else(|| anyhow::anyhow!("capture buffer size mismatch"))?;
     let mut out = std::io::Cursor::new(Vec::new());

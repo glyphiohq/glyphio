@@ -17,19 +17,29 @@ and authenticates against any OIDC-compliant IdP — or none (static tokens).
 ### 1a. Stand up a backend
 
 The reference server ships in [`server/`](server/) (Apache-2.0, so you may embed it in
-anything). Quickest self-host:
+anything). On a host with Docker and a DNS name pointing at it, three commands give a
+server with automatic HTTPS:
 
 ```bash
-cd server
-cp .env.example .env         # fill it in (see server/README.md for every variable)
-docker compose up -d         # SQLite storage in a named volume
+curl -fsSLO https://raw.githubusercontent.com/glyphiohq/glyphio/main/server/deploy/compose.yaml
+echo "DOMAIN=sync.example.com" > .env
+docker compose up -d
 ```
 
-Any HTTPS reverse proxy (Caddy, nginx, Traefik) in front of it completes the TLS
-requirement. Or implement your own server — the protocol doc + `sync-proto` crate are the
-whole contract.
+Then open `https://sync.example.com/setup` with the one-time code from
+`docker compose logs glyphio-server` (or run `glyphio-server init --team <name>` in the
+container) to create the first team and owner and get an invite link. Paste that link into
+Glyphio → Settings → Sync. Invite everyone else from `/admin`.
+
+[`server/DEPLOY.md`](server/DEPLOY.md) covers requirements, the own-proxy and trial
+profiles, upgrades, backup and restore, moving from static tokens, what the server can read,
+and troubleshooting with `glyphio-server doctor`. Or implement your own server: the protocol
+doc + `sync-proto` crate are the whole contract.
 
 ### 1b. Choose an auth mode
+
+Invite links (above) need no further setup. The options below are for single sign-on or for
+deployments that manage credentials themselves.
 
 **Option A — static API token (no IdP, simplest):**
 1. Generate a token and its hash:
@@ -39,8 +49,8 @@ whole contract.
    ```
 2. Add `{ "tokenSha256": "<hash>", "sub": "alice", "teams": ["myteam"] }` to the server's
    `STATIC_TOKENS` (see `server/.env.example`).
-3. In Glyphio: Settings → Team sync → auth mode **Static API token** → save → **Set API
-   token…** → paste `$TOKEN`. It is stored in your OS keychain, nowhere else.
+3. In Glyphio: Settings → Sync → **Advanced: connect manually** → auth mode **Static API
+   token** → save → **Set API token…** → paste `$TOKEN`. It is stored in your OS keychain, nowhere else.
 
 **Option B — OIDC single sign-on (any compliant IdP):**
 1. Register a **native / public** app (no client secret) in your IdP with:
@@ -54,7 +64,7 @@ whole contract.
    name is `groups`; the server's `TEAMS_CLAIM` env var changes it.
 3. Configure the server with your issuer + audience (`OIDC_ISSUER`, `OIDC_AUDIENCE` =
    the client ID) so it can validate tokens via your IdP's JWKS.
-4. In Glyphio: Settings → Team sync → fill **Backend URL**, **issuer**, **client ID**,
+4. In Glyphio: Settings → Sync → **Advanced: connect manually** → fill **Backend URL**, **issuer**, **client ID**,
    scopes → save → **Sign in with SSO**.
 
 ### 1b-bis. Admin dashboard sign-in (`/admin`)

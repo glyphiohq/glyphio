@@ -889,3 +889,11 @@
   font-family: var(--font-mono); font-size: 11px; color: var(--text);
   user-select: all;
 }
+
+/* Sync: the invite field leads; hand-entered connection details sit under Advanced. */
+.sync-invite { margin: 12px 0; }
+.sync-invite label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.sync-invite-row { display: flex; gap: 8px; }
+.sync-invite-row input { flex: 1; min-width: 0; }
+.sync-advanced { margin-top: 14px; }
+.sync-advanced > summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }

@@ -2069,7 +2069,6 @@ function renderSyncSection(form) {
   const st = state.syncStatus || { state: 'disabled' };
   const cfg = state.syncConfig || {};
   const mode = cfg.managed ? 'locked' : (cfg.enabled ? 'active' : 'off');
-  const showForm = mode === 'active';
   const who = st.identity
     ? `${escapeHtml(st.identity.email || st.identity.sub)} · teams: ${st.identity.teams.map(escapeHtml).join(', ') || '—'}`
     : '';
@@ -2101,6 +2100,22 @@ function renderSyncSection(form) {
     <div class="mfield sc-oidc"><label>Scopes (beyond openid)</label><input type="text" id="sc-scopes" placeholder="profile email offline_access groups" value="${escapeHtml((cfg.scopes || []).join(' '))}"></div>
     <button class="primary" id="sc-save">Save sync settings</button>`;
 
+  // An invite link is the normal way in, so it leads; the hand-entered connection fields are
+  // for self-hosters and sit under Advanced.
+  const inviteHtml = `
+    <div class="sync-invite">
+      <label for="sync-invite-input">${mode === 'active' ? 'Join another team: paste an invite link' : 'Paste an invite link'}</label>
+      <div class="sync-invite-row">
+        <input type="text" id="sync-invite-input" placeholder="glyphio://join?server=…" spellcheck="false" autocomplete="off" />
+        <button class="primary" id="sync-invite-go">Join</button>
+      </div>
+    </div>`;
+  const advancedHtml = `
+    <details class="sync-advanced"${mode === 'active' && !cfg.backendUrl ? ' open' : ''}>
+      <summary>Advanced: connect manually</summary>
+      ${formHtml}
+    </details>`;
+
   let body;
   if (mode === 'locked') {
     body = `
@@ -2111,19 +2126,17 @@ function renderSyncSection(form) {
       </div>
       ${cardHtml}`;
   } else if (mode === 'active') {
-    body = `${cardHtml}${formHtml}`;
+    body = `${cardHtml}${inviteHtml}${advancedHtml}`;
   } else {
-    // off / personal — provisioning is invite-link only (an admin-managed config is the other
-    // path; both keep an arbitrary backend URL out of the user's hands and route through the
-    // invite confirmation dialog).
+    // Off / personal. Joining still routes through the invite confirmation dialog, so a
+    // pasted link never switches servers silently.
     body = `
       <div class="sync-off">
         <p class="adv-hint">Team sync is off — everything stays on this device. Join a team with an
         invite link from your admin.</p>
-        <div class="sync-actions">
-          <button class="primary" id="sync-join">Join with an invite link…</button>
-        </div>
-      </div>`;
+        ${inviteHtml}
+      </div>
+      ${advancedHtml}`;
   }
 
   div.innerHTML = `
@@ -2135,16 +2148,17 @@ function renderSyncSection(form) {
   const toggleOidc = () => div.querySelectorAll('.sc-oidc').forEach((el) => {
     el.style.display = div.querySelector('#sc-mode').value === 'oidc' ? '' : 'none';
   });
-  if (showForm) {
+  if (div.querySelector('#sc-mode')) {
     toggleOidc();
     div.querySelector('#sc-mode').addEventListener('change', toggleOidc);
   }
-  div.querySelector('#sync-join')?.addEventListener('click', async () => {
-    const url = await promptDialog('Join a team', {
-      label: 'Paste the invite link or code from your admin',
-      placeholder: 'glyphio://join?server=…', confirmLabel: 'Continue',
-    });
+  const joinFromField = () => {
+    const url = div.querySelector('#sync-invite-input').value.trim();
     if (url) confirmInvite(url);
+  };
+  div.querySelector('#sync-invite-go')?.addEventListener('click', joinFromField);
+  div.querySelector('#sync-invite-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') joinFromField();
   });
   div.querySelector('#sc-save')?.addEventListener('click', async () => {
     const config = {

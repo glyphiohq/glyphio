@@ -8,7 +8,7 @@ import { IS_MAC } from '../shared/shortcuts.js';
 import { acceleratorFromKeyboardEvent, validateAccelerator } from '../settings/shortcut-recorder.mjs';
 import {
   STEP, TRY_IT, advanceIfGranted, announcement, canContinue, initialStep, kindOfStep, loginItemCopy,
-  nextStep, progressLabel, reduceTryIt, shortcutRows, skipStep, stepsFor, teamAction,
+  installNotice, nextStep, progressLabel, reduceTryIt, shortcutRows, skipStep, stepsFor, teamAction,
 } from './steps.mjs';
 
 const platform = IS_MAC ? 'macos' : 'windows';
@@ -42,6 +42,7 @@ const state = {
   recording: null, // the shortcut key being recorded, if any
   skipped: [],
   grants: { [PERMISSION_KIND.ACCESSIBILITY]: null, [PERMISSION_KIND.SCREEN_RECORDING]: null },
+  install: null, // native install status: disk image, translocation, other copies
 };
 
 const $ = (id) => document.getElementById(id);
@@ -67,7 +68,24 @@ function applyStatus(status) {
   render();
 }
 
+function renderInstallNotice() {
+  const box = $('install');
+  const notice = installNotice(state.install);
+  box.hidden = !notice;
+  if (!notice) return;
+  box.innerHTML = `
+    <h2>${notice.title}</h2>
+    <p>${escapeText(notice.body)}</p>
+    <div class="row">${notice.actions.map((a) =>
+      `<button type="button" class="${a.style}" data-install="${a.id}">${a.label}</button>`).join('')}</div>`;
+}
+
+function escapeText(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
 function render() {
+  renderInstallNotice();
   $('progress').textContent = progressLabel(state.step, STEPS);
   $('steps').innerHTML = STEPS.map((step) => {
     const kind = kindOfStep(step);
@@ -164,6 +182,25 @@ async function perform(action) {
     $('live').textContent = `Something went wrong: ${e}`;
   }
 }
+
+$('install').addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-install]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    if (button.dataset.install === 'install-move') {
+      $('live').textContent = 'Moving Glyphio…';
+      await invoke('install_move'); // quits this copy and opens the moved one
+    } else {
+      await invoke('install_dismiss_duplicates', { paths: state.install.duplicates });
+      state.install = { ...state.install, duplicates: [] };
+      render();
+    }
+  } catch (err) {
+    $('live').textContent = `Could not move Glyphio: ${err}`;
+    button.disabled = false;
+  }
+});
 
 $('panel').addEventListener('click', (e) => {
   const use = e.target.closest('[data-use]');
@@ -263,6 +300,7 @@ async function init() {
   }
   state.settings = await invoke('get_settings');
   state.shortcutStatus = await invoke('shortcut_status');
+  if (platform === 'macos') state.install = await invoke('install_status').catch(() => null);
   await listen('capture-delivered', () => {
     const before = state.tryIt;
     state.tryIt = reduceTryIt(state.tryIt, 'capture-delivered');

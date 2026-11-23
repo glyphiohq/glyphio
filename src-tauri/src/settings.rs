@@ -128,6 +128,8 @@ pub struct Settings {
     pub onboarding_step: String,
     /// Steps the user skipped, for the checklist that follows.
     pub onboarding_skipped: Vec<String>,
+    /// Other installed copies of Glyphio the user has already been warned about.
+    pub install_duplicates_warned: Vec<String>,
     /// Longest scrolling capture, in points of page height. Ends with a stated reason.
     pub scroll_max_height_pt: u32,
 }
@@ -196,6 +198,7 @@ impl Default for Settings {
             onboarding_completed: false,
             onboarding_step: "accessibility".into(),
             onboarding_skipped: Vec::new(),
+            install_duplicates_warned: Vec::new(),
         }
     }
 }

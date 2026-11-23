@@ -104,7 +104,7 @@ fn remove_legacy_launch_agents() {
 }
 
 /// `CFBundleIdentifier` of the app bundle at `bundle`, read from its Info.plist.
-fn bundle_identifier_of(bundle: &Path) -> Option<String> {
+pub(super) fn bundle_identifier_of(bundle: &Path) -> Option<String> {
     let info = std::fs::read_to_string(bundle.join("Contents/Info.plist")).ok()?;
     let after = &info[info.find("<key>CFBundleIdentifier</key>")?..];
     let start = after.find("<string>")? + "<string>".len();

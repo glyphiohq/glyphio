@@ -138,6 +138,19 @@ pub trait ProcessControl: Send + Sync {
     fn bundled_engine_exe(&self) -> Option<PathBuf>;
 }
 
+pub trait Installation: Send + Sync {
+    /// Whether `path` is on a read-only volume (a mounted disk image, for one).
+    fn read_only(&self, path: &Path) -> bool;
+    /// Whether this process can create entries in `dir`.
+    fn dir_writable(&self, dir: &Path) -> bool;
+    /// The bundle identifier of the app at `bundle`.
+    fn bundle_identifier(&self, bundle: &Path) -> Option<String>;
+    /// Copy an app bundle, preserving its signature, attributes and symlinks.
+    fn copy_bundle(&self, from: &Path, to: &Path) -> anyhow::Result<()>;
+    /// Launch a new instance of the app at `bundle`.
+    fn open_bundle(&self, bundle: &Path) -> anyhow::Result<()>;
+}
+
 /// One implementation of each capability, built once.
 pub struct Platform {
     pub capturer: Box<dyn ScreenCapturer>,
@@ -150,6 +163,7 @@ pub struct Platform {
     pub autostart: Box<dyn Autostart>,
     pub process: Box<dyn ProcessControl>,
     pub shell: Box<dyn AppShell>,
+    pub install: Box<dyn Installation>,
 }
 
 static CURRENT: OnceLock<Platform> = OnceLock::new();

@@ -172,3 +172,33 @@ export function teamAction(choice, invite = '') {
   if (choice === 'setup') return { kind: 'open-team', invite: null };
   return url ? { kind: 'open-team', invite: url } : { kind: 'ask-invite' };
 }
+
+/**
+ * The install notice above the setup steps, from the native install status, or null. A copy
+ * running from a disk image or a translocated path is offered a move (that copy loses its
+ * permissions on the next launch); other installed copies get a one-time warning.
+ */
+export function installNotice(status) {
+  if (!status) return null;
+  if (status.offerMove) {
+    const where = status.location === 'readOnlyVolume' ? 'a disk image' : 'a temporary copy macOS made';
+    const target = status.moveTarget === '/Applications' ? 'Applications' : 'your Applications folder';
+    return {
+      kind: 'move',
+      title: `Move Glyphio to ${target}`,
+      body: `Glyphio is running from ${where}, so macOS will forget its permissions and updates won't install. Moving it fixes both; Glyphio reopens from ${status.moveTarget}.`,
+      actions: [{ id: 'install-move', label: `Move to ${target}`, style: 'primary' }],
+    };
+  }
+  if (status.duplicates?.length) {
+    const many = status.duplicates.length > 1;
+    return {
+      kind: 'duplicates',
+      title: many ? 'Other copies of Glyphio are installed' : 'Another copy of Glyphio is installed',
+      body: `${status.duplicates.join(', ')} ${many ? 'are' : 'is'} also Glyphio. macOS keeps permissions per copy, so move the one you don't use to the Trash.`,
+      paths: status.duplicates,
+      actions: [{ id: 'install-dismiss', label: 'Got it', style: 'secondary' }],
+    };
+  }
+  return null;
+}

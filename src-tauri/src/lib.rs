@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 mod engine;
 mod history;
+mod install;
 mod launch;
 mod logging;
 mod onboarding;
@@ -259,7 +260,10 @@ pub fn run() {
 
             // A login launch keeps Glyphio in the menu bar; an ordinary launch opens Settings.
             let completed = app.state::<AppState>().settings.lock().unwrap().onboarding_completed;
-            match startup::launch_surface(open_settings_on_start, completed) {
+            // A copy running from a disk image or a translocated path, or a second installed
+            // copy, is shown in setup whatever its progress: it decides whether grants stick.
+            let install_attention = open_settings_on_start && install::current(app.handle()).needs_attention();
+            match startup::launch_surface(open_settings_on_start, completed && !install_attention) {
                 startup::LaunchSurface::Setup => windows::open_setup(app.handle())?,
                 startup::LaunchSurface::Settings => windows::open(app.handle(), "settings")?,
                 startup::LaunchSurface::Nothing => {}
@@ -318,6 +322,9 @@ pub fn run() {
             onboarding::onboarding_state,
             onboarding::onboarding_update,
             onboarding::open_setup,
+            install::install_status,
+            install::install_move,
+            install::install_dismiss_duplicates,
             onboarding::onboarding_set_login_item,
             onboarding::onboarding_open_team,
             permissions::permission_status,

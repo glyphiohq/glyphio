@@ -21,6 +21,7 @@ mod autostart;
 mod capture;
 mod inspect;
 mod input;
+mod install;
 mod pasteboard;
 mod permissions;
 mod process;
@@ -38,6 +39,7 @@ pub fn platform() -> Platform {
         autostart: Box::new(Macos),
         process: Box::new(process::Os),
         shell: Box::new(Macos),
+        install: Box::new(install::Os),
     }
 }
 

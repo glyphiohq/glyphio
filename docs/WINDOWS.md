@@ -1,6 +1,7 @@
 # Porting Glyphio to Windows
 
-Status: **planning**. Nothing Windows-specific is implemented yet. This document is the survey
+Status: **planning**. The tree type-checks for Windows, but every capability there is still a
+stub that refuses. This document is the survey
 that a port starts from — what already works, what has to be written, and where the surprises
 are.
 
@@ -130,7 +131,10 @@ capture is the most-used mode.
 
 ## Suggested order
 
-1. Make the tree *compile* on Windows: gate the macOS modules, stub the platform seams.
+1. ~~Make the tree *compile* on Windows: gate the macOS modules, stub the platform seams.~~
+   Done: the macOS crates are target-gated, every trait has a refusing implementation in
+   `src/platform/unsupported.rs`, and the `App (Windows type-check)` CI job keeps it so. A
+   Windows port replaces that stub with `src/platform/windows/` one trait at a time.
 2. Engine sidecar building and running under the supervisor.
 3. Non-interactive capture (`visible`, `frontWindow`) — proves the pixel path end to end.
 4. The picker overlay.

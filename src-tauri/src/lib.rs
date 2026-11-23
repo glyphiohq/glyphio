@@ -428,7 +428,7 @@ pub fn run() {
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already
             // running fires Reopen — surface the settings window frontmost, like clicking
             // a Dock icon would for a regular app.
-            tauri::RunEvent::Reopen { .. } => {
+            ref event if platform::is_reopen(event) => {
                 let _ = windows::open(app_handle, "settings");
             }
             // The settings window is opened during setup, but an accessory app can lose

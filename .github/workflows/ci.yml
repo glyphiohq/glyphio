@@ -75,7 +75,8 @@ jobs:
           done
 
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+        # `macos-probes` adds the macOS diagnostics in src/platform/macos/probes to the check.
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --features macos-probes -- -D warnings
 
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
@@ -93,6 +94,39 @@ jobs:
       # in the maintainer's keychain.
       - name: Build
         run: cargo build --manifest-path src-tauri/Cargo.toml --lib --release
+
+  # There is no Windows app yet (docs/WINDOWS.md), but the shared code has to stay portable so
+  # one can be added as a directory under src/platform. On Windows every capability is the
+  # `unsupported` stub; this job proves the rest of the app type-checks against it.
+  app-windows:
+    name: App (Windows type-check)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # See the macOS job: tauri-build insists the sidecars exist.
+      - name: Placeholder sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          for name in glyphio-engine glyphio-ocr; do
+            : > "src-tauri/binaries/${name}-${triple}.exe"
+          done
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+      # `node --test` expands the glob itself, which needs Node 21 or later.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: UI behavioral tests
+        run: npm test
 
   server:
     name: Sync server
@@ -129,6 +163,9 @@ jobs:
             echo "::error::version drift between package.json, tauri.conf.json and Cargo.toml"
             exit 1
           }
+
+      - name: OS code stays under src-tauri/src/platform
+        run: scripts/check-platform-boundary.sh
 
       - name: Shell scripts parse
         run: for f in scripts/*.sh; do bash -n "$f" || exit 1; done

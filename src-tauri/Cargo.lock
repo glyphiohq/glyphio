@@ -1777,14 +1777,16 @@ dependencies = [
 
 [[package]]
 name = "glyphio"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
+ "crc32fast",
  "dirs 5.0.1",
+ "flate2",
  "image",
  "libc",
  "log",

@@ -8,7 +8,7 @@ use image::RgbaImage;
 
 use super::{
     AppShell, Autostart, BrowserMeta, DisplayBounds, FrontWindow, InputInjector, PageGeometry, PageInspector, Progress,
-    Pasteboard, PermissionKind, Permissions, PickKind, Platform, RegionPicker,
+    Pasteboard, PermissionKind, Permissions, PickKind, Platform, Rect, RectSession, RegionPicker,
     ScreenCapturer, WindowQuery,
 };
 use crate::autostart::{Migration, Outcome};
@@ -52,6 +52,9 @@ impl ScreenCapturer for Macos {
     }
     fn rect_image(&self, x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<(RgbaImage, f64)> {
         capture::capture_rect_image(x, y, w, h)
+    }
+    fn rect_session(&self, rect: Rect) -> anyhow::Result<Box<dyn RectSession + '_>> {
+        Ok(Box::new(capture::RectPlan::new(rect.0, rect.1, rect.2, rect.3)?))
     }
 }
 

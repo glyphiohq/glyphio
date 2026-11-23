@@ -23,7 +23,7 @@ fn synthetic(width: u32, height: u32) -> Shot {
             ]);
         }
     }
-    Shot { rgba, width, height, dpr: 2.0, title: String::new(), browser: Default::default() }
+    Shot { rgba, png: None, width, height, dpr: 2.0, title: String::new(), browser: Default::default() }
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {

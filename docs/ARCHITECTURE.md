@@ -264,11 +264,12 @@ the loop only logs whether the page advanced; stop reasons use it in SCROLL-03.
 
 ### Scroll stop reasons and settling
 
-A scrolling capture ends for one of five logged reasons (`scroll::StopReason`): `ReachedEnd` (the
+A scrolling capture ends for one of six logged reasons (`scroll::StopReason`): `ReachedEnd` (the
 oracle says the viewport is at the end, or, without an oracle, nothing changed after two retries
 that wait 600 ms and 1.2 s), `Stopped` (Escape), `PointerLeft` (the 30 s pause limit), `LimitReached`
-(page height gathered reached `scrollMaxHeightPt`, default 30 000 pt) and `Stalled` (the oracle says
-more remains but three scrolls moved nothing). After each scroll the loop settles by reading frames
+(page height gathered reached `scrollMaxHeightPt`, default 30 000 pt), `Stalled` (the oracle says
+more remains but three scrolls moved nothing) and `Resized` (a frame came back at another size, so
+its rows cannot join the image; the frames before it are kept). After each scroll the loop settles by reading frames
 80 ms apart until two consecutive reads match, up to about 1.5 s; an animation that never settles
 uses the last read and the oracle decides. An oracle that already reports the end before the first scroll describes the viewport, not the page (some browsers expose no document extent), so it is ignored for that capture and the pixels decide. When an oracle exists a frame is kept only if the offset
 advanced, so a nested scroller that changes pixels is dropped. Each read calls the capture heartbeat.
@@ -279,18 +280,35 @@ virtual time. The setting has no UI yet; it is read from `settings.json`.
 
 ### Scroll stitching
 
-`capture::scroll::stitch` is pure (frames in, image out). With three or more frames it finds rows
-at the top and bottom that are identical in every frame while the middle moved (a fixed header or
+`capture::scroll::stitch` is pure (frames in, rows out). Its `Stitcher` joins frames as the loop
+takes them and writes each frame's fresh rows straight to `scroll::png_stream`, a PNG encoder fed a
+row at a time (filtered per row, deflated as it goes, the header written at the end once the
+height is known). It holds the last frame written and the newest one, which waits to learn
+whether it is the final frame; the result never exists as RGBA, and `Shot::png` carries it to
+delivery, which skips its own encode. A 1 600 × 60 000 px capture (800 pt by 30 000 pt at 2x)
+peaks at about 90 MB against 366 MB for the raw image (`tests/scroll_memory.rs`). With three or
+more frames it finds rows at the top and bottom that are identical in the first three frames
+while the middle moved (a fixed header or
 composer bar; flat bands are ignored) and columns that never change (a fixed sidebar). The header is
 kept from the first frame and the footer from the last; the rest are cropped, and bands and
 sidebar columns are left out of the overlap signature. Each join then searches for the overlap:
 when the progress oracle measured the scroll distance, within ±4 px of it; otherwise within ±90 px
 of the nominal distance, and over the full range for the final frame (whose scroll is usually
 partial) or whenever the narrow window has no confident match. The full range is a coarse pass on
-every 4th row and offset followed by refinement of the best few, with ties settled toward the
-expected overlap so repeated content does not pull the join. The loop records the oracle's offset
-change between kept frames for this. Not yet done (needs PIPE-04): streaming rows to the encoder
-and reusing one capture session across frames, so memory still holds every frame.
+every 4th row and offset followed by refinement of the six lowest coarse differences, with ties
+settled toward the expected overlap so repeated content does not pull the join. A probe whose rows
+are blank (paragraph spacing, a margin) matches anywhere, so it moves up to the lowest band with
+something in it, by at most a quarter of the frame. The loop records the oracle's offset change
+between kept frames for this. The stitching tests use synthetic pages drawn like real ones
+(`scroll/fixtures.rs`: an article with text, code, pictures and blank runs, a feed of cards that
+share one layout, chat chrome with a header, composer and sidebar).
+
+Every frame of a capture comes from one capture session (`ScreenCapturer::rect_session`). On
+macOS that is a `RectPlan`: the shareable content, the displays the region falls on, our windows to
+leave out and each display's filter and configuration are settled once, and each frame is only
+the screenshot call. A frame that fails begins a new session once before the error stands, so a
+display rearranged mid-capture is picked up. Windows Glyphio opens after the plan is made are not
+excluded; none open during a scrolling capture.
 
 ### Capture deadlines
 

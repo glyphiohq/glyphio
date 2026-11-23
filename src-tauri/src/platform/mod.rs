@@ -52,6 +52,31 @@ pub trait ScreenCapturer: Send + Sync {
     fn front_window(&self, with_browser_details: bool) -> anyhow::Result<Shot>;
     /// A rectangle, as an image plus its backing scale.
     fn rect_image(&self, x: f64, y: f64, w: f64, h: f64) -> anyhow::Result<(RgbaImage, f64)>;
+    /// Begin capturing `rect` over and over, as a scrolling capture does. A platform that can
+    /// settle what to capture once (which displays, which windows to leave out) does so here;
+    /// the default asks [`ScreenCapturer::rect_image`] every time.
+    fn rect_session(&self, rect: Rect) -> anyhow::Result<Box<dyn RectSession + '_>> {
+        Ok(Box::new(EachTime { capturer: self, rect }))
+    }
+}
+
+/// One rectangle, captured repeatedly. See [`ScreenCapturer::rect_session`].
+pub trait RectSession {
+    /// The rectangle now, as an image plus its backing scale.
+    fn frame(&mut self) -> anyhow::Result<(RgbaImage, f64)>;
+}
+
+/// The default session: nothing to reuse, every frame is a fresh [`ScreenCapturer::rect_image`].
+struct EachTime<'a, C: ?Sized> {
+    capturer: &'a C,
+    rect: Rect,
+}
+
+impl<C: ScreenCapturer + ?Sized> RectSession for EachTime<'_, C> {
+    fn frame(&mut self) -> anyhow::Result<(RgbaImage, f64)> {
+        let (x, y, w, h) = self.rect;
+        self.capturer.rect_image(x, y, w, h)
+    }
 }
 
 pub trait RegionPicker: Send + Sync {

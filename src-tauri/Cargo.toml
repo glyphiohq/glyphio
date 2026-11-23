@@ -1,6 +1,6 @@
 [package]
 name = "glyphio"
-version = "1.2.0"
+version = "1.2.1"
 description = "Glyphio desktop app (Tauri shell)"
 edition = "2021"
 license = "GPL-3.0-or-later"
@@ -39,6 +39,10 @@ dirs = "5"
 base64 = "0.22"
 url = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Scrolling capture streams its rows into a PNG of unknown height (`capture/scroll/png_stream.rs`).
+# Both are already in the tree through `png`.
+flate2 = "1"
+crc32fast = "1"
 screencapturekit = { version = "8", features = ["macos_15_2"] }
 core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"

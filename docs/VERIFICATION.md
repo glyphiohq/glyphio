@@ -186,6 +186,9 @@ after the menu-bar indicator changes.
 | Scrolling Page with a sticky header (Safari, Chrome) | The header appears once. | |
 | Scrolling Page on a page with a repeated block (cookie-cutter cards, duplicated code sample) | The block appears as many times as on the page, not more. | |
 | Scrolling Page on a very long page (over 30 s of frames) | The capture is not cut off while frames keep arriving; it stops by itself after at most 5 minutes. | |
+| Scrolling Page on a 30 000 pt page at 2x (long article or feed, Retina display) | Glyphio's memory in Activity Monitor stays under 400 MB for the whole capture; the result reaches the editor. | |
+| Scrolling Area dragged across two displays | Frames are correct on both sides of the seam for the whole capture; unplugging the second display mid-capture ends it with an error or finishes with the frames taken, never black frames. | |
+| Resize the window during a Scrolling Page capture | The capture ends with the frames taken and says the region changed size. | |
 
 The clipboard-failure row requires a debugger or development-only fault injection at the native
 clipboard command boundary; do not corrupt the user's pasteboard database or install a pasteboard

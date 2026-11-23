@@ -356,7 +356,12 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
     driver: &mut D,
     ctl: &mut C,
 ) -> anyhow::Result<Outcome> {
-    let mut progress = driver.progress(job.rect);
+    // An oracle that already claims the end before anything has scrolled is describing the
+    // viewport, not the page (some browsers expose no document extent). Believing it would
+    // return the visible screen alone, so such an oracle is ignored for the whole capture and
+    // the pixels decide.
+    let mut progress = driver.progress(job.rect).filter(|p| !p.at_end());
+    let oracle_trusted = progress.is_some();
     let (first, mut capture_dpr) = driver.capture(job.rect)?;
     // Height gathered so far in points, the basis for the height limit.
     let mut covered_pt = first.height() as f64 / capture_dpr;
@@ -384,7 +389,7 @@ fn capture_loop<D: ScrollDriver, C: LoopControl>(
         let Some((mut frame, mut dpr)) = settled_frame(driver, ctl, job.rect)? else {
             break StopReason::Stopped;
         };
-        let now = driver.progress(job.rect);
+        let now = if oracle_trusted { driver.progress(job.rect) } else { None };
         let moved = match (progress, now) {
             (Some(_), Some(_)) => progress_advanced(progress, now),
             _ => !stitcher.last().is_some_and(|prev| frames_identical(prev, &frame)),
@@ -788,6 +793,9 @@ mod tests {
         ticks: u32,
         /// The oracle never moves (scrolling is stuck).
         frozen: bool,
+        /// The oracle reports a document exactly as tall as the viewport (a browser that does
+        /// not expose the full page extent), so it claims to be at the end from the start.
+        oracle_blind: bool,
         /// Fixed header and footer drawn over every frame.
         bars: Option<(RgbaImage, RgbaImage)>,
     }
@@ -820,6 +828,7 @@ mod tests {
                 animate_at_end: false,
                 ticks: 0,
                 frozen: false,
+                oracle_blind: false,
                 bars: None,
             }
         }
@@ -866,8 +875,8 @@ mod tests {
         }
         fn progress(&mut self, _: (f64, f64, f64, f64)) -> Option<Progress> {
             self.oracle.then(|| Progress {
-                offset: self.offset as f64,
-                extent: self.page.height() as f64,
+                offset: if self.oracle_blind { 0.0 } else { self.offset as f64 },
+                extent: if self.oracle_blind { self.view_h } else { self.page.height() } as f64,
                 viewport: self.view_h as f64,
             })
         }
@@ -925,6 +934,18 @@ mod tests {
         page.frozen = true;
         let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
         assert_eq!(out.reason, StopReason::Stalled);
+    }
+
+    #[test]
+    fn an_oracle_that_claims_the_end_before_any_scroll_is_not_believed() {
+        let mut page = Page::new(48, 900, 300);
+        page.oracle = true;
+        page.oracle_blind = true;
+        let expected = page.page.clone();
+        let out = run(&mut page, DEFAULT_MAX_HEIGHT_PT);
+        assert_eq!(out.reason, StopReason::ReachedEnd);
+        let got = pixels(&out.shot);
+        assert!(got == expected, "captured {} of 900 px", got.height());
     }
 
     #[test]

@@ -173,6 +173,7 @@ after the menu-bar indicator changes.
 | Scrolling Area: drag a selection | The capture runs; closing the overlay to start it does not cancel it. | |
 | Area or Window picker: press Esc | The menu-bar icon returns to ready with no `!` and no failure details. | |
 | Progress oracle per browser: `cargo run --example page_probe -- --capture` over a long page in Safari, Chrome, Edge, Arc and Firefox | Each frame line prints `progress offset=… extent=… viewport=…` with the offset rising between frames; record the result per browser in the pull request. A browser that prints `NONE` falls back to pixels. | |
+| Scrolling Page / Area on a long page in each browser where the oracle printed `NONE` or an extent equal to the viewport | The whole page is captured, not just the visible screen; the log shows the pixel fallback, not `reached the end of the page` after one frame. | |
 | Progress oracle over a nested scroller (a code block under the pointer) | The offset does not move while the nested block scrolls and the page does not. | |
 | Progress oracle in a native scroll view (Notes, Mail) | The offset rises as the list scrolls; `NONE` is acceptable and means pixels only. | |
 | Scrolling Page on an infinite feed (Safari, Chrome) | Ends at the height limit; the menu bar says the capture is ready but stopped at the height limit; the log has `scrolling capture ended: stopped at the height limit`. | |

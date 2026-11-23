@@ -16,6 +16,7 @@ import {
 } from './shortcut-recorder.mjs';
 import { registrationNotice, statusFor } from './shortcut-status.mjs';
 import { checklistVisible, grantSurface, PERMISSION_KIND } from './permissions.mjs';
+import { formatDiagnostics, shortcutLine, testMessage } from './diagnostics.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -2380,8 +2381,51 @@ function renderGeneralTab(form) {
     <div data-permission-rows></div>
     <div class="sync-actions"><button type="button" class="secondary" data-run-setup>Run setup again</button></div>`;
   permissions.addEventListener('click', handlePermissionAction);
-  renderSections(form, GENERAL_SECTIONS, permissions);
+  const tail = document.createElement('div');
+  tail.append(permissions, renderDiagnosticsSection());
+  renderSections(form, GENERAL_SECTIONS, tail);
   renderPermissionGuidance();
+}
+
+/** Every shortcut's label as Settings shows it, for the diagnostics list. */
+function shortcutLabelFor(key) {
+  for (const sec of [...CAPTURE_SECTIONS, ...GENERAL_SECTIONS]) {
+    for (const [fieldKey, type, label, opts] of sec.fields) {
+      if (fieldKey === key) return label;
+      if (type === 'hotkeys' && opts === key) return `${label} (to the clipboard)`;
+    }
+  }
+  return shortcutLabel(key);
+}
+
+/// Each binding with what the system said, plus capture state, permissions and engine, and a
+/// copyable plain-text report for a bug report. Nothing in it is content or an address.
+function renderDiagnosticsSection() {
+  const sec = el('section', { className: 'form-section diagnostics' });
+  sec.innerHTML = `
+    <h3>Diagnostics</h3>
+    <p class="adv-hint">What each shortcut is bound to and whether macOS accepted it, the capture
+    state, permissions and the expansion engine. The copied report holds no snippets, captures,
+    window titles or addresses.</p>
+    <pre class="diagnostics-report" aria-live="polite">Loading…</pre>
+    <div class="sync-actions"><button type="button" class="secondary" data-copy-diagnostics>Copy diagnostics</button></div>`;
+  const pre = sec.querySelector('pre');
+  let report = '';
+  invoke('diagnostics')
+    .then((d) => {
+      report = formatDiagnostics(d, shortcutLabelFor);
+      pre.textContent = (d.shortcuts ?? []).map((row) => shortcutLine(row, shortcutLabelFor)).join('\n');
+    })
+    .catch((e) => { pre.textContent = `Could not read diagnostics: ${e}`; });
+  sec.querySelector('[data-copy-diagnostics]').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(report);
+      setStatus('Diagnostics copied.', 'ok');
+    } catch (e) {
+      setStatus(`Could not copy: ${e}`, 'err');
+    }
+  });
+  return sec;
 }
 
 /// Render setting sections plus the Save button they share. Every input carries its key, so
@@ -2689,7 +2733,7 @@ function shortcutRecorder(settingsKey, label, caption, placeholder) {
     record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
     delete record.dataset.recording;
   };
-  const showError = (message) => { error.textContent = message; };
+  const showError = (message) => { error.textContent = message; delete error.dataset.ok; };
   const beginRecording = () => {
     record.dataset.recording = 'yes';
     record.textContent = 'Press shortcut…';
@@ -2752,8 +2796,27 @@ function shortcutRecorder(settingsKey, label, caption, placeholder) {
     const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
     showError(result.ok ? '' : result.error);
   });
+  // Listens for the saved chord through the real handler, so it tells "not registered" apart
+  // from "registered, but something in front takes the press".
+  const testButton = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Test' });
+  testButton.addEventListener('click', async () => {
+    if (input.value !== (state.settings[settingsKey] ?? '')) {
+      showError('Save settings first, then test.');
+      return;
+    }
+    testButton.disabled = true;
+    showError(`Press ${input.value ? formatAccelerator(input.value) : 'it'} now…`);
+    try {
+      const result = testMessage(await invoke('shortcut_test', { key: settingsKey }));
+      showError(result.text);
+      error.dataset.ok = result.ok ? 'yes' : 'no';
+    } catch (e) {
+      showError(`Test failed: ${e}`);
+    }
+    testButton.disabled = false;
+  });
   const actions = el('span', { className: 'shortcut-actions' });
-  actions.append(clear, reset);
+  actions.append(testButton, clear, reset);
   box.append(input, record, actions);
   if (caption) box.append(el('span', { className: 'hotkey-caption', textContent: caption }));
   box.append(error, shortcutWarning(settingsKey));

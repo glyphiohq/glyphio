@@ -58,6 +58,11 @@ fn presentation(app: &AppHandle) -> Presentation {
     with_shortcut_notice(feedback.orchestration.presentation(), feedback.shortcut_problem)
 }
 
+/// The capture state as the menu shows it, for diagnostics.
+pub fn capture_state_text(app: &AppHandle) -> String {
+    presentation(app).menu_text
+}
+
 /// The resting presentation, carrying the shortcut notice if there is one. A capture in
 /// progress, or its result, always takes precedence.
 fn with_shortcut_notice(mut value: Presentation, problem: bool) -> Presentation {

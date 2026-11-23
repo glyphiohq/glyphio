@@ -323,6 +323,8 @@ pub fn run() {
             onboarding::onboarding_update,
             onboarding::open_setup,
             install::install_status,
+            shortcuts::shortcut_test,
+            commands::diagnostics,
             install::install_move,
             install::install_dismiss_duplicates,
             onboarding::onboarding_set_login_item,

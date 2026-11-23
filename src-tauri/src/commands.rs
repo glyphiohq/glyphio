@@ -661,6 +661,26 @@ pub fn secure_input_status(state: State<AppState>) -> Option<String> {
 
 /// Whether the engine crashed too often to be restarted automatically (it stays stopped until
 /// the user reloads).
+/// Everything the diagnostics view shows and copies: versions, each shortcut and what the
+/// system said, the capture state, permissions and engine. No snippet text, capture content,
+/// window titles or URLs.
+#[tauri::command]
+pub fn diagnostics(app: AppHandle) -> serde_json::Value {
+    let state = app.state::<AppState>();
+    serde_json::json!({
+        "version": app.package_info().version.to_string(),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "shortcuts": crate::shortcuts::diagnostic_rows(&app),
+        "capture": crate::tray::capture_state_text(&app),
+        "permissions": crate::permissions::read_status(&app),
+        "engine": {
+            "stoppedAfterCrashes": state.supervisor.exhausted(),
+            "secureInputHeld": state.supervisor.secure_input_holder().is_some(),
+        },
+    })
+}
+
 #[tauri::command]
 pub fn engine_exhausted(state: State<AppState>) -> bool {
     state.supervisor.exhausted()

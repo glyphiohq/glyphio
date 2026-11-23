@@ -55,13 +55,39 @@ pub trait Registrar {
     fn unregister(&mut self, chord: Shortcut) -> Result<(), String>;
 }
 
+/// How long a Test button listens for its chord.
+pub const TEST_WINDOW: Duration = Duration::from_secs(5);
+
+/// What a shortcut self-test found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TestOutcome {
+    /// Glyphio does not hold the chord (empty, invalid or refused), so a press cannot reach it.
+    NotRegistered,
+    /// The press came through the normal handler.
+    Received,
+    /// Registered, but no press arrived: something in front swallowed it, or nobody pressed.
+    NotReceived,
+}
+
+/// A Test button's listening window: the next press of `chord` before `until` is recorded
+/// instead of acted on.
+struct Listening {
+    chord: Shortcut,
+    until: Instant,
+    received: bool,
+}
+
 #[derive(Default)]
 pub struct Registry {
     /// Chords we hold with the system, which is what a diff is taken against.
     held: HashSet<Shortcut>,
     table: HashMap<Shortcut, Action>,
+    /// The chord each registered settings key holds.
+    keys: HashMap<&'static str, Shortcut>,
     status: Vec<ShortcutStatus>,
     last_fired: HashMap<Action, Instant>,
+    listening: Option<Listening>,
 }
 
 impl Registry {
@@ -107,6 +133,7 @@ impl Registry {
         }
 
         self.table.clear();
+        self.keys.clear();
         for (chord, action, key) in wanted {
             if !self.held.contains(&chord) {
                 match registrar.register(chord) {
@@ -123,6 +150,7 @@ impl Registry {
                 }
             }
             self.table.insert(chord, action);
+            self.keys.insert(key, chord);
         }
         self.status = status.clone();
         status
@@ -134,6 +162,41 @@ impl Registry {
 
     pub fn status(&self) -> &[ShortcutStatus] {
         &self.status
+    }
+
+    /// Start listening for `key`'s chord. Refused when Glyphio does not hold it, since no press
+    /// could arrive.
+    pub fn begin_test(&mut self, key: &str, now: Instant) -> Result<(), TestOutcome> {
+        let chord = *self.keys.get(key).ok_or(TestOutcome::NotRegistered)?;
+        self.listening = Some(Listening { chord, until: now + TEST_WINDOW, received: false });
+        Ok(())
+    }
+
+    /// Called first by the handler: a press of the chord under test is recorded and goes no
+    /// further, so testing the region shortcut does not start a capture.
+    pub fn intercept(&mut self, chord: &Shortcut, now: Instant) -> bool {
+        match &mut self.listening {
+            Some(l) if l.chord == *chord && now <= l.until => {
+                l.received = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The test's result once it has one: as soon as the press arrives, or when the window
+    /// closes without it. `None` while still listening (or when no test is running).
+    pub fn test_result(&mut self, now: Instant) -> Option<TestOutcome> {
+        let l = self.listening.as_ref()?;
+        let outcome = if l.received {
+            TestOutcome::Received
+        } else if now > l.until {
+            TestOutcome::NotReceived
+        } else {
+            return None;
+        };
+        self.listening = None;
+        Some(outcome)
     }
 
     /// Whether this press should do anything, recording it if so.
@@ -193,6 +256,36 @@ mod tests {
         mode: "visible",
         silent: true,
     };
+
+    #[test]
+    fn a_test_tells_not_registered_from_registered_but_swallowed() {
+        let mut reg = Registry::default();
+        let mut fake = Fake { refuse: vec![chord("Alt+Shift+X")], ..Default::default() };
+        reg.apply(
+            &[b("a", VISIBLE, "Alt+Shift+V"), b("x", VISIBLE_SILENT, "Alt+Shift+X"), b("e", Action::OpenHistory, "")],
+            &mut fake,
+        );
+        let t0 = Instant::now();
+
+        // Refused and empty bindings can't be tested: nothing could arrive.
+        assert_eq!(reg.begin_test("x", t0), Err(TestOutcome::NotRegistered));
+        assert_eq!(reg.begin_test("e", t0), Err(TestOutcome::NotRegistered));
+
+        // Registered, and the press arrives through the handler: recorded, not acted on.
+        reg.begin_test("a", t0).unwrap();
+        assert_eq!(reg.test_result(t0), None, "still listening");
+        assert!(!reg.intercept(&chord("Alt+Shift+H"), t0), "another chord passes through");
+        assert!(reg.intercept(&chord("Alt+Shift+V"), t0 + Duration::from_secs(1)));
+        assert_eq!(reg.test_result(t0 + Duration::from_secs(1)), Some(TestOutcome::Received));
+        assert!(!reg.intercept(&chord("Alt+Shift+V"), t0), "the test is over; presses act again");
+
+        // Registered, but nothing arrives in the window: swallowed by something in front.
+        reg.begin_test("a", t0).unwrap();
+        assert_eq!(reg.test_result(t0 + TEST_WINDOW), None);
+        let late = t0 + TEST_WINDOW + Duration::from_millis(1);
+        assert!(!reg.intercept(&chord("Alt+Shift+V"), late), "a late press is not counted");
+        assert_eq!(reg.test_result(late), Some(TestOutcome::NotReceived));
+    }
 
     #[test]
     fn saving_unchanged_bindings_makes_no_calls() {

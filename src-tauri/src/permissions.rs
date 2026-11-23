@@ -240,7 +240,7 @@ impl Default for PermissionState {
     }
 }
 
-fn read_status(app: &AppHandle) -> Status {
+pub fn read_status(app: &AppHandle) -> Status {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
     let session = state.permissions.session.lock().unwrap();

@@ -1,5 +1,5 @@
 //! Diagnostic: dump every window (title, role, and all static text) of a pid via AX.
-//! Run: cargo run --example ax_windows -- <pid>
+//! Run: cargo run --features macos-probes --example ax_windows -- <pid>
 
 use core_foundation::array::{CFArray, CFArrayGetTypeID, CFArrayRef};
 use core_foundation::base::{CFType, CFTypeRef, TCFType};

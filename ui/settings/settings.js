@@ -9,21 +9,14 @@ import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shar
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
 import {
   acceleratorFromKeyboardEvent,
-  CAPTURE_SHORTCUT_DEFAULTS,
+  SHORTCUT_DEFAULTS,
   createShortcutCaptureController,
   formatAccelerator,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
 import { registrationNotice, statusFor } from './shortcut-status.mjs';
-import {
-  afterPermissionPrompt,
-  initialPermissionState,
-  PERMISSION_KIND,
-  PERMISSION_REMEDY,
-  permissionSurface,
-  shouldShowPermissionBanner,
-  withNativePermissionStatus,
-} from './permissions.mjs';
+import { checklistVisible, grantSurface, PERMISSION_KIND } from './permissions.mjs';
+import { formatDiagnostics, shortcutLine, testMessage } from './diagnostics.mjs';
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -32,17 +25,12 @@ const PLATFORM_ID = IS_MAC ? 'macos' : 'windows';
 const app = document.getElementById('app');
 const shortcutCaptureController = createShortcutCaptureController(document);
 
-const PROMPTED_KEY = {
-  [PERMISSION_KIND.ACCESSIBILITY]: 'glyphio-accessibility-prompted',
-  [PERMISSION_KIND.SCREEN_RECORDING]: 'glyphio-screen-recording-prompted',
+// The native grant model (permissions.rs), the same one the setup window shows. `null` until
+// the first reading arrives.
+const grants = {
+  [PERMISSION_KIND.ACCESSIBILITY]: null,
+  [PERMISSION_KIND.SCREEN_RECORDING]: null,
 };
-const PERMISSION_GUIDANCE_MIGRATED_KEY = 'glyphio-permission-guidance-v1';
-
-const permissionState = {
-  [PERMISSION_KIND.ACCESSIBILITY]: initialPermissionState({ promptAvailable: false }),
-  [PERMISSION_KIND.SCREEN_RECORDING]: initialPermissionState({ promptAvailable: false }),
-};
-let permissionGuidanceReady = false;
 
 const state = {
   snippets: [],
@@ -124,16 +112,19 @@ const CAPTURE_SECTIONS = [
     ['shortcutCapturePage', 'hotkeys', 'Browser page (content only)', 'shortcutCapturePageSilent'],
     ['shortcutCaptureScroll', 'hotkeys', 'Scrolling area', 'shortcutCaptureScrollSilent'],
     ['shortcutCaptureScrollPage', 'hotkeys', 'Scrolling page (frontmost window)', 'shortcutCaptureScrollPageSilent'],
-    ['shortcutOpenHistory', 'text', 'Open capture history'],
   ]},
 ];
 
+// The shortcuts that open a Glyphio window live together under General: they are app-wide,
+// not tied to one tab's feature. Capture shortcuts stay on Capture, beside their modes.
 const GENERAL_SECTIONS = [
   { title: 'Startup', fields: [
     ['launchAtLogin', 'toggle', 'Launch Glyphio at login'],
   ]},
-  { title: 'Hotkeys', fields: [
-    ['shortcutOpenPalette', 'text', 'Snippet search (Spotlight-style)'],
+  { title: 'Hotkeys', hint: 'Select a shortcut, then press its keys together.', fields: [
+    ['shortcutOpenPalette', 'hotkey', 'Snippet search (Spotlight-style)'],
+    ['shortcutOpenClipboard', 'hotkey', 'Open clipboard history'],
+    ['shortcutOpenHistory', 'hotkey', 'Open capture history'],
   ]},
 ];
 
@@ -148,7 +139,6 @@ const CLIPBOARD_SECTIONS = [
     ['clipboardHistory', 'toggle', 'Remember what I copy'],
     ['clipboardMaxItems', 'number', 'Entries kept'],
     ['clipboardMaxMb', 'number', 'Megabytes of copied images kept'],
-    ['shortcutOpenClipboard', 'text', 'Open clipboard history'],
   ]},
   { title: 'Never record from these apps', hint: `One name per line, matched loosely —
     <code>bank</code> catches “Banking”.`, fields: [
@@ -161,7 +151,6 @@ init().catch((e) => setStatus(e.message, 'err'));
 async function init() {
   renderShell();
   await reloadAll();
-  initializePermissionGuidance();
   await wirePermissionGuidance();
   await wireSecureInput();
   await wireEngineStatus();
@@ -206,8 +195,11 @@ function renderShell() {
       <h1>Glyphio</h1>
       <div class="spacer"></div>
     </header>
-    <section class="permission-panel" id="permission-panel" aria-label="macOS permissions" hidden>
-      <div class="permission-panel-title">macOS permissions</div>
+    <section class="permission-panel" id="permission-panel" aria-label="Finish setup" hidden>
+      <div class="permission-panel-head">
+        <div class="permission-panel-title">Finish setup</div>
+        <button type="button" class="ghost sm" data-run-setup>Run setup again</button>
+      </div>
       <div data-permission-rows></div>
     </section>
     <div class="ax-banner" id="si-banner">
@@ -232,41 +224,20 @@ function renderShell() {
 }
 
 // --- Permission guidance ----------------------------------------------------
-
-function initializePermissionGuidance() {
-  // On the first build with unified guidance, classify established installs as having already
-  // used macOS's one-shot prompts. A genuinely new install keeps each prompt available across
-  // restarts until that specific action is clicked.
-  if (!localStorage.getItem(PERMISSION_GUIDANCE_MIGRATED_KEY)) {
-    const establishedInstall = Boolean(
-      localStorage.getItem('glyphio-welcomed') || state.syncConfig?.enabled || state.snippets.length > 2,
-    );
-    if (establishedInstall) {
-      for (const key of Object.values(PROMPTED_KEY)) localStorage.setItem(key, '1');
-    }
-    localStorage.setItem(PERMISSION_GUIDANCE_MIGRATED_KEY, '1');
-  }
-  for (const kind of Object.values(PERMISSION_KIND)) {
-    permissionState[kind] = initialPermissionState({
-      promptAvailable: !localStorage.getItem(PROMPTED_KEY[kind]),
-    });
-  }
-  permissionGuidanceReady = true;
-}
+// One checklist, shared with the setup window: the same grant states and the same single
+// action per row. The global panel appears only while something is unresolved; Settings →
+// General always shows both rows, so a hidden panel never means "unknown".
 
 function renderPermissionGuidance() {
   const panel = document.getElementById('permission-panel');
-  if (!panel || !permissionGuidanceReady) return;
-
-  const surface = permissionSurface(permissionState);
-  // Keep the global guidance quiet once both capabilities work. The same two rows remain
-  // inspectable under Settings → General, so "no banner" never means "unknown status".
+  if (!panel) return;
+  const surface = grantSurface(grants);
   const inspectingInSettings = state.selected === 'settings' && state.settingsTab === 'general';
-  panel.hidden = !shouldShowPermissionBanner(surface, inspectingInSettings);
+  panel.hidden = !checklistVisible(surface, inspectingInSettings);
   const markup = surface.rows.map(([kind, row]) => `
     <div class="perm-row" data-kind="${kind}">
       <div class="perm-info"><strong>${row.name}</strong>
-        <span class="perm-sub">${row.description}</span></div>
+        <span class="perm-sub">${row.explanation || row.description}</span></div>
       <span class="perm-state" data-phase="${row.phase}" role="status" aria-live="polite">${row.status}</span>
       <div class="perm-actions">${row.actions.map((action) =>
         `<button type="button" class="${action.style}" data-permission-action="${action.id}">${action.label}</button>`).join('')}</div>
@@ -274,70 +245,57 @@ function renderPermissionGuidance() {
   document.querySelectorAll('[data-permission-rows]').forEach((rows) => { rows.innerHTML = markup; });
 }
 
+function applyGrants(status) {
+  if (!status) return;
+  for (const kind of Object.values(PERMISSION_KIND)) grants[kind] = status[kind] ?? grants[kind];
+  renderPermissionGuidance();
+}
+
 async function refreshPermissionGuidance() {
-  try {
-    const [accessibility, screenRecording] = await Promise.all([
-      invoke('accessibility_status'),
-      invoke('screen_recording_status'),
-    ]);
-    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
-      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(accessibility),
-    );
-    // A successful first prompt still needs the relaunch it promised, even when preflight starts
-    // returning true. On the next process launch this in-memory remedy is gone and granted wins.
-    if (permissionState[PERMISSION_KIND.SCREEN_RECORDING].remedy !== PERMISSION_REMEDY.RELAUNCH) {
-      permissionState[PERMISSION_KIND.SCREEN_RECORDING] = withNativePermissionStatus(
-        permissionState[PERMISSION_KIND.SCREEN_RECORDING], Boolean(screenRecording),
-      );
-    }
-    renderPermissionGuidance();
-  } catch { /* window closing */ }
+  try { applyGrants(await invoke('permission_status')); } catch { /* window closing */ }
 }
 
 async function handlePermissionAction(event) {
+  const setupButton = event.target.closest('[data-run-setup]');
+  if (setupButton) {
+    try { await invoke('open_setup'); } catch (error) { setStatus(String(error), 'err'); }
+    return;
+  }
   const button = event.target.closest('[data-permission-action]');
   if (!button) return;
-  const row = button.closest('[data-kind]');
-  const kind = row?.dataset.kind;
+  const kind = button.closest('[data-kind]')?.dataset.kind;
   const action = button.dataset.permissionAction;
   if (!kind) return;
 
   button.disabled = true;
   try {
-    if (action === 'request') {
-      localStorage.setItem(PROMPTED_KEY[kind], '1');
-      const command = kind === PERMISSION_KIND.ACCESSIBILITY
-        ? 'request_accessibility' : 'request_screen_recording';
-      const accepted = Boolean(await invoke(command));
-      permissionState[kind] = afterPermissionPrompt(kind, accepted);
-      renderPermissionGuidance();
-    } else if (action === 'settings') {
-      const command = kind === PERMISSION_KIND.ACCESSIBILITY
-        ? 'open_accessibility_settings' : 'open_screen_recording_settings';
-      await invoke(command);
-    } else if (action === 'relaunch') {
-      await invoke('relaunch_app');
-    }
+    if (action === 'request') applyGrants(await invoke('permission_request', { kind }));
+    else if (action === 'settings') await invoke('permission_open_settings', { kind });
+    else if (action === 'repair') applyGrants(await invoke('permission_repair', { kind }));
+    else if (action === 'relaunch') await invoke('relaunch_app');
   } catch (error) {
     setStatus(String(error), 'err');
-    button.disabled = false;
   }
+  button.disabled = false;
 }
 
+// Live while the window is on screen: the native watcher emits `permission-status` on every
+// change (it is how System Settings toggles show up without a click), and it is switched off
+// again when the window is hidden so an idle Settings window costs nothing.
 async function wirePermissionGuidance() {
   renderPermissionGuidance();
-  await listen('accessibility-status', (event) => {
-    permissionState[PERMISSION_KIND.ACCESSIBILITY] = withNativePermissionStatus(
-      permissionState[PERMISSION_KIND.ACCESSIBILITY], Boolean(event.payload),
-    );
-    renderPermissionGuidance();
-  });
+  await listen('permission-status', (event) => applyGrants(event.payload));
+  // The engine confirming (or losing) its event tap is an Accessibility change too.
+  await listen('accessibility-status', refreshPermissionGuidance);
+  const watch = (active) => invoke('permission_watch', { active }).catch(() => {});
   await refreshPermissionGuidance();
-  // System Settings returns focus/visibility to the existing page; refresh both rows in place.
+  if (!document.hidden) watch(true);
   window.addEventListener('focus', refreshPermissionGuidance);
   document.addEventListener('visibilitychange', () => {
+    watch(!document.hidden);
     if (!document.hidden) refreshPermissionGuidance();
   });
+  window.addEventListener('beforeunload', () => watch(false));
 }
 
 // Secure Input: while ANY app holds it (password fields, a stale lock-screen grab), no
@@ -2067,7 +2025,6 @@ function renderSyncSection(form) {
   const st = state.syncStatus || { state: 'disabled' };
   const cfg = state.syncConfig || {};
   const mode = cfg.managed ? 'locked' : (cfg.enabled ? 'active' : 'off');
-  const showForm = mode === 'active';
   const who = st.identity
     ? `${escapeHtml(st.identity.email || st.identity.sub)} · teams: ${st.identity.teams.map(escapeHtml).join(', ') || '—'}`
     : '';
@@ -2099,6 +2056,22 @@ function renderSyncSection(form) {
     <div class="mfield sc-oidc"><label>Scopes (beyond openid)</label><input type="text" id="sc-scopes" placeholder="profile email offline_access groups" value="${escapeHtml((cfg.scopes || []).join(' '))}"></div>
     <button class="primary" id="sc-save">Save sync settings</button>`;
 
+  // An invite link is the normal way in, so it leads; the hand-entered connection fields are
+  // for self-hosters and sit under Advanced.
+  const inviteHtml = `
+    <div class="sync-invite">
+      <label for="sync-invite-input">${mode === 'active' ? 'Join another team: paste an invite link' : 'Paste an invite link'}</label>
+      <div class="sync-invite-row">
+        <input type="text" id="sync-invite-input" placeholder="glyphio://join?server=…" spellcheck="false" autocomplete="off" />
+        <button class="primary" id="sync-invite-go">Join</button>
+      </div>
+    </div>`;
+  const advancedHtml = `
+    <details class="sync-advanced"${mode === 'active' && !cfg.backendUrl ? ' open' : ''}>
+      <summary>Advanced: connect manually</summary>
+      ${formHtml}
+    </details>`;
+
   let body;
   if (mode === 'locked') {
     body = `
@@ -2109,19 +2082,17 @@ function renderSyncSection(form) {
       </div>
       ${cardHtml}`;
   } else if (mode === 'active') {
-    body = `${cardHtml}${formHtml}`;
+    body = `${cardHtml}${inviteHtml}${advancedHtml}`;
   } else {
-    // off / personal — provisioning is invite-link only (an admin-managed config is the other
-    // path; both keep an arbitrary backend URL out of the user's hands and route through the
-    // invite confirmation dialog).
+    // Off / personal. Joining still routes through the invite confirmation dialog, so a
+    // pasted link never switches servers silently.
     body = `
       <div class="sync-off">
         <p class="adv-hint">Team sync is off — everything stays on this device. Join a team with an
         invite link from your admin.</p>
-        <div class="sync-actions">
-          <button class="primary" id="sync-join">Join with an invite link…</button>
-        </div>
-      </div>`;
+        ${inviteHtml}
+      </div>
+      ${advancedHtml}`;
   }
 
   div.innerHTML = `
@@ -2133,16 +2104,17 @@ function renderSyncSection(form) {
   const toggleOidc = () => div.querySelectorAll('.sc-oidc').forEach((el) => {
     el.style.display = div.querySelector('#sc-mode').value === 'oidc' ? '' : 'none';
   });
-  if (showForm) {
+  if (div.querySelector('#sc-mode')) {
     toggleOidc();
     div.querySelector('#sc-mode').addEventListener('change', toggleOidc);
   }
-  div.querySelector('#sync-join')?.addEventListener('click', async () => {
-    const url = await promptDialog('Join a team', {
-      label: 'Paste the invite link or code from your admin',
-      placeholder: 'glyphio://join?server=…', confirmLabel: 'Continue',
-    });
+  const joinFromField = () => {
+    const url = div.querySelector('#sync-invite-input').value.trim();
     if (url) confirmInvite(url);
+  };
+  div.querySelector('#sync-invite-go')?.addEventListener('click', joinFromField);
+  div.querySelector('#sync-invite-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') joinFromField();
   });
   div.querySelector('#sc-save')?.addEventListener('click', async () => {
     const config = {
@@ -2406,10 +2378,54 @@ function renderGeneralTab(form) {
   permissions.innerHTML = `
     <h3>macOS permissions</h3>
     <p class="adv-hint">Current access for Glyphio. Actions appear only when macOS needs one.</p>
-    <div data-permission-rows></div>`;
+    <div data-permission-rows></div>
+    <div class="sync-actions"><button type="button" class="secondary" data-run-setup>Run setup again</button></div>`;
   permissions.addEventListener('click', handlePermissionAction);
-  renderSections(form, GENERAL_SECTIONS, permissions);
+  const tail = document.createElement('div');
+  tail.append(permissions, renderDiagnosticsSection());
+  renderSections(form, GENERAL_SECTIONS, tail);
   renderPermissionGuidance();
+}
+
+/** Every shortcut's label as Settings shows it, for the diagnostics list. */
+function shortcutLabelFor(key) {
+  for (const sec of [...CAPTURE_SECTIONS, ...GENERAL_SECTIONS]) {
+    for (const [fieldKey, type, label, opts] of sec.fields) {
+      if (fieldKey === key) return label;
+      if (type === 'hotkeys' && opts === key) return `${label} (to the clipboard)`;
+    }
+  }
+  return shortcutLabel(key);
+}
+
+/// Each binding with what the system said, plus capture state, permissions and engine, and a
+/// copyable plain-text report for a bug report. Nothing in it is content or an address.
+function renderDiagnosticsSection() {
+  const sec = el('section', { className: 'form-section diagnostics' });
+  sec.innerHTML = `
+    <h3>Diagnostics</h3>
+    <p class="adv-hint">What each shortcut is bound to and whether macOS accepted it, the capture
+    state, permissions and the expansion engine. The copied report holds no snippets, captures,
+    window titles or addresses.</p>
+    <pre class="diagnostics-report" aria-live="polite">Loading…</pre>
+    <div class="sync-actions"><button type="button" class="secondary" data-copy-diagnostics>Copy diagnostics</button></div>`;
+  const pre = sec.querySelector('pre');
+  let report = '';
+  invoke('diagnostics')
+    .then((d) => {
+      report = formatDiagnostics(d, shortcutLabelFor);
+      pre.textContent = (d.shortcuts ?? []).map((row) => shortcutLine(row, shortcutLabelFor)).join('\n');
+    })
+    .catch((e) => { pre.textContent = `Could not read diagnostics: ${e}`; });
+  sec.querySelector('[data-copy-diagnostics]').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(report);
+      setStatus('Diagnostics copied.', 'ok');
+    } catch (e) {
+      setStatus(`Could not copy: ${e}`, 'err');
+    }
+  });
+  return sec;
 }
 
 /// Render setting sections plus the Save button they share. Every input carries its key, so
@@ -2448,6 +2464,7 @@ function renderSnippetsTab(form) {
   div.querySelector('#tab-export').addEventListener('click', () => exportSnippets(null));
   div.querySelector('#tab-import').addEventListener('click', () => importSnippets(null));
   form.append(div);
+  renderSections(form, []); // just the shared Save button, for the delivery settings above
 }
 
 /**
@@ -2638,6 +2655,11 @@ function renderField(key, type, label, opts) {
     field.append(hotkeyPair(key, opts, label));
     return field;
   }
+  // One app-wide shortcut, recorded from a key press exactly like the capture shortcuts.
+  if (type === 'hotkey') {
+    field.append(shortcutRecorder(key, label, '', 'Not set'));
+    return field;
+  }
   let input;
   if (type === 'toggle') { input = el('input', { type: 'checkbox' }); input.checked = Boolean(state.settings[key]); }
   else if (type === 'select') { input = renderSelect(key, opts); }
@@ -2675,105 +2697,130 @@ function paintShortcutStatus(statuses) {
 /** The editor key and the straight-to-clipboard key for one capture mode. */
 function hotkeyPair(key, silentKey, label) {
   const wrap = el('div', { className: 'hotkey-pair' });
-  const buildRecorder = (settingsKey, caption, placeholder) => {
-    const box = el('div', { className: 'shortcut-box' });
-    const input = el('input', { type: 'hidden' });
-    input.value = state.settings[settingsKey] ?? '';
-    input.dataset.key = settingsKey;
-    input.dataset.type = 'text';
-    input.dataset.label = `${label} (${caption})`;
-
-    const record = el('button', {
-      type: 'button',
-      className: 'shortcut-recorder',
-      textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
-      title: `Record ${label.toLowerCase()} shortcut ${caption}`,
-    });
-    record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
-    const error = el('span', { className: 'field-error shortcut-error' });
-    error.setAttribute('role', 'alert');
-
-    const showValue = () => {
-      shortcutCaptureController.stop(recorderSession);
-      record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
-      record.setAttribute('aria-label', `${label}, ${caption}: ${record.textContent}. Select to record.`);
-      delete record.dataset.recording;
-    };
-    const showError = (message) => { error.textContent = message; };
-    const beginRecording = () => {
-      record.dataset.recording = 'yes';
-      record.textContent = 'Press shortcut…';
-      record.setAttribute('aria-label', `${label}, ${caption}: press a shortcut. Escape cancels.`);
-      showError('Press the keys together. Escape cancels.');
-      shortcutCaptureController.start(recorderSession);
-      record.focus({ preventScroll: true });
-    };
-
-    const recorderSession = {
-      cancel() {
-        showValue();
-        showError('');
-      },
-      handleKeydown(event) {
-        if (event.code === 'Escape') {
-          showValue();
-          showError('');
-          return;
-        }
-        const recorded = acceleratorFromKeyboardEvent(event);
-        if (recorded.error) {
-          showError(recorded.error);
-          return;
-        }
-        const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey), PLATFORM_ID);
-        if (!result.ok) {
-          showError(result.error);
-          return;
-        }
-        input.value = recorded.accelerator;
-        showValue();
-        showError('');
-      },
-    };
-
-    record.addEventListener('click', () => {
-      if (record.dataset.recording === 'yes') {
-        showValue();
-        showError('');
-      } else beginRecording();
-    });
-    record.addEventListener('blur', () => {
-      if (record.dataset.recording === 'yes') {
-        showValue();
-        showError('');
-      }
-    });
-
-    const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
-    clear.addEventListener('click', () => {
-      input.value = '';
-      showValue();
-      showError('');
-    });
-    const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
-    reset.addEventListener('click', () => {
-      input.value = CAPTURE_SHORTCUT_DEFAULTS[settingsKey] ?? '';
-      showValue();
-      const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
-      showError(result.ok ? '' : result.error);
-    });
-    const actions = el('span', { className: 'shortcut-actions' });
-    actions.append(clear, reset);
-    box.append(input, record, actions,
-      el('span', { className: 'hotkey-caption', textContent: caption }), error,
-      shortcutWarning(settingsKey));
-    return box;
-  };
   wrap.append(
-    buildRecorder(key, 'opens the editor', ''),
-    buildRecorder(silentKey, 'to the clipboard', 'not set'),
+    shortcutRecorder(key, label, 'opens the editor', ''),
+    shortcutRecorder(silentKey, label, 'to the clipboard', 'not set'),
   );
   return wrap;
+}
+
+/**
+ * One shortcut field: select it, press the keys together, and the chord is validated and
+ * stored in a hidden input that `saveSettings` collects like any other field.
+ */
+function shortcutRecorder(settingsKey, label, caption, placeholder) {
+  const spoken = caption ? `${label}, ${caption}` : label;
+  const box = el('div', { className: 'shortcut-box' });
+  const input = el('input', { type: 'hidden' });
+  input.value = state.settings[settingsKey] ?? '';
+  input.dataset.key = settingsKey;
+  input.dataset.type = 'text';
+  input.dataset.label = caption ? `${label} (${caption})` : label;
+
+  const record = el('button', {
+    type: 'button',
+    className: 'shortcut-recorder',
+    textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
+    title: `Record ${label.toLowerCase()} shortcut${caption ? ` ${caption}` : ''}`,
+  });
+  record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
+  const error = el('span', { className: 'field-error shortcut-error' });
+  error.setAttribute('role', 'alert');
+
+  const showValue = () => {
+    shortcutCaptureController.stop(recorderSession);
+    record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
+    record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
+    delete record.dataset.recording;
+  };
+  const showError = (message) => { error.textContent = message; delete error.dataset.ok; };
+  const beginRecording = () => {
+    record.dataset.recording = 'yes';
+    record.textContent = 'Press shortcut…';
+    record.setAttribute('aria-label', `${spoken}: press a shortcut. Escape cancels.`);
+    showError('Press the keys together. Escape cancels.');
+    shortcutCaptureController.start(recorderSession);
+    record.focus({ preventScroll: true });
+  };
+
+  const recorderSession = {
+    cancel() {
+      showValue();
+      showError('');
+    },
+    handleKeydown(event) {
+      if (event.code === 'Escape') {
+        showValue();
+        showError('');
+        return;
+      }
+      const recorded = acceleratorFromKeyboardEvent(event);
+      if (recorded.error) {
+        showError(recorded.error);
+        return;
+      }
+      const result = validateAccelerator(recorded.accelerator, configuredShortcuts(settingsKey), PLATFORM_ID);
+      if (!result.ok) {
+        showError(result.error);
+        return;
+      }
+      input.value = recorded.accelerator;
+      showValue();
+      showError('');
+    },
+  };
+
+  record.addEventListener('click', () => {
+    if (record.dataset.recording === 'yes') {
+      showValue();
+      showError('');
+    } else beginRecording();
+  });
+  record.addEventListener('blur', () => {
+    if (record.dataset.recording === 'yes') {
+      showValue();
+      showError('');
+    }
+  });
+
+  const clear = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Clear' });
+  clear.addEventListener('click', () => {
+    input.value = '';
+    showValue();
+    showError('');
+  });
+  const reset = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Reset' });
+  reset.addEventListener('click', () => {
+    input.value = SHORTCUT_DEFAULTS[settingsKey] ?? '';
+    showValue();
+    const result = validateAccelerator(input.value, configuredShortcuts(settingsKey), PLATFORM_ID);
+    showError(result.ok ? '' : result.error);
+  });
+  // Listens for the saved chord through the real handler, so it tells "not registered" apart
+  // from "registered, but something in front takes the press".
+  const testButton = el('button', { type: 'button', className: 'ghost shortcut-action', textContent: 'Test' });
+  testButton.addEventListener('click', async () => {
+    if (input.value !== (state.settings[settingsKey] ?? '')) {
+      showError('Save settings first, then test.');
+      return;
+    }
+    testButton.disabled = true;
+    showError(`Press ${input.value ? formatAccelerator(input.value) : 'it'} now…`);
+    try {
+      const result = testMessage(await invoke('shortcut_test', { key: settingsKey }));
+      showError(result.text);
+      error.dataset.ok = result.ok ? 'yes' : 'no';
+    } catch (e) {
+      showError(`Test failed: ${e}`);
+    }
+    testButton.disabled = false;
+  });
+  const actions = el('span', { className: 'shortcut-actions' });
+  actions.append(testButton, clear, reset);
+  box.append(input, record, actions);
+  if (caption) box.append(el('span', { className: 'hotkey-caption', textContent: caption }));
+  box.append(error, shortcutWarning(settingsKey));
+  return box;
 }
 
 /** Current values for every other Glyphio shortcut, including fields on other settings tabs. */
@@ -2901,7 +2948,7 @@ function deviceLocale() {
 
 async function saveSettings() {
   if (!validateCaptureRecorders()) {
-    setStatus('Fix the highlighted capture shortcuts before saving.', 'err');
+    setStatus('Fix the highlighted shortcuts before saving.', 'err');
     return;
   }
   const next = { ...state.settings };

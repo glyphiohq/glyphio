@@ -1,5 +1,5 @@
 //! Diagnostic: probe SCScreenshotManager rect captures on every display.
-//! Run: cargo run --example rect_probe
+//! Run: cargo run --features macos-probes --example rect_probe
 //! Writes PNGs + a black-fraction report to the path in GLYPHIO_PROBE_OUT (or /tmp).
 
 use core_graphics::display::CGDisplay;

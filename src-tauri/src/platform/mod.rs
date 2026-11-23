@@ -4,7 +4,8 @@
 //! input, permissions, the login item, process control) sits behind a small trait here, and
 //! `cfg(target_os)` plus the OS crates live only under this directory. The rest of the app asks
 //! [`current`] for the implementation, so the pure cores can be driven with [`fake`] in tests and
-//! a Windows port is an additive directory (`docs/WINDOWS.md`).
+//! a Windows port is an additive directory (`docs/WINDOWS.md`). Until then other targets get
+//! [`unsupported`], which compiles everywhere and refuses each call.
 //!
 //! Geometry is in global points with a top-left origin, as before. Methods are synchronous; the
 //! capture worker and other threads call them directly, never the main thread's event loop.
@@ -18,12 +19,16 @@ use image::RgbaImage;
 use crate::autostart::{Migration, Outcome};
 use crate::capture::Shot;
 
+pub mod files;
+pub mod local_socket;
 pub mod reserved;
 pub mod types;
 pub use types::{BrowserMeta, FrontWindow, PageGeometry, Progress};
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(not(target_os = "macos"))]
+pub mod unsupported;
 
 #[cfg(test)]
 pub mod fake;
@@ -163,6 +168,19 @@ pub trait ProcessControl: Send + Sync {
     fn bundled_engine_exe(&self) -> Option<PathBuf>;
 }
 
+pub trait Installation: Send + Sync {
+    /// Whether `path` is on a read-only volume (a mounted disk image, for one).
+    fn read_only(&self, path: &Path) -> bool;
+    /// Whether this process can create entries in `dir`.
+    fn dir_writable(&self, dir: &Path) -> bool;
+    /// The bundle identifier of the app at `bundle`.
+    fn bundle_identifier(&self, bundle: &Path) -> Option<String>;
+    /// Copy an app bundle, preserving its signature, attributes and symlinks.
+    fn copy_bundle(&self, from: &Path, to: &Path) -> anyhow::Result<()>;
+    /// Launch a new instance of the app at `bundle`.
+    fn open_bundle(&self, bundle: &Path) -> anyhow::Result<()>;
+}
+
 /// One implementation of each capability, built once.
 pub struct Platform {
     pub capturer: Box<dyn ScreenCapturer>,
@@ -175,6 +193,7 @@ pub struct Platform {
     pub autostart: Box<dyn Autostart>,
     pub process: Box<dyn ProcessControl>,
     pub shell: Box<dyn AppShell>,
+    pub install: Box<dyn Installation>,
 }
 
 static CURRENT: OnceLock<Platform> = OnceLock::new();
@@ -186,11 +205,25 @@ pub fn current() -> &'static Platform {
         {
             macos::platform()
         }
-        #[cfg(all(not(target_os = "macos"), not(test)))]
+        #[cfg(not(target_os = "macos"))]
         {
-            compile_error!("no platform implementation for this target yet; see docs/WINDOWS.md")
+            unsupported::platform()
         }
     })
+}
+
+/// Whether `event` is the app being opened again while it runs (macOS: Finder, Launchpad or
+/// `open -a`), which surfaces Settings the way a Dock click would.
+pub fn is_reopen(event: &tauri::RunEvent) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(event, tauri::RunEvent::Reopen { .. })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = event;
+        false
+    }
 }
 
 /// System-wide managed configuration deployed by IT/MDM (root-owned).

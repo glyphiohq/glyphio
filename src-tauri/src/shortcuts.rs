@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 use crate::AppState;
-use registry::{Action, Binding, Registrar, Registration, ShortcutStatus};
+use registry::{Action, Binding, Registrar, Registration, ShortcutStatus, TestOutcome};
 
 /// The one key a running scrolling capture borrows.
 const STOP_KEY: &str = "Escape";
@@ -200,6 +200,48 @@ pub fn status(app: &AppHandle) -> Vec<ShortcutStatus> {
     app.state::<AppState>().shortcuts.lock().unwrap().status().to_vec()
 }
 
+/// Listen for `key`'s chord for [`registry::TEST_WINDOW`] through the normal handler, and say
+/// whether a press arrived. Returns as soon as it does.
+#[tauri::command]
+pub async fn shortcut_test(app: AppHandle, key: String) -> TestOutcome {
+    if let Err(outcome) = app.state::<AppState>().shortcuts.lock().unwrap().begin_test(&key, Instant::now()) {
+        return outcome;
+    }
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if let Some(outcome) = app.state::<AppState>().shortcuts.lock().unwrap().test_result(Instant::now()) {
+            return outcome;
+        }
+    }
+}
+
+/// One row of the diagnostics view: the settings key, its chord and what the system said.
+#[derive(serde::Serialize)]
+pub struct DiagnosticRow {
+    pub key: &'static str,
+    pub accelerator: String,
+    #[serde(flatten)]
+    pub registration: Registration,
+}
+
+pub fn diagnostic_rows(app: &AppHandle) -> Vec<DiagnosticRow> {
+    let state = app.state::<AppState>();
+    let wanted = bindings(&state.settings.lock().unwrap());
+    let status = state.shortcuts.lock().unwrap().status().to_vec();
+    wanted
+        .into_iter()
+        .map(|b| DiagnosticRow {
+            key: b.key,
+            registration: status
+                .iter()
+                .find(|s| s.key == b.key)
+                .map(|s| s.registration.clone())
+                .unwrap_or(Registration::Empty),
+            accelerator: b.accelerator,
+        })
+        .collect()
+}
+
 /// The notice for the tray when any binding was refused or invalid.
 fn problem_summary(status: &[ShortcutStatus]) -> bool {
     status.iter().any(|s| {
@@ -226,6 +268,10 @@ pub fn handler(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
     let action = {
         let state = app.state::<AppState>();
         let mut registry = state.shortcuts.lock().unwrap();
+        // A Test button is listening for this chord: record the press and do nothing else.
+        if registry.intercept(shortcut, Instant::now()) {
+            return;
+        }
         match registry.lookup(shortcut) {
             Some(action) if registry.should_fire(action, Instant::now()) => action,
             _ => return,

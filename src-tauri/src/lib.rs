@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 mod engine;
 mod history;
+mod install;
 mod launch;
 mod logging;
 mod onboarding;
@@ -181,6 +182,7 @@ pub fn run() {
 
             tray::build(app.handle())?;
             permissions::start_watcher(app.handle());
+            permissions::sync_tray(app.handle());
             launch::mark("tray-ready");
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
@@ -258,7 +260,10 @@ pub fn run() {
 
             // A login launch keeps Glyphio in the menu bar; an ordinary launch opens Settings.
             let completed = app.state::<AppState>().settings.lock().unwrap().onboarding_completed;
-            match startup::launch_surface(open_settings_on_start, completed) {
+            // A copy running from a disk image or a translocated path, or a second installed
+            // copy, is shown in setup whatever its progress: it decides whether grants stick.
+            let install_attention = open_settings_on_start && install::current(app.handle()).needs_attention();
+            match startup::launch_surface(open_settings_on_start, completed && !install_attention) {
                 startup::LaunchSurface::Setup => windows::open_setup(app.handle())?,
                 startup::LaunchSurface::Settings => windows::open(app.handle(), "settings")?,
                 startup::LaunchSurface::Nothing => {}
@@ -317,6 +322,11 @@ pub fn run() {
             onboarding::onboarding_state,
             onboarding::onboarding_update,
             onboarding::open_setup,
+            install::install_status,
+            shortcuts::shortcut_test,
+            commands::diagnostics,
+            install::install_move,
+            install::install_dismiss_duplicates,
             onboarding::onboarding_set_login_item,
             onboarding::onboarding_open_team,
             permissions::permission_status,
@@ -418,7 +428,7 @@ pub fn run() {
             // Relaunching the app (`open -a Glyphio`, Launchpad, Finder) while it's already
             // running fires Reopen — surface the settings window frontmost, like clicking
             // a Dock icon would for a regular app.
-            tauri::RunEvent::Reopen { .. } => {
+            ref event if platform::is_reopen(event) => {
                 let _ = windows::open(app_handle, "settings");
             }
             // The settings window is opened during setup, but an accessory app can lose

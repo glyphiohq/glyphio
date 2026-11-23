@@ -156,21 +156,7 @@ impl Sink {
 /// Open for append, owner-only. On a shared Mac the default 0644 would let any other local
 /// account read whatever the log happens to contain.
 fn open_private(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let file = opts.open(path)?;
-    // `mode` only applies at creation; fix up a file an older build made world-readable.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(file)
+    crate::platform::files::open_private_append(path)
 }
 
 #[cfg(test)]
@@ -227,12 +213,7 @@ mod tests {
         assert!(path.with_extension("log.1").exists(), "the previous log is kept whole");
         assert!(std::fs::metadata(&path).unwrap().len() < MAX_BYTES);
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o077, 0, "no group/other access");
-        }
+        assert_ne!(crate::platform::files::is_owner_only(&path), Some(false), "no group/other access");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

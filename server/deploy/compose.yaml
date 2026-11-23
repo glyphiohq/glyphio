@@ -1,0 +1,79 @@
+# Glyphio sync server, stand-alone. Uses the published image and gets its own HTTPS
+# certificate; nothing else to install. Full guide: server/DEPLOY.md.
+#
+#   curl -fsSLO https://raw.githubusercontent.com/glyphiohq/glyphio/main/server/deploy/compose.yaml
+#   echo "DOMAIN=sync.example.com" > .env      # a DNS name pointing at this host
+#   docker compose up -d
+#
+# Then open https://<DOMAIN>/setup with the one-time code from `docker compose logs glyphio-server`
+# (or run `docker compose exec glyphio-server glyphio-server init --team <name>`).
+#
+# Profiles, for when the default does not fit (start the named service; the server comes with it):
+#   behind your own proxy:  docker compose --profile own-proxy up -d own-proxy
+#                           → plain HTTP on PROXY_BIND:8787 (default 127.0.0.1) for your proxy
+#   loopback-only trial:    docker compose --profile trial up -d trial
+#                           → http://127.0.0.1:8787, nothing reachable from other machines
+#
+# The server's own port is never published: only Caddy (80/443) or the profile above is.
+
+name: glyphio
+
+services:
+  glyphio-server:
+    image: ghcr.io/glyphiohq/glyphio-server:${GLYPHIO_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      STORAGE: sqlite
+      DB_PATH: /data/glyphio.db
+      PUBLIC_URL: ${PUBLIC_URL:-https://${DOMAIN:-localhost}}
+      # Optional single sign-on; leave unset to use invite tokens.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      TEAMS_CLAIM: ${TEAMS_CLAIM:-groups}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - glyphio-data:/data
+    expose:
+      - "8787"
+
+  # Default: automatic HTTPS for DOMAIN (Let's Encrypt / ZeroSSL), HTTP redirected to HTTPS.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from "${DOMAIN:-}" --to glyphio-server:8787
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - glyphio-server
+
+  # Behind your own reverse proxy (nginx, Traefik, a cloud load balancer): plain HTTP for it.
+  own-proxy:
+    image: caddy:2
+    profiles: [own-proxy]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from "http://:8787" --to glyphio-server:8787
+    ports:
+      - "${PROXY_BIND:-127.0.0.1}:8787:8787"
+    depends_on:
+      - glyphio-server
+
+  # Try it on this machine only. The app accepts plain HTTP for loopback addresses.
+  trial:
+    image: caddy:2
+    profiles: [trial]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from "http://:8787" --to glyphio-server:8787
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      - glyphio-server
+
+volumes:
+  glyphio-data:
+  caddy-data:
+  caddy-config:

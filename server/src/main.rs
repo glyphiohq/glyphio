@@ -7,10 +7,12 @@
 
 mod admin;
 mod auth;
+mod cli;
 mod error;
 mod ratelimit;
 mod rbac;
 mod routes;
+mod setup;
 mod storage;
 
 use std::sync::Arc;
@@ -26,10 +28,52 @@ pub struct AppState {
     pub limiter: Arc<ratelimit::RateLimiter>,
     /// Role for identities with team access (claim/config) but no explicit role row.
     pub default_role: sync_proto::Role,
+    /// First-run setup page state (a one-time code while no owner exists).
+    pub setup: Arc<setup::Setup>,
 }
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = cli::parse(&args).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    match command {
+        cli::Command::Serve => serve().await,
+        cli::Command::Help => println!("{}", cli::USAGE),
+        cli::Command::Healthcheck => std::process::exit(if cli::healthcheck().await { 0 } else { 1 }),
+        cli::Command::Doctor => {
+            let ok = cli::print_checks(&cli::doctor().await);
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+        cli::Command::Backup(dest) => {
+            let opened = open_storage().await.unwrap_or_else(|e| fatal(&e));
+            let Some(sqlite) = opened.sqlite else {
+                fatal("backup is for SQLite storage; use DynamoDB point-in-time recovery instead")
+            };
+            sqlite.backup_to(&dest).unwrap_or_else(|e| fatal(&e.to_string()));
+            println!("Backed up to {dest}. Restore by stopping the server and replacing DB_PATH with it.");
+        }
+        cli::Command::Init(a) => {
+            let opened = open_storage().await.unwrap_or_else(|e| fatal(&e));
+            let m = cli::init(opened.dyn_storage.as_ref(), &a).await.unwrap_or_else(|e| fatal(&e));
+            cli::print_minted(&format!("Created team {} with owner {}", a.team, a.sub), &m);
+        }
+        cli::Command::Invite(a) => {
+            let opened = open_storage().await.unwrap_or_else(|e| fatal(&e));
+            let m = cli::invite(opened.dyn_storage.as_ref(), &a).await.unwrap_or_else(|e| fatal(&e));
+            cli::print_minted(&format!("Invited {} to {}", a.sub, a.team), &m);
+        }
+    }
+}
+
+fn fatal(message: &str) -> ! {
+    eprintln!("error: {message}");
+    std::process::exit(1);
+}
+
+async fn serve() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -51,24 +95,30 @@ async fn main() {
     axum::serve(listener, app).await.expect("serve");
 }
 
+/// Open the configured storage (`STORAGE`, `DB_PATH`, `DYNAMO_TABLE`).
+pub(crate) async fn open_storage() -> Result<cli::OpenedStorage, String> {
+    match std::env::var("STORAGE").as_deref().unwrap_or("sqlite") {
+        "sqlite" => {
+            let path = std::env::var("DB_PATH").unwrap_or_else(|_| "/data/glyphio.db".to_string());
+            let sqlite = Arc::new(
+                storage::sqlite::SqliteStorage::open(&path).map_err(|e| format!("sqlite storage: {e}"))?,
+            );
+            Ok(cli::OpenedStorage { dyn_storage: sqlite.clone(), sqlite: Some(sqlite) })
+        }
+        "dynamo" => {
+            let table =
+                std::env::var("DYNAMO_TABLE").map_err(|_| "STORAGE=dynamo requires DYNAMO_TABLE")?;
+            Ok(cli::OpenedStorage {
+                dyn_storage: Arc::new(storage::dynamo::DynamoStorage::new(table).await),
+                sqlite: None,
+            })
+        }
+        other => Err(format!("unknown STORAGE {other:?} (sqlite|dynamo)")),
+    }
+}
+
 async fn build_state() -> Result<AppState, String> {
-    let storage: Arc<dyn storage::Storage> =
-        match std::env::var("STORAGE").as_deref().unwrap_or("sqlite") {
-            "sqlite" => {
-                let path =
-                    std::env::var("DB_PATH").unwrap_or_else(|_| "/data/glyphio.db".to_string());
-                Arc::new(
-                    storage::sqlite::SqliteStorage::open(&path)
-                        .map_err(|e| format!("sqlite storage: {e}"))?,
-                )
-            }
-            "dynamo" => {
-                let table =
-                    std::env::var("DYNAMO_TABLE").map_err(|_| "STORAGE=dynamo requires DYNAMO_TABLE")?;
-                Arc::new(storage::dynamo::DynamoStorage::new(table).await)
-            }
-            other => return Err(format!("unknown STORAGE {other:?} (sqlite|dynamo)")),
-        };
+    let storage = open_storage().await?.dyn_storage;
 
     let auth = Arc::new(auth::Authenticator::from_env().map_err(|e| format!("auth config: {e}"))?);
     let per_min = std::env::var("RATE_LIMIT_PER_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
@@ -77,11 +127,24 @@ async fn build_state() -> Result<AppState, String> {
         Ok(v) => storage::role_from_str(v)
             .ok_or_else(|| format!("invalid DEFAULT_ROLE {v:?} (reader|writer|manager|admin|owner)"))?,
     };
+    let setup = if storage.owner_exists().await.map_err(|e| format!("reading roles: {e}"))? {
+        setup::Setup::disabled()
+    } else {
+        let code = setup::Setup::new_code();
+        let url = std::env::var("PUBLIC_URL").unwrap_or_default();
+        tracing::warn!(
+            "no owner yet: open {}/setup and enter the one-time code {code} \
+             (or run `glyphio-server init --team <name>`)",
+            url.trim_end_matches('/')
+        );
+        setup::Setup::with_code(code)
+    };
     Ok(AppState {
         storage,
         auth,
         limiter: Arc::new(ratelimit::RateLimiter::new(per_min)),
         default_role,
+        setup: Arc::new(setup),
     })
 }
 
@@ -124,6 +187,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/admin", get(admin::console))
+        .route("/setup", get(setup::page).post(setup::create))
         .nest("/v1", v1)
         .nest("/admin/v1", admin_api)
         .layer(DefaultBodyLimit::max(sync_proto::limits::MAX_BODY))
@@ -151,6 +215,7 @@ mod tests {
             auth: Arc::new(auth::Authenticator::for_tests(tokens_json)),
             limiter: Arc::new(ratelimit::RateLimiter::new(100_000)),
             default_role: sync_proto::Role::Writer,
+            setup: Arc::new(setup::Setup::disabled()),
         }
     }
 
@@ -189,6 +254,42 @@ mod tests {
             "id": id, "trigger": ":t", "replacement": replacement, "format": "plain",
             "owner": "ignored", "team": "sec", "updatedAt": ts, "version": version
         })
+    }
+
+    /// First-run setup: the code is required, it creates a redeemable owner, and the page is
+    /// gone afterwards.
+    #[tokio::test]
+    async fn first_run_setup_needs_the_code_and_disappears() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = test_state(&dir, "[]");
+        state.setup = Arc::new(setup::Setup::with_code("abcd-ef01".into()));
+        let app = router(state);
+        let get = |app: &Router| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::builder().uri("/setup").body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(get(&app).await, StatusCode::OK);
+
+        let body = |code: &str| Some(serde_json::json!({"code": code, "team": "eng", "email": "o@x.y"}));
+        let (status, _) = req(&app, "POST", "/setup", "", body("wrong")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Spaces, case and dashes don't matter.
+        let (status, json) = req(&app, "POST", "/setup", "", body("ABCD EF01")).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let token = json["token"].as_str().unwrap().to_string();
+        let (status, me) = req(&app, "GET", "/v1/me", &token, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(me["roles"]["eng"], "owner");
+
+        assert_eq!(get(&app).await, StatusCode::NOT_FOUND);
+        let (status, _) = req(&app, "POST", "/setup", "", body("abcd-ef01")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     /// RBAC: bootstrap-owner, pinned reader 403 on push, writer-cannot-touch-others
@@ -818,6 +919,7 @@ mod tests {
             auth: Arc::new(auth::Authenticator::for_tests(&tokens)),
             limiter: Arc::new(ratelimit::RateLimiter::new(1000)),
             default_role: sync_proto::Role::Writer,
+            setup: Arc::new(setup::Setup::disabled()),
         };
         let app = router(state);
 

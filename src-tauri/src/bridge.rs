@@ -1,4 +1,4 @@
-//! Unix-socket bridge between the engine sidecar and the app.
+//! Local-socket bridge between the engine sidecar and the app.
 //!
 //! The fork's `glyphio` render extension connects here mid-expansion (one newline-delimited
 //! JSON request per connection):
@@ -17,10 +17,11 @@ use std::time::Duration;
 use serde_json::json;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use tokio::io::split;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::platform::local_socket::{LocalListener, LocalStream};
 use crate::AppState;
 
 /// Slightly under the extension's 120s read timeout, so the engine sees a clean
@@ -59,17 +60,10 @@ pub fn start(app: &AppHandle) {
 
 async fn serve(app: AppHandle) -> anyhow::Result<()> {
     let path = app.state::<AppState>().paths.bridge_socket();
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
-    // The socket accepts commands that pop windows over the user's screen — user-only access.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let listener = LocalListener::bind(&path)?;
     log::info!("engine bridge listening on {}", path.display());
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = listener.accept().await?;
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = handle(app, stream).await {
@@ -79,8 +73,8 @@ async fn serve(app: AppHandle) -> anyhow::Result<()> {
     }
 }
 
-async fn handle(app: AppHandle, stream: tokio::net::UnixStream) -> anyhow::Result<()> {
-    let (read, mut write) = stream.into_split();
+async fn handle(app: AppHandle, stream: Box<dyn LocalStream>) -> anyhow::Result<()> {
+    let (read, mut write) = split(stream);
     let mut line = String::new();
     BufReader::new(read).read_line(&mut line).await?;
     let req: serde_json::Value = serde_json::from_str(line.trim())?;

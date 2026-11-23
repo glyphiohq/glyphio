@@ -14,6 +14,7 @@ use std::path::Path;
 
 /// What the system says about the login item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Only the macOS login item reports every state.
 pub enum Status {
     Enabled,
     NotRegistered,
@@ -115,8 +116,10 @@ pub const MANUAL_REMOVAL_NOTE: &str =
 
 /// The identifier the old LaunchAgent's bundle must carry.
 pub(crate) const BUNDLE_IDENTIFIER: &str = "io.glyphio.app";
+#[allow(dead_code)] // Read only by the macOS login-item cleanup.
 const EXECUTABLE_SUFFIX: &str = "/Contents/MacOS/glyphio";
 
+#[allow(dead_code)] // Read only by the macOS login-item cleanup.
 /// First `<string>` of the `ProgramArguments` array in a LaunchAgent plist.
 fn first_program_argument(plist: &str) -> Option<String> {
     let after = &plist[plist.find("<key>ProgramArguments</key>")?..];
@@ -125,6 +128,7 @@ fn first_program_argument(plist: &str) -> Option<String> {
     Some(after[start..end].trim().to_string())
 }
 
+#[allow(dead_code)] // Read only by the macOS login-item cleanup.
 /// Whether a LaunchAgent plist was written by Glyphio's former backend: it starts the
 /// `Contents/MacOS/glyphio` executable of a bundle whose identifier is ours, wherever that
 /// bundle lives. Anything else with a Glyphio-like name is somebody else's and stays.

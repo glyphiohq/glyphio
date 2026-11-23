@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 — Glyphio first-run setup (single file, no external resources) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up Glyphio sync</title>
+<style>
+  :root{--bg:#0b0c0f;--surface:#14161a;--inset:#0f1114;--border:rgba(255,255,255,.08);
+    --text:#ecedef;--text-2:#a6aab2;--accent:#d9a54a;--accent-on:#171208;--danger:#e07070;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,system-ui,sans-serif;
+    display:flex;justify-content:center;padding:48px 16px}
+  main{width:100%;max-width:520px;background:var(--surface);border:1px solid var(--border);
+    border-radius:12px;padding:28px}
+  h1{font-size:20px;margin:0 0 6px}
+  p{color:var(--text-2);margin:0 0 18px}
+  label{display:block;font-size:12px;color:var(--text-2);margin:14px 0 4px}
+  input{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--border);
+    background:var(--inset);color:var(--text);font:inherit}
+  input.mono,code{font-family:var(--mono)}
+  button{margin-top:20px;padding:9px 16px;border-radius:8px;border:0;background:var(--accent);
+    color:var(--accent-on);font-weight:600;cursor:pointer}
+  button.secondary{background:transparent;color:var(--text);border:1px solid var(--border);margin-top:8px}
+  .err{color:var(--danger);min-height:1.5em;margin-top:12px}
+  .row{display:flex;gap:8px;align-items:center}
+  .row input{flex:1}
+  .row button{margin:0}
+</style>
+</head>
+<body>
+<main>
+  <form id="setup">
+    <h1>Set up Glyphio sync</h1>
+    <p>Create the first team and its owner. The one-time code is in the server log
+      (<code>docker compose logs glyphio-server</code>).</p>
+    <label for="code">One-time code</label>
+    <input id="code" class="mono" autocomplete="off" spellcheck="false" required>
+    <label for="team">Team name</label>
+    <input id="team" placeholder="engineering" pattern="[A-Za-z0-9._\-]{1,64}" required>
+    <label for="email">Your email (optional)</label>
+    <input id="email" type="email" autocomplete="email">
+    <button type="submit">Create team</button>
+    <div class="err" id="err" role="alert"></div>
+  </form>
+  <section id="done" hidden>
+    <h1>You're the owner</h1>
+    <p>Paste this invite link into Glyphio → Settings → Sync on your Mac. It is shown once and
+      signs you in as the owner, so keep it private.</p>
+    <div class="row"><input id="link" class="mono" readonly><button id="copy" type="button">Copy</button></div>
+    <p style="margin-top:18px">Invite everyone else from the <a href="/admin" style="color:var(--accent)">admin console</a>
+      once you've joined.</p>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  $('setup').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('err').textContent = '';
+    const body = { code: $('code').value, team: $('team').value.trim(), email: $('email').value.trim() };
+    let res;
+    try {
+      res = await fetch('/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    } catch { $('err').textContent = 'Could not reach the server.'; return; }
+    if (res.status === 401) { $('err').textContent = 'That code is not right. Check the server log.'; return; }
+    if (res.status === 404) { $('err').textContent = 'Setup is already finished. Sign in at /admin.'; return; }
+    if (res.status === 429) { $('err').textContent = 'Too many attempts. Wait a minute and try again.'; return; }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { $('err').textContent = json.detail || json.title || `Setup failed (${res.status}).`; return; }
+    $('link').value = `glyphio://join?server=${encodeURIComponent(location.origin)}&mode=token&token=${json.token}`;
+    $('setup').hidden = true;
+    $('done').hidden = false;
+  });
+  $('copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('link').value); $('copy').textContent = 'Copied'; }
+    catch { $('link').select(); }
+  });
+</script>
+</body>
+</html>

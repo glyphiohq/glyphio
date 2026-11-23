@@ -176,3 +176,23 @@ test('the team choice stays in setup for "just me" and hands the rest to Setting
   });
   assert.deepEqual(teamAction('invite', '   '), { kind: 'ask-invite' });
 });
+
+test('a disk image or translocated copy is offered a move to the right folder', async () => {
+  const { installNotice } = await import('./steps.mjs');
+  const dmg = installNotice({ offerMove: true, location: 'readOnlyVolume', moveTarget: '/Applications', duplicates: [] });
+  assert.equal(dmg.kind, 'move');
+  assert.match(dmg.body, /disk image/);
+  assert.deepEqual(dmg.actions.map((a) => a.id), ['install-move']);
+  const user = installNotice({ offerMove: true, location: 'translocated', moveTarget: '/Users/a/Applications', duplicates: [] });
+  assert.match(user.title, /your Applications folder/);
+  assert.match(user.body, /temporary copy/);
+});
+
+test('other installed copies warn once, and an installed copy shows nothing', async () => {
+  const { installNotice } = await import('./steps.mjs');
+  const dup = installNotice({ offerMove: false, location: 'applications', duplicates: ['/Users/a/Applications/Glyphio.app'] });
+  assert.equal(dup.kind, 'duplicates');
+  assert.deepEqual(dup.paths, ['/Users/a/Applications/Glyphio.app']);
+  assert.equal(installNotice({ offerMove: false, location: 'applications', duplicates: [] }), null);
+  assert.equal(installNotice(null), null);
+});

@@ -23,7 +23,44 @@ pub struct SqliteStorage {
 const KIND_SNIPPET: &str = "snip";
 const KIND_GROUP: &str = "grp";
 
+/// Tables `open` creates. `doctor` reports any that are missing from an existing file.
+pub const TABLES: &[&str] = &[
+    "records", "counters", "members", "roles", "org_settings", "teams", "audit", "tokens",
+    "group_flags", "group_acl",
+];
+
 impl SqliteStorage {
+    /// Consistent online copy of the database to `dest` (which must not exist yet). Safe while
+    /// the server is serving: SQLite takes a read transaction for the copy.
+    pub fn backup_to(&self, dest: &str) -> Result<(), StorageError> {
+        if Path::new(dest).exists() {
+            return Err(format!("{dest} already exists; choose a new file").into());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", [dest])?;
+        Ok(())
+    }
+
+    /// Tables from [`TABLES`] that the file lacks.
+    pub fn missing_tables(&self) -> Result<Vec<&'static str>, StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let mut missing = Vec::new();
+        for table in TABLES {
+            let found = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !found {
+                missing.push(*table);
+            }
+        }
+        Ok(missing)
+    }
+
     pub fn open(path: &str) -> Result<Self, StorageError> {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
@@ -304,6 +341,14 @@ impl Storage for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM roles WHERE team=?1 AND sub=?2", rusqlite::params![team, sub])?;
         Ok(())
+    }
+
+    async fn owner_exists(&self) -> Result<bool, StorageError> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row("SELECT 1 FROM roles WHERE role='owner' LIMIT 1", [], |_| Ok(()))
+            .optional()?
+            .is_some())
     }
 
     async fn roles_for_sub(&self, sub: &str) -> Result<Vec<(String, Role)>, StorageError> {

@@ -1,5 +1,5 @@
 //! Diagnostic: post a global hotkey via CGEvent.
-//! Run: cargo run --example press_hotkey -- <keycode> [modifiers…]
+//! Run: cargo run --features macos-probes --example press_hotkey -- <keycode> [modifiers…]
 //!   keycodes: 35 = P, 37 = L, 11 = B, 49 = Space, 36 = Return
 //!   modifiers: alt shift cmd ctrl — default `alt shift`, matching Glyphio's own defaults.
 //!

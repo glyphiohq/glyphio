@@ -240,7 +240,7 @@ impl Default for PermissionState {
     }
 }
 
-fn read_status(app: &AppHandle) -> Status {
+pub fn read_status(app: &AppHandle) -> Status {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
     let session = state.permissions.session.lock().unwrap();
@@ -251,6 +251,20 @@ fn read_status(app: &AppHandle) -> Status {
         state.supervisor.accessibility_ok(),
         Instant::now(),
     )
+}
+
+impl Status {
+    /// Something still needs the user: either permission is not granted.
+    pub fn unresolved(&self) -> bool {
+        self.accessibility != Grant::Granted || self.screen_recording != Grant::Granted
+    }
+}
+
+/// Read the current status and show or hide the menu-bar "Finish setup" row to match. Called
+/// once at launch, after the menu exists; [`refresh`] keeps it current after that.
+pub fn sync_tray(app: &AppHandle) {
+    let now = read_status(app);
+    crate::tray::set_setup_unresolved(app, now.unresolved());
 }
 
 /// Compare with the last reading, remember the grant identity, emit on change, and restart the
@@ -271,6 +285,7 @@ fn refresh(app: &AppHandle) -> Status {
     }
     if previous != Some(now) {
         let _ = app.emit("permission-status", now);
+        crate::tray::set_setup_unresolved(app, now.unresolved());
         let newly_granted = now.accessibility == Grant::Granted
             && previous.is_some_and(|p| p.accessibility != Grant::Granted);
         let newly_usable = newly_granted

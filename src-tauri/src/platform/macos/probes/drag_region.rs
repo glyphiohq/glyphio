@@ -1,7 +1,7 @@
 //! Diagnostic: drag a rectangle with the mouse, to drive `screencapture -i` (the snip mode)
 //! without a human at the trackpad.
 //!
-//! Run: cargo run --example drag_region -- <x1> <y1> <x2> <y2>
+//! Run: cargo run --features macos-probes --example drag_region -- <x1> <y1> <x2> <y2>
 
 use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};

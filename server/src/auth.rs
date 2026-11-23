@@ -80,9 +80,12 @@ impl Authenticator {
             _ => None,
         };
         if static_tokens.is_empty() && oidc.is_none() {
-            return Err(
-                "no auth configured: set OIDC_ISSUER+OIDC_AUDIENCE and/or STATIC_TOKENS(_FILE)"
-                    .into(),
+            // Not fatal: `glyphio-server init` stores invite tokens in the database, which
+            // authenticate without any env configuration. `doctor` flags a server nobody can
+            // sign in to.
+            tracing::warn!(
+                "no static tokens or OIDC configured: only tokens from `glyphio-server init` / \
+                 `invite` and the admin console can sign in"
             );
         }
         tracing::info!(

@@ -32,17 +32,31 @@ cargo run
 # → listening on 0.0.0.0:8787; point the app at http://127.0.0.1:8787 (auth mode: token)
 ```
 
-## Self-host (docker compose)
+## Self-host
 
-```bash
-cd server
-cp .env.example .env   # fill in auth (OIDC and/or STATIC_TOKENS) — see the comments
-docker compose up -d   # data persists in the glyphio-data volume
-```
+See [`DEPLOY.md`](DEPLOY.md): three commands with the published image and automatic HTTPS
+(`deploy/compose.yaml`), plus first-run setup, upgrades, backup and troubleshooting.
+Building the image yourself still works with `docker compose up -d` in this directory
+(`cp .env.example .env` first).
 
-Put TLS in front (Caddy/Traefik/nginx/your LB) — clients refuse plain http for non-loopback
-hosts. Health check: `GET /healthz`.
+## Operator commands
 
+`glyphio-server` with no argument serves. The other subcommands act on the database with the
+same `STORAGE`/`DB_PATH` settings, so run them where the server runs
+(`docker compose exec glyphio-server glyphio-server <command>`):
+
+- `init --team <name> [--sub <id>] [--email <addr>] [--public-url <url>] [--force]` — create
+  the first team and owner; prints a one-time token and invite link. Refuses once an owner
+  exists; `--force` is audited.
+- `invite --team <name> --sub <id> [--role reader|writer|manager|admin] [--expires-days <n>]`
+  — mint an invite, same as the admin console.
+- `doctor` — checks database, schema, auth, identity provider, public HTTPS and clock skew,
+  printing a fix for each failure.
+- `backup <file>` — consistent online SQLite copy to a new file.
+- `healthcheck` — exits 0 when the local server answers `/healthz` (the image's health check).
+
+While no owner exists, the server logs a one-time code and serves `/setup`, which does what
+`init` does from a browser.
 
 ## Roles (RBAC)
 

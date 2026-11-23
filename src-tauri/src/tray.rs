@@ -14,6 +14,7 @@ use crate::capture::{delivery::DeliveryRoute, PendingCapture};
 
 const TRAY_ID: &str = "glyphio-tray";
 const CAPTURE_STATUS_ID: &str = "capture-status";
+const FINISH_SETUP_ID: &str = "finish-setup";
 const FEEDBACK_DURATION: std::time::Duration = std::time::Duration::from_millis(3200);
 
 /// Capture feedback's platform-independent state plus the native menu row that exposes the
@@ -24,12 +25,42 @@ pub struct CaptureFeedback {
     status_item: Option<MenuItem<tauri::Wry>>,
     /// A shortcut binding was refused or invalid. Shown only while nothing else is going on.
     shortcut_problem: bool,
+    /// The menu and its "Finish setup" row, which sits at the top only while a permission is
+    /// unresolved (menus can't hide a row, so it is inserted and removed).
+    setup_row: Option<(Menu<tauri::Wry>, MenuItem<tauri::Wry>)>,
+    setup_row_shown: bool,
+}
+
+/// Show the "Finish setup" row while a permission is unresolved, and remove it once both are
+/// granted. Cheap to call repeatedly: it only touches the menu on a change.
+pub fn set_setup_unresolved(app: &AppHandle, unresolved: bool) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let state = app.state::<crate::AppState>();
+        let mut feedback = state.capture_feedback.lock().unwrap();
+        if feedback.setup_row_shown == unresolved {
+            return;
+        }
+        let Some((menu, item)) = feedback.setup_row.clone() else {
+            return;
+        };
+        let changed = if unresolved { menu.insert(&item, 0) } else { menu.remove(&item) };
+        match changed {
+            Ok(()) => feedback.setup_row_shown = unresolved,
+            Err(e) => log::warn!("could not update the Finish setup row: {e}"),
+        }
+    });
 }
 
 fn presentation(app: &AppHandle) -> Presentation {
     let state = app.state::<crate::AppState>();
     let feedback = state.capture_feedback.lock().unwrap();
     with_shortcut_notice(feedback.orchestration.presentation(), feedback.shortcut_problem)
+}
+
+/// The capture state as the menu shows it, for diagnostics.
+pub fn capture_state_text(app: &AppHandle) -> String {
+    presentation(app).menu_text
 }
 
 /// The resting presentation, carrying the shortcut notice if there is one. A capture in
@@ -440,6 +471,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
 
+    let finish_setup = MenuItem::with_id(app, FINISH_SETUP_ID, "Finish setup…", true, None::<&str>)?;
+
     app.state::<crate::AppState>()
         .capture_feedback
         .lock()
@@ -461,6 +494,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
+    {
+        let state = app.state::<crate::AppState>();
+        let mut feedback = state.capture_feedback.lock().unwrap();
+        feedback.setup_row = Some((menu.clone(), finish_setup));
+        feedback.setup_row_shown = false;
+    }
+
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Glyphio")
@@ -469,6 +509,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let inner = app.clone();
             let _ = app.run_on_main_thread(move || match id.as_str() {
                 CAPTURE_STATUS_ID => activate_capture_status(&inner),
+                FINISH_SETUP_ID => {
+                    if let Err(e) = crate::windows::open_setup(&inner) {
+                        log::error!("could not open setup: {e:#}");
+                    }
+                }
                 "open" => { let _ = crate::windows::toggle_palette(&inner, None); }
                 "history" => { let _ = crate::commands::open_history_view(inner.clone()); }
                 "settings" => { let _ = crate::windows::open(&inner, "settings"); }

@@ -50,6 +50,7 @@
   border-radius: var(--radius);
 }
 .permission-panel[hidden] { display: none; }
+.permission-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .permission-panel-title {
   padding: 3px 2px 5px;
   color: var(--text-muted);
@@ -889,3 +890,17 @@
   font-family: var(--font-mono); font-size: 11px; color: var(--text);
   user-select: all;
 }
+
+/* Sync: the invite field leads; hand-entered connection details sit under Advanced. */
+.sync-invite { margin: 12px 0; }
+.sync-invite label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.sync-invite-row { display: flex; gap: 8px; }
+.sync-invite-row input { flex: 1; min-width: 0; }
+.sync-advanced { margin-top: 14px; }
+.sync-advanced > summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+
+/* Shortcut self-test result and the diagnostics list. */
+.shortcut-error[data-ok="yes"] { color: var(--success); }
+.diagnostics-report { white-space: pre-wrap; font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-secondary); background: var(--inset); border-radius: 6px; padding: 10px;
+  margin: 0 0 8px; max-height: 260px; overflow: auto; }

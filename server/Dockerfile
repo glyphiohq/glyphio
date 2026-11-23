@@ -19,6 +19,12 @@ RUN cargo build --release --manifest-path server/Cargo.toml
 
 # ---- self-host runtime ----
 FROM debian:bookworm-slim AS runtime
+# Clients check this before syncing; bump it with sync-proto's VERSION.
+LABEL org.opencontainers.image.title="glyphio-server" \
+      org.opencontainers.image.description="Glyphio sync server (self-hostable, SQLite by default)" \
+      org.opencontainers.image.source="https://github.com/glyphiohq/glyphio" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      io.glyphio.protocol="v1"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 glyphio \
@@ -28,7 +34,11 @@ USER glyphio
 ENV PORT=8787 DB_PATH=/data/glyphio.db STORAGE=sqlite
 EXPOSE 8787
 VOLUME ["/data"]
+# The binary checks itself: no curl in the image, and the check follows PORT.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/glyphio-server", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/glyphio-server"]
+CMD ["serve"]
 
 # ---- AWS Lambda (container image + web adapter) ----
 FROM runtime AS lambda

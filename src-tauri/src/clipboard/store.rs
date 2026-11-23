@@ -338,15 +338,7 @@ fn digest_of(clip: &NewClip) -> String {
 /// Owner-only, like the log and the engine socket. This file holds whatever the user has
 /// copied today; the default umask is not a strong enough opinion about that.
 fn restrict(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
+    let _ = crate::platform::files::restrict_to_owner(path);
 }
 
 #[cfg(test)]

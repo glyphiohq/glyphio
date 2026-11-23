@@ -336,6 +336,32 @@ impl Storage for DynamoStorage {
         Ok(())
     }
 
+    async fn owner_exists(&self) -> Result<bool, StorageError> {
+        // Same scan-at-reference-scale trade-off as `roles_for_sub`, paginated so a filtered
+        // page that comes back empty does not end the search early.
+        let mut start = None;
+        loop {
+            let out = self
+                .client
+                .scan()
+                .table_name(&self.table)
+                .filter_expression("begins_with(sk, :role) AND #r = :owner")
+                .expression_attribute_names("#r", "role")
+                .expression_attribute_values(":role", AttributeValue::S("ROLE#".into()))
+                .expression_attribute_values(":owner", AttributeValue::S("owner".into()))
+                .set_exclusive_start_key(start)
+                .send()
+                .await?;
+            if !out.items().is_empty() {
+                return Ok(true);
+            }
+            match out.last_evaluated_key() {
+                Some(key) if !key.is_empty() => start = Some(key.clone()),
+                _ => return Ok(false),
+            }
+        }
+    }
+
     async fn roles_for_sub(&self, sub: &str) -> Result<Vec<(String, Role)>, StorageError> {
         // Scan filtered on the rsub attribute. Role rows are few (people × teams), so a scan
         // is acceptable at reference scale; a by-sub GSI is the upgrade path if that changes.

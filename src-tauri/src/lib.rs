@@ -362,6 +362,7 @@ pub fn run() {
             permissions::permission_repair,
             permissions::permission_import_legacy_flags,
             commands::shortcut_status,
+            commands::keyboard_layout,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,
             commands::app_accessibility_status,

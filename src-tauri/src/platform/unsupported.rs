@@ -8,7 +8,7 @@ use std::time::Duration;
 use image::RgbaImage;
 
 use super::{
-    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
+    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, KeyboardLayout, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
     PageInspector, Pasteboard, PermissionKind, Permissions, PickKind, Platform, ProcessControl, Progress,
     RegionPicker, ScreenCapturer, WindowQuery,
 };
@@ -34,6 +34,7 @@ pub fn platform() -> Platform {
         shell: Box::new(Unsupported),
         install: Box::new(Unsupported),
         dates: Box::new(Unsupported),
+        keyboard: Box::new(Unsupported),
     }
 }
 
@@ -124,6 +125,12 @@ impl Pasteboard for Unsupported {
 
 impl LocaleDates for Unsupported {
     fn format(&self, _: i64, _: DateStyle, _: DateStyle, _: Option<&str>, _: Option<&str>) -> Option<String> {
+        None
+    }
+}
+
+impl KeyboardLayout for Unsupported {
+    fn key_labels(&self) -> Option<Vec<(String, String)>> {
         None
     }
 }

@@ -9,7 +9,7 @@ use std::time::Duration;
 use image::RgbaImage;
 
 use super::{
-    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
+    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, KeyboardLayout, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
     PageInspector, Pasteboard, PermissionKind, Permissions, PickKind, ProcessControl, Progress, RegionPicker,
     ScreenCapturer, WindowQuery,
 };
@@ -37,6 +37,8 @@ pub struct Fake {
     pub refuse_copy: bool,
     /// What [`WindowQuery::session_locked`] answers.
     pub locked: bool,
+    /// What [`KeyboardLayout::key_labels`] answers.
+    pub key_labels: Option<Vec<(String, String)>>,
 }
 
 impl Fake {
@@ -168,6 +170,12 @@ impl Pasteboard for Fake {
 impl LocaleDates for Fake {
     fn format(&self, millis: i64, date: DateStyle, time: DateStyle, locale: Option<&str>, zone: Option<&str>) -> Option<String> {
         Some(format!("{millis} {date:?}/{time:?} {} {}", locale.unwrap_or("-"), zone.unwrap_or("-")))
+    }
+}
+
+impl KeyboardLayout for Fake {
+    fn key_labels(&self) -> Option<Vec<(String, String)>> {
+        self.key_labels.clone()
     }
 }
 

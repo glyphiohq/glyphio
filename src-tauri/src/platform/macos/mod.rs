@@ -23,6 +23,7 @@ mod dates;
 mod inspect;
 mod input;
 mod install;
+mod keyboard;
 mod pasteboard;
 mod permissions;
 mod process;
@@ -43,6 +44,7 @@ pub fn platform() -> Platform {
         shell: Box::new(Macos),
         install: Box::new(install::Os),
         dates: Box::new(Macos),
+        keyboard: Box::new(Macos),
     }
 }
 
@@ -151,6 +153,12 @@ impl super::LocaleDates for Macos {
         zone: Option<&str>,
     ) -> Option<String> {
         dates::format(millis, date, time, locale, zone)
+    }
+}
+
+impl super::KeyboardLayout for Macos {
+    fn key_labels(&self) -> Option<Vec<(String, String)>> {
+        keyboard::key_labels()
     }
 }
 

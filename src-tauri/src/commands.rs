@@ -266,6 +266,19 @@ pub fn save_settings(
 }
 
 /// How each configured shortcut fared with the system, for Settings.
+/// What each character key types on the active keyboard layout, as `{ code: text }`, so
+/// Settings can label a shortcut with the key the user actually presses. Empty when the
+/// platform cannot tell. Synchronous on purpose: macOS only answers on the main thread.
+#[tauri::command]
+pub fn keyboard_layout() -> std::collections::BTreeMap<String, String> {
+    crate::platform::current()
+        .keyboard
+        .key_labels()
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
 #[tauri::command]
 pub fn shortcut_status(app: AppHandle) -> Vec<crate::shortcuts::registry::ShortcutStatus> {
     crate::shortcuts::status(&app)

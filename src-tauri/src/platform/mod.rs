@@ -129,6 +129,15 @@ pub trait Pasteboard: Send + Sync {
     fn write_png(&self, png: &[u8]) -> anyhow::Result<()>;
 }
 
+/// What the keys say on the user's keyboard. Global shortcuts are registered by physical key
+/// (W3C `code` names such as `KeyQ`), so on AZERTY the key that fires `KeyQ` is labelled A.
+pub trait KeyboardLayout: Send + Sync {
+    /// For each character key, its `code` name and what the active layout types with no
+    /// modifiers (`("KeyQ", "a")` on AZERTY). `None` when the platform cannot tell; labels then
+    /// fall back to the US names. On macOS this must be called on the main thread.
+    fn key_labels(&self) -> Option<Vec<(String, String)>>;
+}
+
 /// Length of a date or time in [`LocaleDates::format`], as the OS's own formatters name them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DateStyle {
@@ -218,6 +227,7 @@ pub struct Platform {
     pub shell: Box<dyn AppShell>,
     pub install: Box<dyn Installation>,
     pub dates: Box<dyn LocaleDates>,
+    pub keyboard: Box<dyn KeyboardLayout>,
 }
 
 static CURRENT: OnceLock<Platform> = OnceLock::new();

@@ -13,6 +13,7 @@ import {
   SHORTCUT_DEFAULTS,
   createShortcutCaptureController,
   formatAccelerator,
+  setKeyboardLayout,
   validateAccelerator,
 } from './shortcut-recorder.mjs';
 import { registrationNotice, statusFor } from './shortcut-status.mjs';
@@ -156,8 +157,11 @@ const CLIPBOARD_SECTIONS = [
 init().catch((e) => setStatus(e.message, 'err'));
 
 async function init() {
+  await refreshKeyboardLayout();
   renderShell();
   await reloadAll();
+  // Switching input source happens in another app; coming back is when labels must match.
+  window.addEventListener('focus', () => refreshKeyboardLayout().then(repaintShortcutLabels));
   await wirePermissionGuidance();
   await wireSecureInput();
   await wireEngineStatus();
@@ -167,6 +171,24 @@ async function init() {
   await listen('snippets-changed', reloadSnippets);
   await listen('groups-changed', reloadGroups);
   await listen('settings-changed', reloadAll); // tray "Reload" refreshes everything
+}
+
+/** Name shortcut keys as the active keyboard layout names them (see shortcut-recorder.mjs). */
+async function refreshKeyboardLayout() {
+  try {
+    const layout = await invoke('keyboard_layout');
+    setKeyboardLayout(layout && Object.keys(layout).length ? layout : null);
+  } catch {
+    setKeyboardLayout(null);
+  }
+}
+
+/** Relabel every shortcut button that is not recording, after the layout may have changed. */
+function repaintShortcutLabels() {
+  document.querySelectorAll('button.shortcut-recorder[data-accelerator]:not([data-recording])')
+    .forEach((button) => {
+      button.textContent = formatAccelerator(button.dataset.accelerator);
+    });
 }
 
 async function reloadAll() {
@@ -2709,6 +2731,7 @@ function shortcutRecorder(settingsKey, label, caption, placeholder) {
     textContent: input.value ? formatAccelerator(input.value) : (placeholder || 'Not set'),
     title: `Record ${label.toLowerCase()} shortcut${caption ? ` ${caption}` : ''}`,
   });
+  if (input.value) record.dataset.accelerator = input.value;
   record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
   const error = el('span', { className: 'field-error shortcut-error' });
   error.setAttribute('role', 'alert');
@@ -2716,6 +2739,8 @@ function shortcutRecorder(settingsKey, label, caption, placeholder) {
   const showValue = () => {
     shortcutCaptureController.stop(recorderSession);
     record.textContent = input.value ? formatAccelerator(input.value) : (placeholder || 'Not set');
+    if (input.value) record.dataset.accelerator = input.value;
+    else delete record.dataset.accelerator;
     record.setAttribute('aria-label', `${spoken}: ${record.textContent}. Select to record.`);
     delete record.dataset.recording;
   };

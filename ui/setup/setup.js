@@ -5,7 +5,7 @@
 
 import { PERMISSION_KIND, grantPresentation } from '../settings/permissions.mjs';
 import { IS_MAC } from '../shared/shortcuts.js';
-import { acceleratorFromKeyboardEvent, validateAccelerator } from '../settings/shortcut-recorder.mjs';
+import { acceleratorFromKeyboardEvent, setKeyboardLayout, validateAccelerator } from '../settings/shortcut-recorder.mjs';
 import {
   STEP, TRY_IT, advanceIfGranted, announcement, canContinue, initialStep, kindOfStep, loginItemCopy,
   installNotice, nextStep, progressLabel, reduceTryIt, shortcutRows, skipStep, stepsFor, teamAction,
@@ -280,6 +280,8 @@ $('skip').addEventListener('click', () => {
 });
 
 async function init() {
+  // Name shortcut keys as the active keyboard layout does (AZERTY's A is the US Q position).
+  setKeyboardLayout(await invoke('keyboard_layout').catch(() => null));
   const persisted = await invoke('onboarding_state');
   state.skipped = persisted.skipped;
   if (platform === 'macos') {

@@ -116,7 +116,10 @@ for picker and scrolling modes. Persist is traced natively (`Stage::Persist`). L
 `launch.rs`. A launch renders the engine config only when its inputs changed
 (`SnippetStore::render_yaml_if_changed`, with a digest in `.glyphio-render-stamp`), opens History
 and the clipboard store lazily (or off the main thread once the menu bar is up), and a login
-launch after setup builds no web view at all. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
+launch after setup builds no web view at all. The Settings window loads its snippet editor
+(`ui/settings/snippet-editor.mjs`) and History view (`history-view.mjs`) with `import()` the
+first time they open, and is destroyed after five minutes hidden; the clipboard watcher slows to
+2 s after a quiet minute and 5 s while the session is locked. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
 (`visible`, `frontWindow` through the real backend) print percentiles.
 
 ### Engine supervision

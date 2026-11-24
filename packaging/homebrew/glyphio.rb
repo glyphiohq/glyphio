@@ -15,13 +15,13 @@ cask "glyphio" do
   version "1.1.2"
   sha256 "5e87658bc0925d95f24671fd2de1e5a173c2b1a6b48a6d224ceda8a08f49efc8"
 
-  url "https://github.com/glyphiohq/glyphio/releases/download/v#{version}/Glyphio_#{version}_aarch64.dmg"
+  url "https://github.com/glyphiohq/glyphio/releases/download/v#{version}/Glyphio_#{version}_universal.dmg"
   name "Glyphio"
   desc "Local-first text expansion and screenshot capture with self-hostable team sync"
   homepage "https://github.com/glyphiohq/glyphio"
 
   depends_on macos: ">= :sonoma" # matches bundle.macOS.minimumSystemVersion (14.0)
-  depends_on arch: :arm64
+  # Universal since PERF-07: one DMG runs natively on Apple Silicon and Intel.
 
   app "Glyphio.app"
 

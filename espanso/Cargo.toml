@@ -75,3 +75,9 @@ windows = { version = "0.61.1", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Console",
 ] }
+
+# Glyphio ships this as the engine sidecar; same release trade-off as the app (PERF-07).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

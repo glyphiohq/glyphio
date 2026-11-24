@@ -35,11 +35,11 @@ optional, **bring-your-own-backend** sync shares chosen snippet groups with your
   **Personal snippets and all screenshots never leave the device** — redaction exists to
   keep sensitive pixels off shared surfaces, and sync respects that by design.
 
-Platforms: macOS (Apple Silicon) today; Windows is on the roadmap.
+Platforms: macOS 14+ on Apple Silicon and Intel; Windows is on the roadmap.
 
 ## Install
 
-Download `Glyphio_<version>_aarch64.dmg` from
+Download `Glyphio_<version>_universal.dmg` from
 [Releases](https://github.com/glyphiohq/glyphio/releases) and drag it to Applications.
 
 Glyphio isn't notarized yet — a Developer ID costs $99/year and this is a donation-funded

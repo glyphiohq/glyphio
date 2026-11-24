@@ -96,5 +96,15 @@ required-features = ["macos-probes"]
 tempfile = "3"
 tokio = { version = "1", features = ["rt"] }
 
+# Release builds trade compile time for a smaller, faster app (PERF-07). Fat LTO with one
+# codegen unit lets the optimiser inline across crates; `panic = "abort"` is deliberately NOT
+# set, because a panic inside a Tauri command must stay a recoverable error. Debug symbols stay
+# out of the shipped binary; `CARGO_PROFILE_RELEASE_STRIP=false` keeps them for a profiling
+# build.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
 [workspace]
 members = ["crates/snippet-store", "crates/sync-proto", "crates/sync-client"]

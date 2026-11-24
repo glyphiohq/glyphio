@@ -16,8 +16,9 @@ log()  { printf '\033[36m[cask]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[cask] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 VERSION="${1:-$(node -p "require('./package.json').version")}"
-ARCH=$(uname -m); [[ "$ARCH" == "arm64" ]] && ARCH="aarch64"
-DMG="dist/Glyphio_${VERSION}_${ARCH}.dmg"
+# Releases are universal; the cask only ever points at the universal DMG so Intel Macs can
+# install it too. A `--native` build is for local checks and is never published.
+DMG="dist/Glyphio_${VERSION}_universal.dmg"
 CASK="packaging/homebrew/glyphio.rb"
 
 [[ -f "$DMG" ]] || fail "no $DMG — run scripts/release.sh first"

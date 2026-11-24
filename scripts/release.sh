@@ -6,11 +6,17 @@
 #   scripts/release.sh                  # build with the current version
 #   scripts/release.sh --bump patch     # bump the version first (patch | minor | major)
 #   scripts/release.sh --version 1.2.0  # set an explicit version first
+#   scripts/release.sh --native         # this Mac's architecture only (quicker local check)
+#
+# By default the app is UNIVERSAL (Apple Silicon + Intel in one bundle), and so is every
+# sidecar. One artifact serves both kinds of Mac, the updater manifest lists both
+# darwin-aarch64 and darwin-x86_64 against it, and nobody has to pick a download.
 #
 # Version has ONE source of truth: package.json. This script propagates it to
 # src-tauri/tauri.conf.json and src-tauri/Cargo.toml, refuses to build if the three ever
-# disagree, and leaves exactly ONE distributable artifact: dist/Glyphio_<version>_<arch>.dmg.
-# Everything under src-tauri/target/release/bundle/ is intermediate and gets cleaned of
+# disagree, and leaves exactly ONE distributable artifact: dist/Glyphio_<version>_<arch>.dmg,
+# where <arch> is `universal` (or this Mac's arch with --native). Everything under the bundle
+# directory is intermediate and gets cleaned of
 # stale DMGs so old builds can't be mistaken for current ones.
 set -euo pipefail
 
@@ -21,12 +27,13 @@ log()  { printf '\033[36m[release]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[release] FATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---- 0. arguments ---------------------------------------------------------------
-BUMP="" NEW_VERSION=""
+BUMP="" NEW_VERSION="" NATIVE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --native)  NATIVE=1; shift ;;
     --bump)    BUMP="${2:?--bump needs patch|minor|major}"; shift 2 ;;
     --version) NEW_VERSION="${2:?--version needs X.Y.Z}"; shift 2 ;;
-    *) fail "unknown argument: $1 (use --bump patch|minor|major or --version X.Y.Z)" ;;
+    *) fail "unknown argument: $1 (use --bump patch|minor|major, --version X.Y.Z or --native)" ;;
   esac
 done
 
@@ -63,7 +70,18 @@ CARGO_V=$(perl -ne 'if (/^version = "([^"]+)"/) { print $1; exit }' src-tauri/Ca
 log "version $VERSION (package.json = tauri.conf.json = Cargo.toml)"
 
 # ---- 2. clean stale artifacts so old builds can't be shipped by accident ----------
-BUNDLE="src-tauri/target/release/bundle"
+if [[ "$NATIVE" == "1" ]]; then
+  ARCH=$(uname -m)   # aarch64 naming kept for continuity with previous artifacts
+  [[ "$ARCH" == "arm64" ]] && ARCH="aarch64"
+  BUNDLE="src-tauri/target/release/bundle"
+  TAURI_TARGET=() SIDECAR_FLAG=()
+else
+  ARCH="universal"
+  BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+  TAURI_TARGET=(--target universal-apple-darwin) SIDECAR_FLAG=(--universal)
+  rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null \
+    || fail "could not add the aarch64/x86_64 Rust targets a universal build needs"
+fi
 rm -f  "$BUNDLE"/macos/*.dmg "$BUNDLE"/macos/rw.*.dmg 2>/dev/null || true
 rm -rf "$BUNDLE"/dmg "$BUNDLE"/share 2>/dev/null || true
 
@@ -90,8 +108,8 @@ fi
 # Make sure the signing identity exists first; build-engine.sh signs the engine once it is built,
 # so a fresh clone with no engine binary yet can release.
 bash scripts/dev-sign.sh --identity-only
-bash scripts/build-engine.sh --release
-bash scripts/build-ocr.sh
+bash scripts/build-engine.sh --release ${SIDECAR_FLAG[@]+"${SIDECAR_FLAG[@]}"}
+bash scripts/build-ocr.sh ${SIDECAR_FLAG[@]+"${SIDECAR_FLAG[@]}"}
 
 # The updater artifact is signed with the project's minisign key, which lives outside the repo.
 UPDATER_KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.glyphio/updater.key}"
@@ -102,19 +120,19 @@ else
   fail "no updater signing key at $UPDATER_KEY — run: npx tauri signer generate -w \"$UPDATER_KEY\""
 fi
 
-npx tauri build
+BUILD_START=$(date +%s)
+npx tauri build ${TAURI_TARGET[@]+"${TAURI_TARGET[@]}"}
+BUILD_SECS=$(( $(date +%s) - BUILD_START ))
 
 # ---- 5. sign with a stable identity (Tauri falls back to ad-hoc; see sign-bundle.sh)
 if [[ "$NOTARIZE" == "1" ]]; then
   bash scripts/sign-bundle.sh "$BUNDLE/macos/Glyphio.app" "$DEV_ID"
 else
-  bash scripts/sign-bundle.sh
+  bash scripts/sign-bundle.sh "$BUNDLE/macos/Glyphio.app"
 fi
 
 # ---- 5. package the ONLY distributable: dist/Glyphio_<version>_<arch>.dmg ---------
 APP="$BUNDLE/macos/Glyphio.app"
-ARCH=$(uname -m)   # aarch64 naming kept for continuity with previous artifacts
-[[ "$ARCH" == "arm64" ]] && ARCH="aarch64"
 DMG="dist/Glyphio_${VERSION}_${ARCH}.dmg"
 
 # The bundled app must carry the version we intend to ship.
@@ -134,6 +152,18 @@ for bin in "$APP"/Contents/MacOS/*; do
     || fail "$(basename "$bin") requires macOS $MINOS but the app declares $MIN_OS — rebuild it with a pinned deployment target"
 done
 log "all bundled binaries run on macOS $MIN_OS+"
+
+# A universal app with one thin sidecar installs fine and then fails on the other kind of Mac,
+# so every executable has to carry both slices.
+if [[ "$ARCH" == "universal" ]]; then
+  for bin in "$APP"/Contents/MacOS/*; do
+    [[ -f "$bin" && -x "$bin" ]] || continue
+    SLICES=$(lipo -archs "$bin")
+    [[ "$SLICES" == *arm64* && "$SLICES" == *x86_64* ]] \
+      || fail "$(basename "$bin") is not universal (has: $SLICES)"
+  done
+  log "all bundled binaries carry arm64 + x86_64"
+fi
 
 codesign -d -r- "$APP" 2>&1 | grep -q "certificate leaf" \
   || fail "app is not identity-signed — refusing to package"
@@ -173,21 +203,23 @@ UPDATER_TGZ=$(ls "$BUNDLE"/macos/*.app.tar.gz 2>/dev/null | head -1)
 UPDATER_SIG=$(ls "$BUNDLE"/macos/*.app.tar.gz.sig 2>/dev/null | head -1)
 if [[ -n "$UPDATER_TGZ" && -n "$UPDATER_SIG" ]]; then
   cp "$UPDATER_TGZ" "dist/Glyphio_${VERSION}_${ARCH}.app.tar.gz"
-  TARGET_KEY="darwin-aarch64"
-  [[ "$ARCH" == "x86_64" ]] && TARGET_KEY="darwin-x86_64"
+  # The updater asks for its own `darwin-<arch>` key, so a universal bundle is listed under
+  # both. Existing Apple Silicon installs keep finding `darwin-aarch64` as before.
+  case "$ARCH" in
+    universal) TARGET_KEYS="darwin-aarch64,darwin-x86_64" ;;
+    x86_64)    TARGET_KEYS="darwin-x86_64" ;;
+    *)         TARGET_KEYS="darwin-aarch64" ;;
+  esac
   node -e '
     const fs = require("fs");
-    const [version, target, sigPath, url] = process.argv.slice(1);
-    const manifest = {
-      version,
-      notes: `Glyphio ${version}`,
-      pub_date: new Date().toISOString(),
-      platforms: { [target]: { signature: fs.readFileSync(sigPath, "utf8").trim(), url } },
-    };
+    const [version, targets, sigPath, url] = process.argv.slice(1);
+    const signature = fs.readFileSync(sigPath, "utf8").trim();
+    const platforms = Object.fromEntries(targets.split(",").map((t) => [t, { signature, url }]));
+    const manifest = { version, notes: `Glyphio ${version}`, pub_date: new Date().toISOString(), platforms };
     fs.writeFileSync("dist/latest.json", JSON.stringify(manifest, null, 2) + "\n");
-  ' "$VERSION" "$TARGET_KEY" "$UPDATER_SIG" \
+  ' "$VERSION" "$TARGET_KEYS" "$UPDATER_SIG" \
     "https://github.com/glyphiohq/glyphio/releases/download/v${VERSION}/Glyphio_${VERSION}_${ARCH}.app.tar.gz"
-  log "updater manifest: dist/latest.json ($TARGET_KEY)"
+  log "updater manifest: dist/latest.json ($TARGET_KEYS)"
 else
   fail "no updater artifact was produced — check bundle.createUpdaterArtifacts in tauri.conf.json"
 fi
@@ -199,6 +231,9 @@ log "OK — $DMG ($(du -h "$DMG" | cut -f1 | tr -d ' '))"
 log "    app version : $BUILT_V"
 log "    sha256      : $SHA"
 log "    notarized   : $([[ "$NOTARIZE" == "1" ]] && echo yes || echo 'no (self-signed)')"
+log "    arch        : $ARCH ($(lipo -archs "$APP/Contents/MacOS/glyphio" 2>/dev/null || uname -m))"
+log "    app binary  : $(du -h "$APP/Contents/MacOS/glyphio" | cut -f1 | tr -d ' ')"
+log "    build time  : ${BUILD_SECS}s (tauri build only)"
 log ""
 log "To publish: upload $DMG, dist/Glyphio_${VERSION}_${ARCH}.app.tar.gz and dist/latest.json"
 log "            to the v${VERSION} GitHub release."

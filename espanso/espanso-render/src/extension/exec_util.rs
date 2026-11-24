@@ -38,7 +38,11 @@ pub fn determine_path_env_variable_override(explicit_shell: Option<MacShell>) ->
             "bash",
             &["--login", "-c", "source ~/.bashrc; echo $PATH"],
         ),
-        MacShell::Fish => launch_command_and_get_output("fish", &["--login", "-c", "echo $PATH"]),
+        // GLYPHIO DEVIATION: fish's `echo $PATH` prints a space-separated list; join with `:` so
+        // the override is a valid PATH. Worth sending upstream (regressed in v2.4.0).
+        MacShell::Fish => {
+            launch_command_and_get_output("fish", &["--login", "-c", "string join : $PATH"])
+        }
         MacShell::Nu => launch_command_and_get_output("nu", &["--login", "-c", "$env.PATH"]),
         MacShell::Pwsh => launch_command_and_get_output(
             "pwsh",

@@ -328,6 +328,13 @@ pub fn list_captures(state: State<AppState>) -> CmdResult<Vec<CaptureMeta>> {
     state.history.list().map_err(err)
 }
 
+/// One stored capture (history or scratch), for the editor opening it. `None` once it has been
+/// deleted or evicted.
+#[tauri::command]
+pub fn get_capture(state: State<AppState>, id: String) -> CmdResult<Option<CaptureMeta>> {
+    state.history.get(&id).map_err(err)
+}
+
 /// Returns the full PNG as a base64 data URL (used by history Open/Copy/Download).
 #[tauri::command]
 pub fn read_capture_data_url(state: State<AppState>, id: String) -> CmdResult<String> {

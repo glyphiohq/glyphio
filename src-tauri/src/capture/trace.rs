@@ -18,6 +18,8 @@ pub enum Stage {
     Acquire,
     /// PNG encoding.
     Encode,
+    /// History row, PNG and thumbnail written natively (absent on the legacy path).
+    Persist,
     /// Hand-off to the editor or silent worker (pending state stored, window asked to open).
     Present,
 }
@@ -27,6 +29,7 @@ impl Stage {
         match self {
             Stage::Acquire => "acquire",
             Stage::Encode => "encode",
+            Stage::Persist => "persist",
             Stage::Present => "present",
         }
     }

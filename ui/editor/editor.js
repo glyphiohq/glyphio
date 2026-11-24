@@ -6,17 +6,18 @@
 import { DEFAULT_EDITOR_SHORTCUTS, PRODUCT_NAME } from '../shared/presentation.js';
 import { EditableCaptureArtifact } from './artifact.mjs';
 import { discardCapture as discardAndClose } from './discard.mjs';
-import { deliverCapture, deliveryReport } from './delivery.mjs';
+import { deliverCapture, deliveryReport, pendingSource } from './delivery.mjs';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
 import { icon } from '../shared/icons.js';
 
 // Glyphio: Tauri bridge (chrome.* APIs replaced by native commands/plugins).
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { save: saveDialog } = window.__TAURI__.dialog;
 
 const LAST_NOTE_KEY = 'glyphio.lastNote';
 let historySaved = false; // save the final artifact to history at most once per session
+let nativelySaved = false; // the capture arrived already saved by the app (see capture::persist_native)
 
 // --- DOM references -------------------------------------------------------
 
@@ -134,6 +135,7 @@ async function init() {
   if (isSilent) {
     await render({ autoCopy: false });
     await deliverInitialCapture();
+    await persistPrefilledNote();
     releaseCapture();
     return;
   }
@@ -158,8 +160,17 @@ async function init() {
     await render({ autoCopy: false });
     // Every capture lands in history and on the clipboard before delivery is acknowledged.
     // Note, banner and edit changes then persist to the row automatically.
-    if (!isHistoryMode) await deliverInitialCapture();
+    if (!isHistoryMode) {
+      await deliverInitialCapture();
+      await persistPrefilledNote();
+    }
   }
+}
+
+// A capture saved natively was stored before this page existed, so the note it was given
+// here (the last one typed this session) has to reach its row after the fact.
+async function persistPrefilledNote() {
+  if (nativelySaved && noteInput.value.trim()) await persistMeta();
 }
 
 async function loadSettings() {
@@ -202,12 +213,10 @@ async function deliverInitialCapture() {
  */
 async function loadPayload({ optional = false } = {}) {
   if (isHistoryMode) {
-    const list = await invoke('list_captures');
-    const row = list.find((c) => c.id === historyId);
+    const row = await invoke('get_capture', { id: historyId });
     if (!row) {
       throw new Error('This history entry is no longer available. It may have been deleted or evicted by retention.');
     }
-    const dataUrl = await invoke('read_capture_data_url', { id: historyId });
     meta = {
       id: row.id,
       capturedAt: row.capturedAt,
@@ -224,7 +233,7 @@ async function loadPayload({ optional = false } = {}) {
       bannerEnabled: row.bannerEnabled !== false,
       bannerBaked: Boolean(row.bannerBaked),
     };
-    await setContentFromBlob(await dataUrlToBlob(dataUrl));
+    await setContentFromBlob(await loadCaptureFile(row.fullPath, row.id));
   } else {
     if (!deliverySessionId) {
       if (optional) return false;
@@ -251,12 +260,35 @@ async function loadPayload({ optional = false } = {}) {
       dpr: p.dpr || 1,
       bannerBaked: false,
     };
-    await setContentFromBlob(await dataUrlToBlob(p.pngDataUrl));
+    const source = pendingSource(p);
+    if (source.kind === 'file') {
+      // Already saved natively before this page opened: load it from disk and edit that row.
+      savedId = source.historyId;
+      historySaved = true;
+      nativelySaved = true;
+      await setContentFromBlob(await loadCaptureFile(source.path, source.historyId));
+    } else {
+      await setContentFromBlob(await dataUrlToBlob(source.dataUrl));
+    }
   }
   const modeLabel = isHistoryMode ? `history · ${meta.mode}` : meta.mode;
   metaLineEl.textContent =
     `${modeLabel} · ${meta.imageWidthPx}×${meta.imageHeightPx}px · ${meta.pageUrl || meta.windowTitle}`;
   return true;
+}
+
+// A stored capture's PNG, read straight from disk through the asset protocol. Falls back to
+// the base64 command when the file URL cannot be fetched (an asset scope that does not cover
+// the history folder, say), so a capture always opens.
+async function loadCaptureFile(path, id) {
+  try {
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.blob();
+  } catch (err) {
+    console.warn('capture file URL failed, reading through the command instead:', err);
+    return dataUrlToBlob(await invoke('read_capture_data_url', { id }));
+  }
 }
 
 // Drop a finished silent capture. The worker window stays parked for the next one, and a

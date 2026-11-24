@@ -278,6 +278,22 @@ a capture that ended before the end of the page (limit, stall, pointer) carries 
 Succeeded presentation. The loop talks to its environment through `LoopControl`, so tests run with
 virtual time. The setting has no UI yet; it is read from `settings.json`.
 
+### Capture delivery
+
+`capture::finish` encodes once and then saves the capture natively (`persist_native`) before any
+window opens: the PNG, a 320 px thumbnail and the history row. With history switched off the row
+is a scratch row in an owner-only `history/scratch` folder, left out of the list and of retention,
+and removed at launch, when the live editor closes, and when the next capture replaces it. The
+editor and the silent worker then receive the row id and file path, load the image through the
+asset protocol, and only add the banner, copy and acknowledge, so killing the page mid-delivery
+still leaves the capture in history. The banner strip is drawn natively (`capture::banner`, with
+the bundled Inter font) from the same line rules as `ui/shared/banner.js`; the editor asks for the
+strip with `render_banner_strip`, and a silent capture never loads a page at all: the strip is
+stacked on the stored PNG and written to the pasteboard (PNG plus TIFF) by `capture::finish`.
+Golden images for each banner setting at 1x and 2x live in `src-tauri/tests/golden/banner`
+(`GLYPHIO_BLESS=1 cargo test banner` regenerates them). The pre-1.3 path, where the page encodes and saves itself,
+stays for one release behind the `legacyDelivery` setting.
+
 ### Scroll stitching
 
 `capture::scroll::stitch` is pure (frames in, rows out). Its `Stitcher` joins frames as the loop

@@ -43,6 +43,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Both are already in the tree through `png`.
 flate2 = "1"
 crc32fast = "1"
+# The capture banner is drawn natively with the bundled Inter (`capture/banner.rs`).
+ab_glyph = "0.2"
+chrono-tz = "0.10"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = { version = "2.4", features = ["deep-link"] }
@@ -56,12 +59,12 @@ core-foundation = "0.10"
 libc = "0.2"
 # NSWorkspace only, to ask macOS which app is frontmost (the window list can't answer that
 # reliably across displays, and the system-wide accessibility element refuses to).
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard", "NSImage"] }
 # The native login item (`SMAppService.mainApp`) and the launch Apple event that says whether
 # we were started by logging in. No scripting, no LaunchAgent plist.
 objc2 = "0.6"
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services", "NSData", "NSArray", "NSString", "NSDate", "NSFormatter", "NSDateFormatter", "NSLocale", "NSTimeZone"] }
 
 [features]
 # macOS diagnostics that call the OS directly (`src/platform/macos/probes`). Off by default so

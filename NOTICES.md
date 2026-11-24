@@ -14,6 +14,11 @@ Glyphio is licensed **GPL-3.0-or-later** (see `LICENSE`), with two carve-outs be
   from Checkpoint, a Chrome extension owned by Glyphio's author, relicensed here under
   GPL-3.0-or-later. No third-party constraints.
 
+- **Inter** — `src-tauri/assets/fonts/Inter-Regular.otf` and `Inter-Bold.otf` (Inter 4.0,
+  © 2016-2023 The Inter Project Authors, https://github.com/rsms/inter) are bundled to draw the
+  capture banner natively. They are licensed under the SIL Open Font License 1.1, whose text
+  ships beside them as `src-tauri/assets/fonts/OFL.txt`. The fonts are unmodified.
+
 ## Differently-licensed components (carve-outs)
 
 - **`src-tauri/crates/sync-proto`** — **Apache-2.0.** The wire-protocol types are permissively

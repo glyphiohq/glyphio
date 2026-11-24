@@ -49,6 +49,9 @@ pub struct Settings {
     pub auto_copy_on_open: bool,
     /// Capture straight to the clipboard and history without opening the editor.
     pub silent_capture: bool,
+    /// Deliver captures the pre-1.3 way: the editor page encodes and saves to history itself.
+    /// Kept for one release as a fallback for the native path (`capture::persist_native`).
+    pub legacy_delivery: bool,
     /// Ask GitHub on launch whether a newer Glyphio exists. The only network call an
     /// otherwise-unconfigured app makes, so it is a setting rather than an assumption.
     pub check_for_updates: bool,
@@ -162,6 +165,7 @@ impl Default for Settings {
             filename_prefix: "glyphio".into(),
             auto_copy_on_open: true,
             silent_capture: false,
+            legacy_delivery: false,
             check_for_updates: true,
             launch_at_login: true,
             history_enabled: true,

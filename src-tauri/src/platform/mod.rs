@@ -121,6 +121,26 @@ pub trait InputInjector: Send + Sync {
 pub trait Pasteboard: Send + Sync {
     fn change_counter(&self) -> i64;
     fn is_concealed(&self) -> bool;
+    /// Replace the clipboard with an image: the PNG itself plus a format older apps paste
+    /// (TIFF on macOS).
+    fn write_png(&self, png: &[u8]) -> anyhow::Result<()>;
+}
+
+/// Length of a date or time in [`LocaleDates::format`], as the OS's own formatters name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateStyle {
+    Short,
+    Medium,
+    Long,
+}
+
+/// The OS's own date formatting, so a banner timestamp reads the way the user's Mac writes
+/// dates.
+pub trait LocaleDates: Send + Sync {
+    /// `millis` since the epoch, formatted with the given date and time lengths in `locale`
+    /// (or the user's) and `zone` (an IANA name, or the user's). `None` when the platform
+    /// cannot format dates; callers then use a fixed pattern.
+    fn format(&self, millis: i64, date: DateStyle, time: DateStyle, locale: Option<&str>, zone: Option<&str>) -> Option<String>;
 }
 
 pub trait Permissions: Send + Sync {
@@ -194,6 +214,7 @@ pub struct Platform {
     pub process: Box<dyn ProcessControl>,
     pub shell: Box<dyn AppShell>,
     pub install: Box<dyn Installation>,
+    pub dates: Box<dyn LocaleDates>,
 }
 
 static CURRENT: OnceLock<Platform> = OnceLock::new();

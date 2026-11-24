@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { deliverCapture, deliveryReport } from './delivery.mjs';
+import { deliverCapture, deliveryReport, pendingSource } from './delivery.mjs';
 
 test('reports completion only after history and clipboard both succeed', async () => {
   const calls = [];
@@ -68,4 +68,18 @@ test('reports both independent delivery failures', async () => {
     historyId: null,
     error: 'Capture history failed: disk full\nClipboard copy failed: pasteboard unavailable',
   });
+});
+
+test('a natively saved capture loads from its file and is not saved again', () => {
+  assert.deepEqual(
+    pendingSource({ historyId: 'abc', filePath: '/h/abc-full.png', pngDataUrl: '' }),
+    { kind: 'file', historyId: 'abc', path: '/h/abc-full.png' },
+  );
+});
+
+test('the legacy path still carries the PNG inline', () => {
+  assert.deepEqual(
+    pendingSource({ historyId: '', filePath: '', pngDataUrl: 'data:image/png;base64,AA' }),
+    { kind: 'inline', dataUrl: 'data:image/png;base64,AA' },
+  );
 });

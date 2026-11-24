@@ -109,6 +109,10 @@ pub fn run() {
     let existing_install = paths.snippets_db.exists();
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
     let history = HistoryStore::open(&paths).expect("open history store");
+    // Captures taken while history was off are kept only while their editor is open.
+    if let Err(e) = history.purge_scratch(None) {
+        log::warn!("could not empty the scratch captures: {e}");
+    }
     let clips = ClipStore::open(&paths).expect("open clipboard store");
     let settings = Settings::load(&paths.settings_json);
     let sync = sync::SyncState::new(paths.root.join("sync.toml"));
@@ -310,6 +314,8 @@ pub fn run() {
             commands::save_capture,
             commands::update_capture,
             commands::list_captures,
+            commands::get_capture,
+            commands::render_banner_strip,
             commands::read_capture_data_url,
             commands::save_file,
             commands::copy_image_to_clipboard,
@@ -422,6 +428,10 @@ pub fn run() {
                 // lost, closed by the system) must not leave the capture waiting on it.
                 if windows::scroll_overlay_destroyed_unexpectedly(&label) {
                     tray::capture_selection_abandoned(app_handle);
+                }
+                // A capture taken with history off lives only as long as the editor showing it.
+                if label == "editor" {
+                    let _ = app_handle.state::<AppState>().history.purge_scratch(None);
                 }
                 windows::sync_activation_policy(app_handle, Some(&label));
             }

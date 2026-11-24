@@ -4,6 +4,7 @@
 // engine's config, which hot-reloads. Rich snippets use the engine's native rich injection.
 
 import { icon } from '../shared/icons.js';
+import { invokeBytes } from '../shared/ipc-bytes.mjs';
 import { IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner, isSupportedLocale, isSupportedTimezone } from '../shared/banner.js';
 import { escapeHtml, escapeAttr, mdToHtml, sanitizeSnippetHtml } from '../shared/markdown.js';
@@ -730,10 +731,7 @@ function clipCard(clip, redraw) {
       if (!path) return;
       try {
         const blob = await (await fetch(convertFileSrc(clip.imagePath))).blob();
-        const buf = new Uint8Array(await blob.arrayBuffer());
-        let bin = '';
-        for (const b of buf) bin += String.fromCharCode(b);
-        await invoke('save_file', { path, pngBase64: btoa(bin) });
+        await invokeBytes(invoke, 'save_file', blob, { path });
         setStatus(`Saved → ${path}`, 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }));
@@ -755,25 +753,6 @@ function bannerMeta(item) {
     pageUrl: item.pageUrl || '',
     profile: item.profile || '',
   };
-}
-
-// Exportable PNG for a history row. New-format rows store content-only pixels, so the
-// banner (timestamp from the original capturedAt + title + note) is composited here when
-// enabled; legacy rows already contain it.
-async function exportDataUrl(item) {
-  const dataUrl = await invoke('read_capture_data_url', { id: item.id });
-  if (item.bannerBaked || item.bannerEnabled === false) return dataUrl;
-  const settings = state.settings;
-  const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
-  const cvs = document.createElement('canvas');
-  compositeBanner(cvs, bmp, {
-    meta: { ...bannerMeta(item), dpr: item.dpr || 1 },
-    settings,
-    note: item.note || '',
-    enabled: true,
-  });
-  bmp.close?.();
-  return cvs.toDataURL('image/png');
 }
 
 // Thumbnails are stored content-only; composite the banner at thumbnail scale so the grid
@@ -832,7 +811,8 @@ function historyCard(item, redraw) {
     // instead of one of them landing in clipboard history and the other not.
     mk('copy', 'Copy to clipboard', async () => {
       try {
-        await invoke('copy_image_to_clipboard', { pngBase64: await exportDataUrl(item) });
+        // Natively, banner included when it is on — the same strip a fresh capture gets.
+        await invoke('copy_stored_capture', { id: item.id });
         setStatus('Capture copied to clipboard.', 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),
@@ -844,7 +824,7 @@ function historyCard(item, redraw) {
       });
       if (!path) return;
       try {
-        await invoke('save_file', { path, pngBase64: await exportDataUrl(item) });
+        await invoke('export_stored_capture', { id: item.id, path });
         setStatus(`Saved → ${path}`, 'ok');
       } catch (e) { setStatus(String(e), 'err'); }
     }),

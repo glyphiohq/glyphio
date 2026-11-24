@@ -38,6 +38,7 @@ log = "0.4"
 dirs = "5"
 base64 = "0.22"
 url = "2"
+percent-encoding = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Scrolling capture streams its rows into a PNG of unknown height (`capture/scroll/png_stream.rs`).
 # Both are already in the tree through `png`.

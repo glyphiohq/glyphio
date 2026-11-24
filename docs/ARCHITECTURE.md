@@ -305,6 +305,16 @@ closes itself after a few seconds unless the pointer is on it (`ui/preview/state
 rows are purged once no editor, preview or stored-capture window is left showing one. With
 `legacyDelivery` on, the preview falls back to the editor.
 
+Image bytes cross the IPC boundary raw, never as base64: the page sends the PNG as the invoke
+body and the other arguments as percent-encoded JSON in the `x-glyphio-args` header
+(`ui/shared/ipc-bytes.mjs` and `src-tauri/src/ipc_bytes.rs`), and Rust answers with a raw
+`Response` (`read_capture_png`). Every command that reads or writes image or file bytes is async
+and does the work in `spawn_blocking`, thumbnails are made natively from the content PNG
+(`capture::thumbnail_from_png`), and History's Copy and Save composite the banner natively
+(`copy_stored_capture`, `export_stored_capture`). In debug builds `watchdog.rs` posts a no-op to
+the main thread every 100 ms and logs any that run more than 250 ms late, naming the last command
+invoked and a tally of the commands that preceded stalls.
+
 ### Scroll stitching
 
 `capture::scroll::stitch` is pure (frames in, rows out). Its `Stitcher` joins frames as the loop

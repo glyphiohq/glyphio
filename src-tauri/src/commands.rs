@@ -1,6 +1,5 @@
 //! Tauri command surface exposed to the webview frontend.
 
-use base64::Engine;
 use tauri::{AppHandle, Manager, State};
 
 use snippet_store::{Group, GroupUpdate, NewGroup, NewSnippet, Snippet, SnippetUpdate};
@@ -274,53 +273,63 @@ pub fn shortcut_status(app: AppHandle) -> Vec<crate::shortcuts::registry::Shortc
 
 // ---- history ---------------------------------------------------------------
 
-#[tauri::command]
-pub fn save_capture(
-    state: State<AppState>,
+/// Run blocking image or file work off the async runtime's worker threads, so a large PNG
+/// never stalls other commands, and flatten the join error into the command's error.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> CmdResult<T> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[derive(serde::Deserialize)]
+struct SaveCaptureArgs {
     meta: NewCapture,
-    full_png_base64: String,
-    thumb_png_base64: String,
-) -> CmdResult<CaptureMeta> {
-    let engine = base64::engine::general_purpose::STANDARD;
-    let full = engine
-        .decode(strip_data_url(&full_png_base64))
-        .map_err(err)?;
-    let thumb = engine
-        .decode(strip_data_url(&thumb_png_base64))
-        .map_err(err)?;
-    let (max_count, max_bytes) = {
-        let s = state.settings.lock().unwrap();
-        (s.history_max_count, s.history_max_bytes)
-    };
-    state
-        .history
-        .save(meta, &full, &thumb, max_count, max_bytes)
-        .map_err(err)
+}
+
+/// Save a capture the editor rendered (the legacy delivery path). Body: the content PNG.
+/// Header: `{ meta }`. The thumbnail is made here, not in the page.
+#[tauri::command]
+pub async fn save_capture(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<CaptureMeta> {
+    let (full, args): (Vec<u8>, SaveCaptureArgs) = crate::ipc_bytes::read(&request)?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let thumb = crate::capture::thumbnail_from_png(&full, crate::capture::THUMB_WIDTH)?;
+        let (max_count, max_bytes) = {
+            let s = state.settings.lock().unwrap();
+            (s.history_max_count, s.history_max_bytes)
+        };
+        state.history.save(args.meta, &full, &thumb, max_count, max_bytes)
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateCaptureArgs {
+    id: String,
+    patch: crate::history::CaptureUpdate,
 }
 
 /// Edit a stored capture after the fact: note, banner on/off, and optionally a replacement
-/// content PNG (re-crop / redact). The original `captured_at` timestamp is never touched.
+/// content PNG (re-crop / redact) as the body, empty for none. Header: `{ id, patch }`. The
+/// original `captured_at` timestamp is never touched; a new thumbnail is made here.
 #[tauri::command]
-pub fn update_capture(
-    state: State<AppState>,
-    id: String,
-    patch: crate::history::CaptureUpdate,
-    full_png_base64: Option<String>,
-    thumb_png_base64: Option<String>,
-) -> CmdResult<CaptureMeta> {
-    let engine = base64::engine::general_purpose::STANDARD;
-    let full = full_png_base64
-        .map(|b| engine.decode(strip_data_url(&b)))
-        .transpose()
-        .map_err(err)?;
-    let thumb = thumb_png_base64
-        .map(|b| engine.decode(strip_data_url(&b)))
-        .transpose()
-        .map_err(err)?;
-    state
-        .history
-        .update(&id, patch, full.as_deref(), thumb.as_deref())
-        .map_err(err)
+pub async fn update_capture(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<CaptureMeta> {
+    let (full, args): (Vec<u8>, UpdateCaptureArgs) = crate::ipc_bytes::read(&request)?;
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let full = (!full.is_empty()).then_some(full);
+        let thumb = full
+            .as_deref()
+            .map(|png| crate::capture::thumbnail_from_png(png, crate::capture::THUMB_WIDTH))
+            .transpose()?;
+        state
+            .history
+            .update(&args.id, args.patch, full.as_deref(), thumb.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -382,37 +391,55 @@ pub fn get_capture(state: State<AppState>, id: String) -> CmdResult<Option<Captu
     state.history.get(&id).map_err(err)
 }
 
-/// Returns the full PNG as a base64 data URL (used by history Open/Copy/Download).
+/// The full stored PNG of one capture, as raw bytes (history Open/Copy/Download, and the
+/// editor when the file URL cannot be fetched).
 #[tauri::command]
-pub fn read_capture_data_url(state: State<AppState>, id: String) -> CmdResult<String> {
-    let meta = state
-        .history
-        .get(&id)
-        .map_err(err)?
-        .ok_or("capture not found")?;
-    let bytes = std::fs::read(&meta.full_path).map_err(err)?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:image/png;base64,{b64}"))
+pub async fn read_capture_png(app: AppHandle, id: String) -> CmdResult<tauri::ipc::Response> {
+    let bytes = blocking(move || {
+        let meta = app
+            .state::<AppState>()
+            .history
+            .get(&id)?
+            .ok_or_else(|| anyhow::anyhow!("capture not found"))?;
+        Ok(std::fs::read(&meta.full_path)?)
+    })
+    .await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// Put a base64 PNG on the system clipboard.
+/// Copy a stored capture as History shows it (banner included when on), natively.
+#[tauri::command]
+pub async fn copy_stored_capture(app: AppHandle, id: String) -> CmdResult<()> {
+    blocking(move || {
+        let png = crate::capture::export_stored(&app, &id)?;
+        put_png_on_clipboard(&app, &png)
+    })
+    .await
+}
+
+/// Save a stored capture as History shows it (banner included when on) to `path`.
+#[tauri::command]
+pub async fn export_stored_capture(app: AppHandle, id: String, path: String) -> CmdResult<()> {
+    blocking(move || {
+        let png = crate::capture::export_stored(&app, &id)?;
+        Ok(std::fs::write(&path, png)?)
+    })
+    .await
+}
+
+/// Put a PNG (the raw body) on the system clipboard.
 ///
 /// Copying goes through the OS rather than `navigator.clipboard`, whose write is gated on a
 /// *transient user activation* — a real click in the page. Copy-on-open has no click behind
 /// it, so the web API refused it ("not allowed by the user agent") and every capture opened
 /// with an apologetic error instead of the image on the clipboard.
+///
+/// The PNG goes on the pasteboard as it is (with a TIFF beside it) when the platform can do
+/// that, so nothing is decoded; otherwise it is decoded to RGBA for the clipboard plugin.
 #[tauri::command]
-pub fn copy_image_to_clipboard(app: AppHandle, png_base64: String) -> CmdResult<()> {
-    use tauri_plugin_clipboard_manager::ClipboardExt;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(strip_data_url(&png_base64))
-        .map_err(err)?;
-    // The clipboard wants raw RGBA + dimensions, not an encoded PNG.
-    let img = image::load_from_memory(&bytes).map_err(err)?.to_rgba8();
-    let (w, h) = img.dimensions();
-    app.clipboard()
-        .write_image(&tauri::image::Image::new(&img.into_raw(), w, h))
-        .map_err(err)
+pub async fn copy_image_to_clipboard(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<()> {
+    let (bytes, _): (Vec<u8>, serde_json::Value) = crate::ipc_bytes::read(&request)?;
+    blocking(move || put_png_on_clipboard(&app, &bytes)).await
     // Deliberately NOT suppressed from clipboard history. It was, to keep a screenshot from
     // appearing twice in the merged History — and that traded a small redundancy for the
     // clipboard list misreporting what is on the clipboard. Captures auto-copy when the editor
@@ -421,13 +448,31 @@ pub fn copy_image_to_clipboard(app: AppHandle, png_base64: String) -> CmdResult<
     // problem than a list that lies.
 }
 
-/// Write a base64 PNG (optionally a data URL) to a user-chosen path (editor Download).
+/// The PNG as it is, with a TIFF beside it, when the platform can do that (nothing decoded);
+/// otherwise decoded to RGBA for the clipboard plugin.
+fn put_png_on_clipboard(app: &AppHandle, png: &[u8]) -> anyhow::Result<()> {
+    if crate::platform::current().pasteboard.write_png(png).is_ok() {
+        return Ok(());
+    }
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let img = image::load_from_memory(png)?.to_rgba8();
+    let (w, h) = img.dimensions();
+    app.clipboard()
+        .write_image(&tauri::image::Image::new(&img.into_raw(), w, h))?;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct SaveFileArgs {
+    path: String,
+}
+
+/// Write PNG bytes (the body) to a user-chosen path (editor and history Download).
+/// Header: `{ path }`.
 #[tauri::command]
-pub fn save_file(path: String, png_base64: String) -> CmdResult<()> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(strip_data_url(&png_base64))
-        .map_err(err)?;
-    std::fs::write(&path, bytes).map_err(err)
+pub async fn save_file(request: tauri::ipc::Request<'_>) -> CmdResult<()> {
+    let (bytes, args): (Vec<u8>, SaveFileArgs) = crate::ipc_bytes::read(&request)?;
+    blocking(move || Ok(std::fs::write(&args.path, bytes)?)).await
 }
 
 /// Recognize text in an image — on-device via the Vision-framework sidecar (`glyphio-ocr`).
@@ -435,12 +480,11 @@ pub fn save_file(path: String, png_base64: String) -> CmdResult<()> {
 /// current content pixels (so it reflects crops/redactions) and returns recognized lines
 /// with normalized bounding boxes, for the selectable text overlay.
 #[tauri::command]
-pub async fn ocr_image(app: AppHandle, png_base64: String) -> CmdResult<serde_json::Value> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(strip_data_url(&png_base64))
-        .map_err(err)?;
+pub async fn ocr_image(app: AppHandle, request: tauri::ipc::Request<'_>) -> CmdResult<serde_json::Value> {
+    let (bytes, _): (Vec<u8>, serde_json::Value) = crate::ipc_bytes::read(&request)?;
     let tmp = std::env::temp_dir().join(format!("glyphio-ocr-{}.png", uuid::Uuid::new_v4()));
-    std::fs::write(&tmp, &bytes).map_err(err)?;
+    let written = tmp.clone();
+    blocking(move || Ok(std::fs::write(&written, &bytes)?)).await?;
     use tauri_plugin_shell::ShellExt;
     let output = app
         .shell()
@@ -854,7 +898,9 @@ pub async fn clipboard_use(app: AppHandle, id: String, paste: bool) -> CmdResult
         .get(&id)
         .map_err(err)?
         .ok_or_else(|| "that clipboard entry is gone".to_string())?;
-    crate::clipboard::put_back(&app, &entry).map_err(err)?;
+    // An image entry is decoded from disk: blocking work, kept off the async workers.
+    let handle = app.clone();
+    blocking(move || crate::clipboard::put_back(&handle, &entry)).await?;
 
     if let Some(win) = app.get_webview_window("palette") {
         let _ = win.destroy();
@@ -1003,10 +1049,6 @@ pub async fn install_update(app: AppHandle) -> CmdResult<()> {
     crate::updates::install(&app)
         .await
         .map_err(|e| format!("{e:#}"))
-}
-
-fn strip_data_url(s: &str) -> &str {
-    s.split_once(",").map_or(s, |(_, rest)| rest)
 }
 
 pub(crate) fn open_permission_settings(app: &AppHandle, kind: crate::platform::PermissionKind) -> CmdResult<()> {

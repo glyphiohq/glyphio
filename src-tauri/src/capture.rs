@@ -750,6 +750,40 @@ pub(crate) fn banner_png(
     Ok(bytes.into_inner())
 }
 
+/// A stored capture as it is copied or exported from History: its PNG, with the banner strip
+/// above it when the row has the banner on. Legacy rows already carry theirs in the pixels.
+pub(crate) fn stored_png_with_banner(
+    style: &banner::Style,
+    row: &crate::history::CaptureMeta,
+    png: &[u8],
+    dates: &dyn platform::LocaleDates,
+) -> anyhow::Result<Vec<u8>> {
+    if row.banner_baked || !row.banner_enabled {
+        return Ok(png.to_vec());
+    }
+    let content = image::load_from_memory(png)?.to_rgba8();
+    let meta = banner::Meta::from_row(row);
+    let Some(strip) = banner::render_strip(style, &meta, &row.note, content.width(), dates) else {
+        return Ok(png.to_vec());
+    };
+    let out = banner::composite(Some(&strip), &content);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    out.write_to(&mut bytes, image::ImageFormat::Png)?;
+    Ok(bytes.into_inner())
+}
+
+/// [`stored_png_with_banner`] for one row by id, with the user's banner settings.
+pub(crate) fn export_stored(app: &AppHandle, id: &str) -> anyhow::Result<Vec<u8>> {
+    let state = app.state::<AppState>();
+    let row = state
+        .history
+        .get(id)?
+        .ok_or_else(|| anyhow!("This capture is no longer in History."))?;
+    let png = std::fs::read(&row.full_path)?;
+    let style = banner::Style::from(&*state.settings.lock().unwrap());
+    stored_png_with_banner(&style, &row, &png, &*platform::current().dates)
+}
+
 /// The history row for a capture as it was taken: no note yet, banner on.
 pub(crate) fn new_capture(shot: &Shot, mode: CaptureMode, captured_at: &str) -> crate::history::NewCapture {
     crate::history::NewCapture {
@@ -772,23 +806,34 @@ pub(crate) fn new_capture(shot: &Shot, mode: CaptureMode, captured_at: &str) -> 
 pub const THUMB_WIDTH: u32 = 320;
 
 /// A `width`-wide PNG thumbnail (aspect kept; never upscaled) from the capture's pixels, or
-/// from its PNG when it arrived already encoded.
+/// from its PNG when it arrived already encoded. The pixels are borrowed, not copied.
 pub fn thumbnail_png(shot: &Shot, png: &[u8], width: u32) -> anyhow::Result<Vec<u8>> {
-    let decoded;
-    let full = if shot.rgba.len() as u64 == u64::from(shot.width) * u64::from(shot.height) * 4 && !shot.rgba.is_empty() {
-        image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
-            .ok_or_else(|| anyhow::anyhow!("capture buffer size mismatch"))?
-    } else {
-        decoded = image::load_from_memory(png)?.to_rgba8();
-        decoded
-    };
+    let expected = u64::from(shot.width) * u64::from(shot.height) * 4;
+    if shot.rgba.is_empty() || shot.rgba.len() as u64 != expected {
+        return thumbnail_from_png(png, width);
+    }
+    let view = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
+        shot.width,
+        shot.height,
+        shot.rgba.as_slice(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("capture buffer size mismatch"))?;
+    encode_thumb(&view, width)
+}
+
+/// A thumbnail from encoded PNG bytes, for a capture the editor saved or edited.
+pub fn thumbnail_from_png(png: &[u8], width: u32) -> anyhow::Result<Vec<u8>> {
+    let full = image::load_from_memory(png)?.to_rgba8();
+    encode_thumb(&full, width)
+}
+
+fn encode_thumb<I>(full: &I, width: u32) -> anyhow::Result<Vec<u8>>
+where
+    I: image::GenericImageView<Pixel = image::Rgba<u8>>,
+{
     let (w, h) = full.dimensions();
     let (tw, th) = thumb_size(w, h, width);
-    let thumb = if (tw, th) == (w, h) {
-        full
-    } else {
-        image::imageops::resize(&full, tw, th, image::imageops::FilterType::Triangle)
-    };
+    let thumb = image::imageops::resize(full, tw, th, image::imageops::FilterType::Triangle);
     let mut out = std::io::Cursor::new(Vec::new());
     thumb.write_to(&mut out, image::ImageFormat::Png)?;
     Ok(out.into_inner())

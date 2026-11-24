@@ -9,6 +9,7 @@ mod commands;
 mod engine;
 mod history;
 mod install;
+mod ipc_bytes;
 mod launch;
 mod logging;
 mod onboarding;
@@ -21,6 +22,7 @@ mod startup;
 mod sync;
 mod tray;
 mod updates;
+mod watchdog;
 mod windows;
 
 use std::sync::{Arc, Mutex};
@@ -294,10 +296,11 @@ pub fn run() {
             // Look for a newer release, quietly. Nothing is downloaded and no window opens —
             // the answer waits in Settings → About until the user goes looking for it.
             updates::check_in_background(app.handle());
+            watchdog::start(app.handle());
             launch::mark("setup-done");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(watched(tauri::generate_handler![
             commands::list_snippets,
             commands::create_snippet,
             commands::update_snippet,
@@ -316,7 +319,9 @@ pub fn run() {
             commands::list_captures,
             commands::get_capture,
             commands::render_banner_strip,
-            commands::read_capture_data_url,
+            commands::read_capture_png,
+            commands::copy_stored_capture,
+            commands::export_stored_capture,
             commands::save_file,
             commands::copy_image_to_clipboard,
             commands::ocr_image,
@@ -393,7 +398,7 @@ pub fn run() {
             sync::set_group_team,
             sync::parse_invite,
             sync::apply_invite,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error building Glyphio")
         .run(|app_handle, event| match event {
@@ -485,4 +490,14 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+/// The command handler, with each command noted for the debug main-thread watchdog.
+fn watched(
+    handler: impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        watchdog::note_command(invoke.message.command());
+        handler(invoke)
+    }
 }

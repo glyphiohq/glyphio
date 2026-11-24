@@ -26,6 +26,7 @@ mod install;
 mod pasteboard;
 mod permissions;
 mod process;
+mod session;
 mod shell;
 
 pub fn platform() -> Platform {
@@ -89,6 +90,9 @@ impl WindowQuery for Macos {
     }
     fn foreground_app_name(&self) -> String {
         pasteboard::foreground_app()
+    }
+    fn session_locked(&self) -> bool {
+        session::locked()
     }
 }
 

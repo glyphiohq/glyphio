@@ -434,6 +434,7 @@ pub fn run() {
                         let _ = win.hide();
                     }
                     api.prevent_close();
+                    windows::settings_hidden(app_handle);
                 }
                 // With this window going away Glyphio may be back to a menu-bar-only service:
                 // drop the Dock icon unless another real window is still up.

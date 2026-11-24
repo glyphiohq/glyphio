@@ -97,6 +97,9 @@ pub trait WindowQuery: Send + Sync {
     fn display_bounds_containing_point(&self, x: f64, y: f64) -> Option<DisplayBounds>;
     /// Name of the application that currently has focus (empty if unknown).
     fn foreground_app_name(&self) -> String;
+    /// Whether the user's session is locked or switched away (fast user switching), so
+    /// nothing is being copied and watchers can rest.
+    fn session_locked(&self) -> bool;
 }
 
 pub trait PageInspector: Send + Sync {

@@ -35,6 +35,8 @@ pub struct Fake {
     /// What [`Pasteboard::write_png`] was given; `refuse_copy` makes it fail.
     pub copied: Mutex<Vec<Vec<u8>>>,
     pub refuse_copy: bool,
+    /// What [`WindowQuery::session_locked`] answers.
+    pub locked: bool,
 }
 
 impl Fake {
@@ -105,6 +107,9 @@ impl WindowQuery for Fake {
     }
     fn foreground_app_name(&self) -> String {
         "Fake App".into()
+    }
+    fn session_locked(&self) -> bool {
+        self.locked
     }
 }
 

@@ -311,6 +311,9 @@ pub fn open_setup(app: &AppHandle) -> anyhow::Result<()> {
 
 /// Open (or focus, if already open) a named window.
 pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
+    if name == "settings" {
+        settings_shown();
+    }
     if let Some(win) = app.get_webview_window(name) {
         // The editor pulls its one-shot pending capture at page load. If a capture fires
         // while an old editor window is open, focusing it would show the previous image —
@@ -730,5 +733,52 @@ mod preview_tests {
             preview_url("abc", Some("Clipboard copy failed: busy & locked")),
             "preview/index.html?id=abc&error=Clipboard+copy+failed%3A+busy+%26+locked"
         );
+    }
+}
+
+/// How long a closed Settings window is kept, hidden, for a quick reopen. After that it is
+/// destroyed, and with it the web process it costs while nobody is looking.
+pub const SETTINGS_KEPT_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Counts Settings being shown and hidden, so a timer from an earlier close cannot destroy a
+/// window that has been reopened (and maybe closed again) since.
+static SETTINGS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn settings_shown() {
+    SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Settings was just hidden by its close button: destroy it after [`SETTINGS_KEPT_FOR`] unless
+/// it is shown again first.
+pub fn settings_hidden(app: &AppHandle) {
+    let epoch = SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SETTINGS_KEPT_FOR).await;
+        if !still_hidden_since(epoch, SETTINGS_EPOCH.load(std::sync::atomic::Ordering::SeqCst)) {
+            return;
+        }
+        if let Some(win) = app.get_webview_window("settings") {
+            if !win.is_visible().unwrap_or(true) {
+                let _ = win.destroy();
+            }
+        }
+    });
+}
+
+/// Whether nothing has shown or hidden Settings since the close that started this timer.
+fn still_hidden_since(epoch_at_close: u64, epoch_now: u64) -> bool {
+    epoch_at_close == epoch_now
+}
+
+#[cfg(test)]
+mod settings_lifetime_tests {
+    use super::still_hidden_since;
+
+    #[test]
+    fn only_the_latest_close_may_destroy_settings() {
+        assert!(still_hidden_since(3, 3));
+        assert!(!still_hidden_since(3, 4), "reopened since");
+        assert!(!still_hidden_since(3, 5), "reopened and closed again: that close's timer decides");
     }
 }

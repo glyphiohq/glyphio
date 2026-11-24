@@ -76,6 +76,9 @@ impl WindowQuery for Unsupported {
     fn foreground_app_name(&self) -> String {
         String::new()
     }
+    fn session_locked(&self) -> bool {
+        false
+    }
 }
 
 impl PageInspector for Unsupported {

@@ -183,6 +183,10 @@ async function refreshLoginNotice() {
     field.append(note);
   }
   note.textContent = (await invoke('login_item_notice').catch(() => null)) || '';
+  // A portable copy never opens at login, and keeps its data beside the app: say where.
+  const mode = await invoke('app_mode').catch(() => null);
+  input.disabled = Boolean(mode?.portable);
+  if (mode?.portable) note.textContent += ` Its data is in ${mode.dataDir}.`;
 }
 async function reloadSnippets() { state.snippets = await invoke('list_snippets'); renderSidebar(); renderMain(); }
 async function reloadGroups() { state.groups = await invoke('list_groups'); renderSidebar(); renderMain(); }

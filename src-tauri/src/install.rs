@@ -120,6 +120,21 @@ fn app_bundles_in(dir: &Path) -> Vec<PathBuf> {
 
 /// Read where this copy runs from and which other copies exist.
 pub fn status(os: &dyn Installation, warned: &[String]) -> InstallStatus {
+    let mut status = status_unless_portable(os, warned);
+    if crate::paths::location().portable {
+        settle_portable(&mut status);
+    }
+    status
+}
+
+/// A portable copy is meant to run from where it is, a disk or stick included, and an installed
+/// copy beside it is expected: nothing to offer, nothing to warn about.
+fn settle_portable(status: &mut InstallStatus) {
+    status.offer_move = false;
+    status.duplicates.clear();
+}
+
+fn status_unless_portable(os: &dyn Installation, warned: &[String]) -> InstallStatus {
     let home = home();
     let bundle = std::env::current_exe().ok().and_then(|exe| bundle_of(&exe));
     let location = match &bundle {
@@ -250,6 +265,19 @@ mod tests {
         let home = Path::new(HOME);
         assert_eq!(move_target(true, home), PathBuf::from("/Applications"));
         assert_eq!(move_target(false, home), PathBuf::from("/Users/a/Applications"));
+    }
+
+    #[test]
+    fn a_portable_copy_is_never_offered_a_move_or_warned_about_others() {
+        let mut s = InstallStatus {
+            location: Location::ReadOnlyVolume,
+            bundle_path: Some("/Volumes/Stick/Glyphio.app".into()),
+            offer_move: true,
+            move_target: "/Applications".into(),
+            duplicates: vec!["/Applications/Glyphio.app".into()],
+        };
+        settle_portable(&mut s);
+        assert!(!s.needs_attention());
     }
 
     #[test]

@@ -4,8 +4,9 @@
 //! input, permissions, the login item, process control) sits behind a small trait here, and
 //! `cfg(target_os)` plus the OS crates live only under this directory. The rest of the app asks
 //! [`current`] for the implementation, so the pure cores can be driven with [`fake`] in tests and
-//! a Windows port is an additive directory (`docs/WINDOWS.md`). Until then other targets get
-//! [`unsupported`], which compiles everywhere and refuses each call.
+//! a new OS is an additive directory (`docs/WINDOWS.md`, `docs/LINUX.md`). Targets without one
+//! get [`unsupported`], which compiles everywhere and refuses each call; `linux` reuses it for
+//! the capabilities it has not implemented yet.
 //!
 //! Geometry is in global points with a top-left origin, as before. Methods are synchronous; the
 //! capture worker and other threads call them directly, never the main thread's event loop.
@@ -25,6 +26,8 @@ pub mod reserved;
 pub mod types;
 pub use types::{BrowserMeta, FrontWindow, PageGeometry, Progress};
 
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(not(target_os = "macos"))]
@@ -205,11 +208,47 @@ pub fn current() -> &'static Platform {
         {
             macos::platform()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            linux::platform()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             unsupported::platform()
         }
     })
+}
+
+/// The OS folders [`crate::paths::location`] chooses between.
+pub struct Folders {
+    /// The folder the user sees the app in: the one holding `Glyphio.app` on macOS, the
+    /// AppImage's folder on Linux (not its temporary mount), the executable's folder otherwise.
+    /// A portable copy's data folder sits here.
+    pub app_dir: Option<PathBuf>,
+    /// The OS's log folder for Glyphio, or `None` to keep the log inside the data root.
+    pub log_dir: Option<PathBuf>,
+}
+
+pub fn folders() -> Folders {
+    let exe = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
+    let exe_dir = exe.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_dir = exe.as_deref().and_then(crate::install::bundle_of).and_then(|b| b.parent().map(Path::to_path_buf));
+        Folders {
+            app_dir: bundle_dir.or(exe_dir),
+            log_dir: dirs::home_dir().map(|h| h.join("Library/Logs/Glyphio")),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Folders { app_dir: linux::app_dir().or(exe_dir), log_dir: dirs::state_dir().map(|d| d.join("Glyphio")) }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = exe;
+        Folders { app_dir: exe_dir, log_dir: None }
+    }
 }
 
 /// Whether `event` is the app being opened again while it runs (macOS: Finder, Launchpad or

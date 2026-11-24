@@ -54,6 +54,14 @@ Glyphio asks for two macOS permissions, each with an in-app explanation:
 Screen Recording only takes effect on the **next** launch — macOS caches the answer for the
 life of the process. Glyphio offers to relaunch itself when you grant it.
 
+## Portable copy
+
+To run Glyphio from a USB stick or any folder without it touching your user profile, create a
+folder named `Glyphio Data` next to `Glyphio.app`. That copy then keeps all of its data and
+its log in that folder, and it never registers itself to open at login. Sync sign-ins still go
+to the keychain of the Mac you're on. See [Linux support](LINUX.md#portable-copy-done) for
+the details.
+
 ## Updates
 
 Glyphio checks GitHub on launch for a newer release and tells you in **Settings → About**. It

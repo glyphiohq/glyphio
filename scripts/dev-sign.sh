@@ -20,6 +20,8 @@
 #
 # Usage:  scripts/dev-sign.sh            # ensure identity exists, then sign the sidecar
 #         scripts/dev-sign.sh --reset    # delete the dev keychain and recreate it
+#         scripts/dev-sign.sh --identity-only  # ensure the identity exists, sign nothing
+#                                          # (release.sh, before any sidecar is built)
 #
 set -euo pipefail
 
@@ -113,6 +115,11 @@ if [[ -f "$KEYCHAIN_PATH" ]]; then
   ensure_in_search_list
 else
   create_identity
+fi
+
+if [[ "${1:-}" == "--identity-only" ]]; then
+  log "Identity '$IDENTITY' is ready."
+  exit 0
 fi
 
 # Sign every engine binary that exists.

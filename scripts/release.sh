@@ -87,7 +87,9 @@ else
 fi
 
 # ---- 4. build: signing identity, engine + OCR sidecars, app -----------------------
-bash scripts/dev-sign.sh
+# Make sure the signing identity exists first; build-engine.sh signs the engine once it is built,
+# so a fresh clone with no engine binary yet can release.
+bash scripts/dev-sign.sh --identity-only
 bash scripts/build-engine.sh --release
 bash scripts/build-ocr.sh
 

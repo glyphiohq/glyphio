@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyphio Capture</title>
+  <link rel="stylesheet" href="../shared/theme.css">
+  <style>
+    /* The card that follows a capture. Transparent window, one rounded card inside it. */
+    html, body {
+      background: transparent !important;
+      margin: 0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .card {
+      box-sizing: border-box;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px;
+      background: color-mix(in srgb, var(--surface) 96%, transparent);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-pop);
+      color: var(--text);
+      font: 13px/1.35 var(--font-sans);
+    }
+    .thumb {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--inset);
+      border-radius: var(--radius);
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+    .status { display: flex; align-items: center; gap: 6px; color: var(--success); }
+    .status.warn { color: var(--danger); }
+    .actions { display: flex; gap: 6px; }
+    .actions button {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+      background: var(--surface-2);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    .actions button:hover { border-color: var(--accent); }
+    .actions button.primary { background: var(--primary); color: var(--primary-on); border-color: transparent; }
+    .actions button:disabled { opacity: 0.5; cursor: default; }
+    .close {
+      position: absolute; top: 14px; right: 14px;
+      width: 22px; height: 22px; padding: 0; border-radius: 11px; border: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="thumb" id="thumb" title="Edit"><img id="image" alt="Capture"></div>
+    <button class="close" id="close" title="Close (Esc)" aria-label="Close"></button>
+    <div class="status" id="status" role="status"></div>
+    <div class="actions">
+      <button id="discard" title="Remove from History (⌘⌫)"></button>
+      <button id="edit" class="primary" title="Open in the editor (↩)"></button>
+    </div>
+  </div>
+  <script type="module" src="preview.js"></script>
+</body>
+</html>

@@ -464,6 +464,29 @@ pub fn delete_capture(state: State<AppState>, id: String) -> CmdResult<()> {
     state.history.delete(&id).map_err(err)
 }
 
+/// The preview's Edit: open the capture in the editor, then put the card away. The editor
+/// opens first so a scratch capture (history off) is never left without a window showing it.
+#[tauri::command]
+pub fn preview_edit(app: AppHandle, id: String) -> CmdResult<()> {
+    crate::windows::open_capture(&app, &id).map_err(err)?;
+    crate::windows::close_preview(&app);
+    Ok(())
+}
+
+/// The preview's Discard: forget the capture and put the card away. What was copied stays on
+/// the clipboard; Discard is about History, not about undoing a paste.
+#[tauri::command]
+pub fn preview_discard(app: AppHandle, state: State<AppState>, id: String) -> CmdResult<()> {
+    crate::windows::close_preview(&app);
+    state.history.delete(&id).map_err(err)
+}
+
+/// The card timed out or was dismissed.
+#[tauri::command]
+pub fn preview_close(app: AppHandle) {
+    crate::windows::close_preview(&app);
+}
+
 /// Close the capture editor after its artifact has been discarded.
 #[tauri::command]
 pub fn close_editor(app: AppHandle) {
@@ -480,23 +503,32 @@ pub fn clear_captures(state: State<AppState>) -> CmdResult<()> {
 // ---- capture ---------------------------------------------------------------
 
 /// Trigger a capture (`visible` | `snip` | `fullWindow` | `scrolling`). Runs the native
-/// capture (or opens the scrolling selection overlay), then the editor with the result.
-/// `silent` overrides the configured delivery for this one capture.
+/// capture (or opens the scrolling selection overlay), then delivers it.
+/// `delivery` (`preview` | `editor` | `silent`) or the older `silent` flag overrides the
+/// configured delivery for this one capture.
 #[tauri::command]
-pub fn trigger_capture(app: AppHandle, mode: String, silent: Option<bool>) -> CmdResult<()> {
-    crate::capture::trigger(&app, &mode, delivery(silent)).map_err(err)
+pub fn trigger_capture(
+    app: AppHandle,
+    mode: String,
+    silent: Option<bool>,
+    delivery: Option<String>,
+) -> CmdResult<()> {
+    let asked = requested_delivery(&app, silent, delivery.as_deref());
+    crate::capture::trigger(&app, &mode, asked).map_err(err)
 }
 
-/// A frontend's `silent` flag as a delivery choice; `None` means "as configured".
-fn delivery(silent: Option<bool>) -> Option<crate::capture::Delivery> {
+/// A frontend's delivery request; `None` means "as configured". A named delivery wins;
+/// `silent: false` means "show me this one", which is the editor when the default is silent.
+fn requested_delivery(
+    app: &AppHandle,
+    silent: Option<bool>,
+    delivery: Option<&str>,
+) -> Option<crate::capture::Delivery> {
     use crate::capture::Delivery;
-    silent.map(|s| {
-        if s {
-            Delivery::Silent
-        } else {
-            Delivery::Editor
-        }
-    })
+    if let Some(named) = delivery.and_then(Delivery::parse) {
+        return Some(named);
+    }
+    silent.map(|s| if s { Delivery::Silent } else { Delivery::shown(app) })
 }
 
 /// The scrolling-capture overlay reports the selected rect (window-logical px == points,
@@ -510,6 +542,7 @@ pub async fn scroll_capture_run(
     w: f64,
     h: f64,
     silent: Option<bool>,
+    delivery: Option<String>,
 ) -> CmdResult<()> {
     let activity = crate::tray::active_capture(&app)
         .ok_or_else(|| "the scrolling capture is no longer active".to_string())?;
@@ -544,7 +577,10 @@ pub async fn scroll_capture_run(
         Ok(scrolled) => {
             crate::capture::note_scroll_end(&app, scrolled.reason);
             let shot = scrolled.shot;
-            let delivery = crate::capture::Delivery::resolve_for(&app, delivery(silent));
+            let delivery = crate::capture::Delivery::resolve_for(
+                &app,
+                requested_delivery(&app, silent, delivery.as_deref()),
+            );
             crate::capture::finish(
                 &app,
                 shot,
@@ -665,7 +701,7 @@ pub async fn palette_capture(app: AppHandle, mode: String, silent: Option<bool>)
     crate::platform::current().shell.hide_app(&app);
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     // Queues the request for the capture worker; nothing slow runs here.
-    if let Err(e) = crate::capture::trigger(&app, &mode, delivery(silent)) {
+    if let Err(e) = crate::capture::trigger(&app, &mode, requested_delivery(&app, silent, None)) {
         log::error!("palette capture ({mode}) failed: {e}");
     }
     Ok(())

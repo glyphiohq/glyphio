@@ -294,6 +294,17 @@ Golden images for each banner setting at 1x and 2x live in `src-tauri/tests/gold
 (`GLYPHIO_BLESS=1 cargo test banner` regenerates them). The pre-1.3 path, where the page encodes and saves itself,
 stays for one release behind the `legacyDelivery` setting.
 
+What follows a capture is the `captureDelivery` setting: `preview` (the default), `editor` or
+`silent`. A file without it is migrated from the old `silentCapture` switch (silent stays silent,
+everything else becomes the preview), and saving writes `silentCapture` back in step for an older
+build. A preview capture is copied exactly like a silent one, then `windows::open_preview` builds
+`ui/preview` per capture as a summoned surface, never focused, in the bottom-right corner of the
+active display, so it appears over full-screen apps without taking the keyboard. Its Edit opens the
+row in the editor, Discard deletes the row (the clipboard keeps what was copied), and the card
+closes itself after a few seconds unless the pointer is on it (`ui/preview/state.mjs`). Scratch
+rows are purged once no editor, preview or stored-capture window is left showing one. With
+`legacyDelivery` on, the preview falls back to the editor.
+
 ### Scroll stitching
 
 `capture::scroll::stitch` is pure (frames in, rows out). Its `Stitcher` joins frames as the loop

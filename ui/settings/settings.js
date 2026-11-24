@@ -67,6 +67,12 @@ const KIND_HINTS = {
   command: 'Pastes the output of a shell command. Runs on this device only and never syncs.',
 };
 
+const CAPTURE_DELIVERY_OPTIONS = [
+  { value: 'preview', label: 'A small preview (copied)' },
+  { value: 'editor', label: 'The editor' },
+  { value: 'silent', label: 'Nothing (copied silently)' },
+];
+
 const CAPTURE_SECTIONS = [
   { title: 'Capture modes', fields: [
     ['enableVisibleCapture', 'toggle', 'Visible-area (current screen)'],
@@ -75,10 +81,10 @@ const CAPTURE_SECTIONS = [
     ['enableFrontWindowCapture', 'toggle', 'Frontmost window (no picker — e.g. just the browser)'],
     ['enableScrollingCapture', 'toggle', 'Scrolling page / panel (stitch)'],
   ]},
-  { title: 'After a capture', hint: `A silent capture skips the editor and goes straight to the
-    clipboard — <kbd>⌘↩</kbd> in the palette does one on demand. Either way it lands in
-    History.`, fields: [
-    ['silentCapture', 'toggle', 'Make every capture silent by default'],
+  { title: 'After a capture', hint: `The preview copies the capture and offers Edit and Discard
+    for a few seconds. Silent copies it with nothing on screen — <kbd>⌘↩</kbd> in the palette
+    does one on demand. Every capture lands in History.`, fields: [
+    ['captureDelivery', 'select', 'Show', () => CAPTURE_DELIVERY_OPTIONS],
     ['historyMaxCount', 'number', 'Max captures kept'],
     ['downloadSubdir', 'text', 'Download subfolder'], ['filenamePrefix', 'text', 'Filename prefix'],
   ]},

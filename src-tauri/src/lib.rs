@@ -354,6 +354,9 @@ pub fn run() {
             commands::check_for_update,
             commands::install_update,
             commands::capture_delivery_finished,
+            commands::preview_edit,
+            commands::preview_discard,
+            commands::preview_close,
             commands::take_pending_payload,
             commands::list_clips,
             commands::palette_view,
@@ -429,8 +432,11 @@ pub fn run() {
                 if windows::scroll_overlay_destroyed_unexpectedly(&label) {
                     tray::capture_selection_abandoned(app_handle);
                 }
-                // A capture taken with history off lives only as long as the editor showing it.
-                if label == "editor" {
+                // A capture taken with history off lives only as long as a window showing it.
+                let shown = label == "editor"
+                    || label == windows::PREVIEW
+                    || label.starts_with("capture-");
+                if shown && !windows::shows_a_capture(app_handle, &label) {
                     let _ = app_handle.state::<AppState>().history.purge_scratch(None);
                 }
                 windows::sync_activation_policy(app_handle, Some(&label));

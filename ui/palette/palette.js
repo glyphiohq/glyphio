@@ -5,7 +5,7 @@
 // what Enter means:
 //
 //   clipboard  ↩ paste it where you were · ⌘↩ load the clipboard only · ⌘P pin · ⌘⌫ forget
-//   capture    ↩ take the shot into the editor · ⌘↩ straight to the clipboard
+//   capture    ↩ take the shot and show it · ⌘↩ straight to the clipboard
 //   snippets   ↩ expand into the app you came from · ⌘↩ copy the body
 //
 // Everything that leaves this window goes through a Rust command that hides the palette and

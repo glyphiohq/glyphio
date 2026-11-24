@@ -130,6 +130,8 @@ pub(crate) fn wants_browser_details(app: &AppHandle) -> bool {
 /// means "however the user has it configured".
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Delivery {
+    /// Copy it, then show a small preview with Edit and Discard over whatever is on screen.
+    Preview,
     /// Open the editor, where the capture can be annotated before it goes anywhere.
     Editor,
     /// Straight to the clipboard and history, no window.
@@ -144,23 +146,62 @@ impl Delivery {
     }
 
     fn resolve(app: &AppHandle, asked: Option<Delivery>) -> Delivery {
-        asked.unwrap_or_else(|| {
-            if app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .unwrap()
-                .silent_capture
-            {
-                Delivery::Silent
-            } else {
-                Delivery::Editor
-            }
-        })
+        asked.unwrap_or_else(|| Self::configured(app))
+    }
+
+    /// The user's setting.
+    pub fn configured(app: &AppHandle) -> Delivery {
+        let setting = app.state::<AppState>().settings.lock().unwrap().capture_delivery;
+        Self::from(setting)
+    }
+
+    /// "Show me this one": the configured surface, or the editor when the default shows
+    /// nothing. The palette's plain Enter, as opposed to its straight-to-clipboard ⌘Enter.
+    pub fn shown(app: &AppHandle) -> Delivery {
+        match Self::configured(app) {
+            Delivery::Silent => Delivery::Editor,
+            other => other,
+        }
     }
 
     pub fn is_silent(self) -> bool {
         self == Delivery::Silent
+    }
+
+    /// Whether the editor page receives this capture. The other two are copied natively and
+    /// never hand the pending capture to a page.
+    pub fn is_editor(self) -> bool {
+        self == Delivery::Editor
+    }
+
+    /// The query value the scrolling overlay carries and hands back.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Delivery::Preview => "preview",
+            Delivery::Editor => "editor",
+            Delivery::Silent => "silent",
+        }
+    }
+
+    /// Parse [`Delivery::as_str`]; anything else is `None`, i.e. "as configured".
+    pub fn parse(value: &str) -> Option<Delivery> {
+        match value {
+            "preview" => Some(Delivery::Preview),
+            "editor" => Some(Delivery::Editor),
+            "silent" => Some(Delivery::Silent),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::settings::CaptureDelivery> for Delivery {
+    fn from(setting: crate::settings::CaptureDelivery) -> Self {
+        use crate::settings::CaptureDelivery as C;
+        match setting {
+            C::Preview => Delivery::Preview,
+            C::Editor => Delivery::Editor,
+            C::Silent => Delivery::Silent,
+        }
     }
 }
 
@@ -554,9 +595,16 @@ pub fn finish(
         None => encode_png(&shot)?,
     };
     trace::mark(trace::Stage::Encode);
-    let silent = delivery.is_silent();
     let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let legacy = app.state::<AppState>().settings.lock().unwrap().legacy_delivery;
+    // The preview shows a capture the native path already saved and copied; the legacy page
+    // does both itself, so there it falls back to the editor.
+    let delivery = if legacy && delivery == Delivery::Preview {
+        Delivery::Editor
+    } else {
+        delivery
+    };
+    let silent = delivery.is_silent();
     let mut native_row = None;
     let (data_url, history_id, file_path) = if legacy {
         let data_url = format!(
@@ -585,18 +633,27 @@ pub fn finish(
         history_id,
         file_path,
     };
+    let pageless = !delivery.is_editor();
     let session_id =
-        crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
-    // A silent capture with the native path needs no page at all: banner, clipboard and the
-    // menu-bar outcome are all done here.
-    if let (true, Some(row)) = (silent, native_row) {
+        crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(pageless), pending)?;
+    // Silent and preview captures on the native path need no editor page: banner, clipboard
+    // and the menu-bar outcome are all done here, and the preview only shows the result.
+    if let (true, Some(row)) = (pageless, native_row) {
         let copied = copy_with_banner(app, &shot, &png, &row);
-        trace::mark(trace::Stage::Present);
-        trace::finish();
         let error = copied.err().map(|e| format!("Clipboard copy failed: {e:#}"));
         if let Some(e) = &error {
             log::warn!("{e}");
         }
+        if delivery == Delivery::Preview {
+            let (app2, id, failed) = (app.clone(), row.id.clone(), error.clone());
+            if let Err(e) = on_main(app, move || {
+                crate::windows::open_preview(&app2, &id, failed.as_deref())
+            }) {
+                log::warn!("could not show the capture preview: {e:#}");
+            }
+        }
+        trace::mark(trace::Stage::Present);
+        trace::finish();
         crate::tray::capture_delivery_finished(app, session_id.as_str(), true, Some(row.id), error);
         return Ok(());
     }

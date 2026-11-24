@@ -1776,7 +1776,7 @@ function buildFilename() {
 async function retry() {
   setStatus('Re-capturing…', 'info');
   // Re-taking a capture from the editor lands in the editor, whatever the default delivery.
-  await invoke('trigger_capture', { mode: meta.mode, silent: false });
+  await invoke('trigger_capture', { mode: meta.mode, delivery: 'editor' });
   // The native adapter navigates this window to the new delivery-session id.
 }
 

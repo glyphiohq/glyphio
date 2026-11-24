@@ -315,6 +315,7 @@ pub fn run() {
             commands::update_capture,
             commands::list_captures,
             commands::get_capture,
+            commands::render_banner_strip,
             commands::read_capture_data_url,
             commands::save_file,
             commands::copy_image_to_clipboard,

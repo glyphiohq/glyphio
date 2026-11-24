@@ -9,7 +9,7 @@ use std::time::Duration;
 use image::RgbaImage;
 
 use super::{
-    AppShell, Autostart, BrowserMeta, DisplayBounds, FrontWindow, InputInjector, Installation, PageGeometry,
+    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
     PageInspector, Pasteboard, PermissionKind, Permissions, PickKind, ProcessControl, Progress, RegionPicker,
     ScreenCapturer, WindowQuery,
 };
@@ -32,6 +32,9 @@ pub struct Fake {
     pub login_item: Mutex<bool>,
     pub read_only: bool,
     pub bundle_ids: Vec<(PathBuf, String)>,
+    /// What [`Pasteboard::write_png`] was given; `refuse_copy` makes it fail.
+    pub copied: Mutex<Vec<Vec<u8>>>,
+    pub refuse_copy: bool,
 }
 
 impl Fake {
@@ -147,6 +150,19 @@ impl Pasteboard for Fake {
     }
     fn is_concealed(&self) -> bool {
         self.concealed
+    }
+    fn write_png(&self, png: &[u8]) -> anyhow::Result<()> {
+        if self.refuse_copy {
+            anyhow::bail!("the pasteboard refused the image");
+        }
+        self.copied.lock().unwrap().push(png.to_vec());
+        Ok(())
+    }
+}
+
+impl LocaleDates for Fake {
+    fn format(&self, millis: i64, date: DateStyle, time: DateStyle, locale: Option<&str>, zone: Option<&str>) -> Option<String> {
+        Some(format!("{millis} {date:?}/{time:?} {} {}", locale.unwrap_or("-"), zone.unwrap_or("-")))
     }
 }
 

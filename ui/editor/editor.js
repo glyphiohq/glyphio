@@ -613,15 +613,62 @@ async function render(_options = {}) {
   // Recompositing changes the canvas geometry — a live OCR overlay would misalign.
   if (ocrModeActive) exitOcrMode();
 
-  lastBannerPxH = artifact.render(({ content, metadata, banner }) => compositeBanner(canvas, content, {
-    meta: metadata,
-    settings,
-    note: banner.note,
-    enabled: banner.enabled,
-  }));
+  const { content, metadata, banner } = state;
+  const strip = banner.enabled ? await nativeBannerStrip(metadata, banner.note, content.width) : null;
+  if (strip === undefined) {
+    // The app could not draw it (an older build, or an error): draw it here as before.
+    lastBannerPxH = compositeBanner(canvas, content, {
+      meta: metadata,
+      settings,
+      note: banner.note,
+      enabled: banner.enabled,
+    });
+  } else {
+    lastBannerPxH = stackBanner(canvas, strip, content);
+  }
 
   currentBlob = await canvasToPngBlob(canvas);
 
+}
+
+// The banner strip, drawn by the app (capture/banner.rs) so the editor, the clipboard and a
+// silent capture all show the same pixels. Resolves to an ImageBitmap, to null when the
+// settings leave nothing to show, or to undefined when the page should draw it itself.
+async function nativeBannerStrip(metadata, note, width) {
+  try {
+    const bytes = await invoke('render_banner_strip', {
+      request: {
+        capturedAt: metadata.capturedAt,
+        windowTitle: metadata.windowTitle || metadata.title || '',
+        pageTitle: metadata.pageTitle || '',
+        pageUrl: metadata.pageUrl || '',
+        profile: metadata.profile || '',
+        dpr: metadata.dpr || 1,
+        note: note || '',
+        width,
+      },
+    });
+    const buffer = bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes).buffer;
+    if (!buffer.byteLength) return null;
+    return await createImageBitmap(new Blob([buffer], { type: 'image/png' }));
+  } catch (err) {
+    console.warn('native banner unavailable, drawing it in the page:', err);
+    return undefined;
+  }
+}
+
+// `strip` (or nothing) above `content`, on `target`. Returns the strip's height in pixels.
+function stackBanner(target, strip, content) {
+  const stripH = strip ? strip.height : 0;
+  target.width = content.width;
+  target.height = stripH + content.height;
+  const ctx = target.getContext('2d');
+  if (strip) {
+    ctx.drawImage(strip, 0, 0);
+    strip.close?.();
+  }
+  ctx.drawImage(content, 0, stripH);
+  return stripH;
 }
 
 // Banner layout/drawing lives in ../shared/banner.js (shared with the history list).

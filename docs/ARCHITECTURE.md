@@ -286,7 +286,12 @@ is a scratch row in an owner-only `history/scratch` folder, left out of the list
 and removed at launch, when the live editor closes, and when the next capture replaces it. The
 editor and the silent worker then receive the row id and file path, load the image through the
 asset protocol, and only add the banner, copy and acknowledge, so killing the page mid-delivery
-still leaves the capture in history. The pre-1.3 path, where the page encodes and saves itself,
+still leaves the capture in history. The banner strip is drawn natively (`capture::banner`, with
+the bundled Inter font) from the same line rules as `ui/shared/banner.js`; the editor asks for the
+strip with `render_banner_strip`, and a silent capture never loads a page at all: the strip is
+stacked on the stored PNG and written to the pasteboard (PNG plus TIFF) by `capture::finish`.
+Golden images for each banner setting at 1x and 2x live in `src-tauri/tests/golden/banner`
+(`GLYPHIO_BLESS=1 cargo test banner` regenerates them). The pre-1.3 path, where the page encodes and saves itself,
 stays for one release behind the `legacyDelivery` setting.
 
 ### Scroll stitching

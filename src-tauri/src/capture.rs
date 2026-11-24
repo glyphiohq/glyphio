@@ -18,6 +18,7 @@
 //! full port plan, including the one piece with no Windows equivalent (macOS gives us its
 //! interactive window picker for free; Windows has nothing like it).
 
+pub mod banner;
 pub mod delivery;
 pub mod diag;
 pub mod lifecycle;
@@ -556,6 +557,7 @@ pub fn finish(
     let silent = delivery.is_silent();
     let captured_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let legacy = app.state::<AppState>().settings.lock().unwrap().legacy_delivery;
+    let mut native_row = None;
     let (data_url, history_id, file_path) = if legacy {
         let data_url = format!(
             "data:image/png;base64,{}",
@@ -564,7 +566,9 @@ pub fn finish(
         (data_url, String::new(), String::new())
     } else {
         let row = persist_native(app, &shot, mode, &captured_at, &png)?;
-        (String::new(), row.id, row.full_path)
+        let ids = (String::new(), row.id.clone(), row.full_path.clone());
+        native_row = Some(row);
+        ids
     };
     let pending = PendingCapture {
         png_data_url: data_url,
@@ -572,10 +576,10 @@ pub fn finish(
         height: shot.height,
         dpr: shot.dpr,
         mode: mode.as_str().to_string(),
-        title: shot.title,
-        page_title: shot.browser.page_title,
-        page_url: shot.browser.url,
-        profile: shot.browser.profile,
+        title: shot.title.clone(),
+        page_title: shot.browser.page_title.clone(),
+        page_url: shot.browser.url.clone(),
+        profile: shot.browser.profile.clone(),
         captured_at,
         silent,
         history_id,
@@ -583,6 +587,19 @@ pub fn finish(
     };
     let session_id =
         crate::tray::capture_completed(app, activity, DeliveryRoute::from_silent(silent), pending)?;
+    // A silent capture with the native path needs no page at all: banner, clipboard and the
+    // menu-bar outcome are all done here.
+    if let (true, Some(row)) = (silent, native_row) {
+        let copied = copy_with_banner(app, &shot, &png, &row);
+        trace::mark(trace::Stage::Present);
+        trace::finish();
+        let error = copied.err().map(|e| format!("Clipboard copy failed: {e:#}"));
+        if let Some(e) = &error {
+            log::warn!("{e}");
+        }
+        crate::tray::capture_delivery_finished(app, session_id.as_str(), true, Some(row.id), error);
+        return Ok(());
+    }
     // Only the window needs the main thread; the encoding above does not.
     let app = app.clone();
     let handed_off = on_main(&app.clone(), move || {
@@ -632,6 +649,48 @@ fn persist_native(
         let _ = state.history.purge_scratch(Some(&row.id));
     }
     Ok(row)
+}
+
+/// Put the capture on the clipboard as the editor would have: with the banner the settings ask
+/// for, drawn natively. With no banner the stored PNG is copied as it is, with no re-encode.
+pub(crate) fn copy_with_banner(
+    app: &AppHandle,
+    shot: &Shot,
+    png: &[u8],
+    row: &crate::history::CaptureMeta,
+) -> anyhow::Result<()> {
+    let style = banner::Style::from(&*app.state::<AppState>().settings.lock().unwrap());
+    let png = banner_png(&style, row, shot, png, &*platform::current().dates)?;
+    platform::current().pasteboard.write_png(&png)
+}
+
+/// The capture as it is copied: the stored PNG, with the banner strip above it when there is one.
+pub(crate) fn banner_png(
+    style: &banner::Style,
+    row: &crate::history::CaptureMeta,
+    shot: &Shot,
+    png: &[u8],
+    dates: &dyn platform::LocaleDates,
+) -> anyhow::Result<Vec<u8>> {
+    let meta = banner::Meta::from_row(row);
+    let strip = if row.banner_enabled {
+        banner::render_strip(style, &meta, &row.note, shot.width, dates)
+    } else {
+        None
+    };
+    let Some(strip) = strip else {
+        return Ok(png.to_vec());
+    };
+    let content = if shot.rgba.len() as u64 == u64::from(shot.width) * u64::from(shot.height) * 4 && !shot.rgba.is_empty() {
+        image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba.clone())
+            .ok_or_else(|| anyhow!("capture buffer size mismatch"))?
+    } else {
+        image::load_from_memory(png)?.to_rgba8()
+    };
+    let out = banner::composite(Some(&strip), &content);
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    out.write_to(&mut bytes, image::ImageFormat::Png)?;
+    Ok(bytes.into_inner())
 }
 
 /// The history row for a capture as it was taken: no note yet, banner on.
@@ -752,6 +811,38 @@ mod native_delivery_tests {
         let encoded = Shot { rgba: Vec::new(), png: Some(png.clone()), ..shot(640, 100) };
         let from_png = image::load_from_memory(&thumbnail_png(&encoded, &png, 320).unwrap()).unwrap();
         assert_eq!((from_png.width(), from_png.height()), (320, 50));
+    }
+
+    #[test]
+    fn a_silent_capture_is_copied_with_its_banner_or_as_stored() {
+        let s = shot(40, 10);
+        let png = encode_png(&s).unwrap();
+        let mut row = crate::history::CaptureMeta {
+            id: "x".into(),
+            captured_at: "2026-11-24T01:29:55.000Z".into(),
+            url: "Window".into(),
+            title: "Window".into(),
+            page_title: String::new(),
+            page_url: String::new(),
+            profile: String::new(),
+            mode: "visible".into(),
+            image_width_px: 40,
+            image_height_px: 10,
+            dpr: 1.0,
+            size_bytes: 0,
+            full_path: String::new(),
+            thumb_path: String::new(),
+            note: String::new(),
+            banner_enabled: true,
+            banner_baked: false,
+        };
+        let style = banner::Style::from(&crate::settings::Settings::default());
+        let dates = crate::platform::fake::Fake::default();
+        let with = image::load_from_memory(&banner_png(&style, &row, &s, &png, &dates).unwrap()).unwrap();
+        assert_eq!((with.width(), with.height()), (40, 10 + 72), "banner strip above the capture");
+
+        row.banner_enabled = false;
+        assert_eq!(banner_png(&style, &row, &s, &png, &dates).unwrap(), png, "copied as stored, no re-encode");
     }
 
     #[test]

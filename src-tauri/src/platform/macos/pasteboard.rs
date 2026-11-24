@@ -180,3 +180,32 @@ pub fn can_send_paste() -> bool {
         true
     }
 }
+
+/// Replace the clipboard with a PNG, plus TIFF for apps that only paste that.
+pub fn write_png(png: &[u8]) -> anyhow::Result<()> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{NSImage, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF};
+    use objc2_foundation::{NSArray, NSData};
+
+    let data = NSData::with_bytes(png);
+    // TIFF is what AppKit produces from the image itself; an app that only reads TIFF still
+    // gets the capture. Built before the pasteboard is touched, so a failure leaves it as it was.
+    let tiff = NSImage::initWithData(NSImage::alloc(), &data).and_then(|img| img.TIFFRepresentation());
+    let pb = NSPasteboard::generalPasteboard();
+    // SAFETY: the type constants are immutable statics AppKit exports.
+    let (png_type, tiff_type) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
+    let types = match &tiff {
+        Some(_) => NSArray::from_slice(&[png_type, tiff_type]),
+        None => NSArray::from_slice(&[png_type]),
+    };
+    pb.clearContents();
+    // SAFETY: no owner; the data is provided immediately below.
+    unsafe { pb.declareTypes_owner(&types, None) };
+    if !pb.setData_forType(Some(&data), png_type) {
+        anyhow::bail!("macOS did not accept the image on the clipboard");
+    }
+    if let Some(tiff) = tiff {
+        let _ = pb.setData_forType(Some(&tiff), tiff_type);
+    }
+    Ok(())
+}

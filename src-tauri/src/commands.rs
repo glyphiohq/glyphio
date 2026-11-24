@@ -328,6 +328,53 @@ pub fn list_captures(state: State<AppState>) -> CmdResult<Vec<CaptureMeta>> {
     state.history.list().map_err(err)
 }
 
+/// What the editor knows about the capture it is showing, for [`render_banner_strip`].
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BannerRequest {
+    pub captured_at: String,
+    #[serde(default)]
+    pub window_title: String,
+    #[serde(default)]
+    pub page_title: String,
+    #[serde(default)]
+    pub page_url: String,
+    #[serde(default)]
+    pub profile: String,
+    pub dpr: f64,
+    #[serde(default)]
+    pub note: String,
+    pub width: u32,
+}
+
+/// The banner strip for a capture `width` pixels wide, as PNG bytes, drawn natively with the
+/// current settings. Empty when there is nothing to show; the editor then shows the capture alone.
+#[tauri::command]
+pub async fn render_banner_strip(state: State<'_, AppState>, request: BannerRequest) -> CmdResult<tauri::ipc::Response> {
+    let style = crate::capture::banner::Style::from(&*state.settings.lock().unwrap());
+    let png = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let meta = crate::capture::banner::Meta {
+            captured_at: request.captured_at,
+            window_title: request.window_title,
+            page_title: request.page_title,
+            page_url: request.page_url,
+            profile: request.profile,
+            dpr: request.dpr,
+        };
+        let dates = &*crate::platform::current().dates;
+        let Some(strip) = crate::capture::banner::render_strip(&style, &meta, &request.note, request.width, dates) else {
+            return Ok(Vec::new());
+        };
+        let mut out = std::io::Cursor::new(Vec::new());
+        strip.write_to(&mut out, image::ImageFormat::Png)?;
+        Ok(out.into_inner())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    Ok(tauri::ipc::Response::new(png))
+}
+
 /// One stored capture (history or scratch), for the editor opening it. `None` once it has been
 /// deleted or evicted.
 #[tauri::command]

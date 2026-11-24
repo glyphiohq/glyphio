@@ -13,6 +13,7 @@ setup guides.
 | Verify capture and input behavior on a signed macOS build | [macOS release verification](VERIFICATION.md) |
 | Implement a compatible sync service or client | [Sync protocol v1](SYNC-PROTOCOL.md) |
 | Scope a Windows port | [Windows port](WINDOWS.md) |
+| Linux support and the portable copy | [Linux support](LINUX.md) |
 
 Repository-level guides live alongside the code they describe:
 

@@ -63,6 +63,10 @@ objc2 = "0.6"
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services"] }
 
+# Linux only: `src/platform/linux`.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [features]
 # macOS diagnostics that call the OS directly (`src/platform/macos/probes`). Off by default so
 # other targets never try to build them; the macOS CI job turns it on.

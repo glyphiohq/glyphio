@@ -1,4 +1,6 @@
-//! The application log: `~/Library/Logs/Glyphio/glyphio.log`, plus stderr.
+//! The application log, plus stderr: `~/Library/Logs/Glyphio/glyphio.log` on macOS,
+//! `~/.local/state/Glyphio/glyphio.log` on Linux, and `logs/` inside a portable copy's data
+//! folder (`paths::location`).
 //!
 //! A Finder-launched app's stderr goes nowhere, which once made capture failures
 //! undiagnosable — the file is the record. That makes it a long-lived artifact on disk, so it
@@ -37,7 +39,7 @@ pub fn init() {
 }
 
 fn log_path() -> Option<PathBuf> {
-    let dir = dirs::home_dir()?.join("Library/Logs/Glyphio");
+    let dir = crate::paths::location().logs.clone();
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("glyphio.log"))
 }

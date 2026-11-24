@@ -128,6 +128,39 @@ jobs:
       - name: UI behavioral tests
         run: npm test
 
+  # Linux is being built up under src/platform/linux (docs/LINUX.md). This job builds and tests
+  # the whole app there, so the Linux pieces and the shared code stay green as they land.
+  app-linux:
+    name: App (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: System libraries for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+      # See the macOS job: tauri-build insists the sidecars exist.
+      - name: Placeholder sidecars
+        run: |
+          set -euo pipefail
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          for name in glyphio-engine glyphio-ocr; do
+            printf '#!/bin/sh\necho "CI placeholder, not a real sidecar" >&2\nexit 1\n' > "src-tauri/binaries/${name}-${triple}"
+            chmod +x "src-tauri/binaries/${name}-${triple}"
+          done
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+
   server:
     name: Sync server
     runs-on: ubuntu-latest

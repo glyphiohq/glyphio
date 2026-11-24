@@ -18,6 +18,21 @@ pub fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Make the folder `dir` usable by its owner only (mode 0700 on Unix). Fails on a folder another
+/// account owns.
+pub fn restrict_dir_to_owner(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
 /// Open `path` for appending, creating it owner-only. A file an older build made readable by
 /// others is fixed up too, since the creation mode only applies to a new file.
 pub fn open_private_append(path: &Path) -> std::io::Result<std::fs::File> {

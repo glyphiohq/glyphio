@@ -78,6 +78,11 @@ pub fn app_restart(app: &tauri::AppHandle) -> ! {
 /// Settle the login item once at launch: clear what older versions left behind, then read the
 /// native item's status and register it if the setting is on and nothing is registered.
 fn login_item_at_launch(app: &tauri::AppHandle, want: bool, existing_install: bool) {
+    // A portable copy runs from wherever it was plugged in; it never registers itself.
+    if paths::location().portable {
+        log::info!("login item at launch: skipped for a portable copy");
+        return;
+    }
     let autostart = &platform::current().autostart;
     let state = app.state::<AppState>();
     let marker = state.paths.root.join(".login-item-migrated");
@@ -170,6 +175,14 @@ pub fn run() {
         .setup(move |app| {
             // First, while the system's launch event is still the current one.
             startup::note_launch_event();
+
+            // The images the windows show come from the data root. The static asset scope in
+            // tauri.conf.json covers the macOS profile path only; Linux keeps the root under
+            // `~/.local/share` and a portable copy keeps it beside the app.
+            let root = app.state::<AppState>().paths.root.clone();
+            if let Err(e) = app.asset_protocol_scope().allow_directory(&root, true) {
+                log::warn!("could not allow the data folder for images: {e}");
+            }
             let open_settings_on_start = startup::should_open_settings(std::env::args());
 
             // Start as a menu-bar agent; opening a window promotes us to a regular app and
@@ -323,6 +336,7 @@ pub fn run() {
             onboarding::onboarding_update,
             onboarding::open_setup,
             install::install_status,
+            paths::app_mode,
             shortcuts::shortcut_test,
             commands::diagnostics,
             install::install_move,

@@ -195,7 +195,16 @@ pub fn get_settings(state: State<AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
+/// Why a portable copy has no login item, for Settings and setup.
+pub const PORTABLE_LOGIN_NOTE: &str =
+    "This is a portable copy of Glyphio, so it doesn't open at login. Install it to use Launch at Login.";
+
 pub(crate) fn set_login_item(_app: &AppHandle, state: &AppState, want: bool) -> CmdResult<()> {
+    if crate::paths::location().portable {
+        // Turning it off is always true already; turning it on would point login at a folder
+        // that may be on a stick in someone's pocket.
+        return if want { Err(PORTABLE_LOGIN_NOTE.into()) } else { Ok(()) };
+    }
     let outcome = crate::platform::current().autostart.set_enabled(want);
     let failure = match &outcome {
         crate::autostart::Outcome::Failed(e) => Some(e.clone()),
@@ -217,6 +226,9 @@ pub(crate) fn set_login_item(_app: &AppHandle, state: &AppState, want: bool) -> 
 #[tauri::command]
 pub fn login_item_notice(state: State<AppState>) -> Option<String> {
     use crate::autostart::Outcome;
+    if crate::paths::location().portable {
+        return Some(PORTABLE_LOGIN_NOTE.into());
+    }
     let outcome = state.login_item_outcome.lock().unwrap().clone();
     let note = state.login_item_note.lock().unwrap().clone();
     let first = match outcome {

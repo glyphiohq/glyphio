@@ -43,6 +43,7 @@ const state = {
   skipped: [],
   grants: { [PERMISSION_KIND.ACCESSIBILITY]: null, [PERMISSION_KIND.SCREEN_RECORDING]: null },
   install: null, // native install status: disk image, translocation, other copies
+  portable: false, // a portable copy has no login item to offer
 };
 
 const $ = (id) => document.getElementById(id);
@@ -124,9 +125,11 @@ function render() {
       <p class="tryit" data-phase="${state.tryIt}">${state.tryIt === TRY_IT.DONE
         ? '✓ That worked — your capture was delivered.'
         : `Try it: press <kbd>${snip.keys}</kbd> and drag over something.`}</p>
-      <label class="switch"><input type="checkbox" id="login" ${state.loginItem ? 'checked' : ''}>
+      ${state.portable
+        ? '<p class="note">This is a portable copy, so it won’t open at login. Its data stays in the “Glyphio Data” folder beside it.</p>'
+        : `<label class="switch"><input type="checkbox" id="login" ${state.loginItem ? 'checked' : ''}>
         <span>Launch Glyphio at login</span></label>
-      <p class="note">${loginCopy.explanation}</p>`;
+      <p class="note">${loginCopy.explanation}</p>`}`;
   } else {
     const left = state.skipped.length;
     const cards = [
@@ -262,7 +265,7 @@ async function chooseTeam(choice) {
 }
 
 $('continue').addEventListener('click', async () => {
-  if (state.step === STEP.SHORTCUTS) {
+  if (state.step === STEP.SHORTCUTS && !state.portable) {
     // The login item is registered here, once the user has seen what it does and chosen.
     try {
       const note = await invoke('onboarding_set_login_item', { want: state.loginItem });
@@ -300,6 +303,7 @@ async function init() {
   }
   state.settings = await invoke('get_settings');
   state.shortcutStatus = await invoke('shortcut_status');
+  state.portable = Boolean((await invoke('app_mode').catch(() => null))?.portable);
   if (platform === 'macos') state.install = await invoke('install_status').catch(() => null);
   await listen('capture-delivered', () => {
     const before = state.tryIt;

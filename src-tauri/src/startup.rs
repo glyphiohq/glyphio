@@ -6,7 +6,7 @@ const LEGACY_LOGIN_LAUNCH_ARGUMENT: &str = "--launch-at-login";
 
 /// `keyAELaunchedAsLogInItem`: the property of the launch Apple event when the system started us
 /// because the user logged in.
-const LAUNCHED_AS_LOGIN_ITEM: u32 = u32::from_be_bytes(*b"lgit");
+pub(crate) const LAUNCHED_AS_LOGIN_ITEM: u32 = u32::from_be_bytes(*b"lgit");
 /// Whether the launch event's property says "started by logging in".
 pub fn is_login_item_property(property: Option<u32>) -> bool {
     property == Some(LAUNCHED_AS_LOGIN_ITEM)

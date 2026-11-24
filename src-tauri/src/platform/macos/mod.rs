@@ -19,12 +19,15 @@ const KEY_AE_PROP_DATA: u32 = u32::from_be_bytes(*b"prdt");
 
 mod autostart;
 mod capture;
+mod dates;
 mod inspect;
 mod input;
 mod install;
+mod keyboard;
 mod pasteboard;
 mod permissions;
 mod process;
+mod session;
 mod shell;
 
 pub fn platform() -> Platform {
@@ -40,6 +43,8 @@ pub fn platform() -> Platform {
         process: Box::new(process::Os),
         shell: Box::new(Macos),
         install: Box::new(install::Os),
+        dates: Box::new(Macos),
+        keyboard: Box::new(Macos),
     }
 }
 
@@ -88,6 +93,9 @@ impl WindowQuery for Macos {
     fn foreground_app_name(&self) -> String {
         pasteboard::foreground_app()
     }
+    fn session_locked(&self) -> bool {
+        session::locked()
+    }
 }
 
 impl PageInspector for Macos {
@@ -129,6 +137,28 @@ impl Pasteboard for Macos {
     }
     fn is_concealed(&self) -> bool {
         pasteboard::is_concealed()
+    }
+    fn write_png(&self, png: &[u8]) -> anyhow::Result<()> {
+        pasteboard::write_png(png)
+    }
+}
+
+impl super::LocaleDates for Macos {
+    fn format(
+        &self,
+        millis: i64,
+        date: super::DateStyle,
+        time: super::DateStyle,
+        locale: Option<&str>,
+        zone: Option<&str>,
+    ) -> Option<String> {
+        dates::format(millis, date, time, locale, zone)
+    }
+}
+
+impl super::KeyboardLayout for Macos {
+    fn key_labels(&self) -> Option<Vec<(String, String)>> {
+        keyboard::key_labels()
     }
 }
 

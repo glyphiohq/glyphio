@@ -47,8 +47,16 @@ pub struct Settings {
     pub download_subdir: String,
     pub filename_prefix: String,
     pub auto_copy_on_open: bool,
-    /// Capture straight to the clipboard and history without opening the editor.
+    /// What follows a capture: a small preview, the full editor, or nothing on screen. The
+    /// capture is on the clipboard and in History in every case except the editor's.
+    pub capture_delivery: CaptureDelivery,
+    /// The pre-1.3 switch for "silent by default". Read once to migrate a settings file that
+    /// has no `captureDelivery`, and written back in step with it so an older build that is
+    /// opened again still knows whether captures were silent. Not shown in Settings.
     pub silent_capture: bool,
+    /// Deliver captures the pre-1.3 way: the editor page encodes and saves to history itself.
+    /// Kept for one release as a fallback for the native path (`capture::persist_native`).
+    pub legacy_delivery: bool,
     /// Ask GitHub on launch whether a newer Glyphio exists. The only network call an
     /// otherwise-unconfigured app makes, so it is a setting rather than an assumption.
     pub check_for_updates: bool,
@@ -134,6 +142,19 @@ pub struct Settings {
     pub scroll_max_height_pt: u32,
 }
 
+/// What appears after a capture. Stored as `"preview"` | `"editor"` | `"silent"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureDelivery {
+    /// Copied, with a small preview offering Edit and Discard.
+    #[default]
+    Preview,
+    /// The full editor, before anything is copied.
+    Editor,
+    /// Copied, nothing on screen.
+    Silent,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -161,7 +182,9 @@ impl Default for Settings {
             download_subdir: "Glyphio".into(),
             filename_prefix: "glyphio".into(),
             auto_copy_on_open: true,
+            capture_delivery: CaptureDelivery::Preview,
             silent_capture: false,
+            legacy_delivery: false,
             check_for_updates: true,
             launch_at_login: true,
             history_enabled: true,
@@ -227,7 +250,12 @@ impl Settings {
     /// made silent the default, or given a mode a straight-to-clipboard key. The tray and the
     /// palette can still ask for one out of the blue — that just creates the worker then.
     pub fn wants_silent_worker(&self) -> bool {
-        self.silent_capture
+        // The native path copies a silent capture without a page, so only the legacy
+        // delivery still runs one in the hidden editor.
+        if !self.legacy_delivery {
+            return false;
+        }
+        self.capture_delivery == CaptureDelivery::Silent
             || self
                 .capture_shortcuts()
                 .iter()
@@ -269,6 +297,7 @@ impl Settings {
             return Self::default();
         };
         let mut loaded: Self = serde_json::from_str(&text).unwrap_or_default();
+        loaded.migrate_delivery(&text);
         // A file written before setup existed belongs to an established install.
         if !text.contains("\"onboardingCompleted\"") {
             loaded.onboarding_completed = true;
@@ -276,9 +305,23 @@ impl Settings {
         loaded
     }
 
+    /// A file written before `captureDelivery` existed only knew "silent or not". Silent stays
+    /// silent; everything else gets the preview, which replaced the editor as the default.
+    fn migrate_delivery(&mut self, text: &str) {
+        if !text.contains("\"captureDelivery\"") {
+            self.capture_delivery = if self.silent_capture {
+                CaptureDelivery::Silent
+            } else {
+                CaptureDelivery::Preview
+            };
+        }
+    }
+
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut out = self.clone();
+        out.silent_capture = out.capture_delivery == CaptureDelivery::Silent;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&out)?)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     }
@@ -342,13 +385,23 @@ mod tests {
     fn a_silent_hotkey_parks_the_worker() {
         assert!(!Settings::default().wants_silent_worker());
 
-        let with_key: Settings =
-            serde_json::from_str(r#"{"shortcutCaptureSnipSilent": "Alt+Shift+C"}"#).unwrap();
+        let with_key: Settings = serde_json::from_str(
+            r#"{"shortcutCaptureSnipSilent": "Alt+Shift+C", "legacyDelivery": true}"#,
+        )
+        .unwrap();
         assert!(with_key.wants_silent_worker());
-        assert!(
-            !with_key.silent_capture,
-            "the ordinary keys still open the editor"
+        assert_ne!(
+            with_key.capture_delivery,
+            super::CaptureDelivery::Silent,
+            "the ordinary keys still show the capture"
         );
+
+        // The native path copies without a page, so it never parks one.
+        let native: Settings = serde_json::from_str(
+            r#"{"shortcutCaptureSnipSilent": "Alt+Shift+C", "captureDelivery": "silent"}"#,
+        )
+        .unwrap();
+        assert!(!native.wants_silent_worker());
 
         // And that key dispatches the same mode, delivered silently.
         let fired = with_key.capture_shortcuts();
@@ -357,6 +410,38 @@ mod tests {
             .find(|(acc, _, _)| *acc == "Alt+Shift+C")
             .expect("registered");
         assert_eq!((hit.1, hit.2), ("snip", true));
+    }
+
+    /// The old silent switch becomes the delivery setting once, and is kept in step after.
+    #[test]
+    fn the_silent_switch_migrates_to_the_delivery_setting() {
+        use super::CaptureDelivery;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let load = |json: &str| {
+            std::fs::write(&path, json).unwrap();
+            Settings::load(&path).capture_delivery
+        };
+        assert_eq!(load(r#"{"silentCapture": true}"#), CaptureDelivery::Silent);
+        assert_eq!(load(r#"{"silentCapture": false}"#), CaptureDelivery::Preview);
+        assert_eq!(load(r#"{"showTimestamp": true}"#), CaptureDelivery::Preview);
+        // Once the new key exists it wins over a stale old one.
+        assert_eq!(
+            load(r#"{"silentCapture": true, "captureDelivery": "editor"}"#),
+            CaptureDelivery::Editor
+        );
+        assert_eq!(Settings::default().capture_delivery, CaptureDelivery::Preview);
+
+        // Saving writes the old key to match, for a build that predates the new one.
+        let s = Settings {
+            capture_delivery: CaptureDelivery::Silent,
+            ..Settings::default()
+        };
+        s.save(&path).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["captureDelivery"], "silent");
+        assert_eq!(raw["silentCapture"], true);
     }
 
     /// Nothing is read from the browser until a line that needs it is switched on.

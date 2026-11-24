@@ -11,8 +11,10 @@ release.
 
 ## Option 1 — DMG from GitHub Releases
 
-1. Download `Glyphio_<version>_aarch64.dmg` from
-   [Releases](https://github.com/glyphiohq/glyphio/releases).
+1. Download `Glyphio_<version>_universal.dmg` from
+   [Releases](https://github.com/glyphiohq/glyphio/releases). It runs natively on both
+   Apple Silicon and Intel Macs with macOS 14 (Sonoma) or later. Releases up to 1.2.4 were
+   Apple Silicon only and are named `_aarch64.dmg`.
 2. Verify the checksum against the one in the release notes:
    ```bash
    shasum -a 256 ~/Downloads/Glyphio_*.dmg
@@ -37,7 +39,8 @@ git clone https://github.com/glyphiohq/glyphio.git
 cd glyphio
 npm install
 npm run engine        # build + sign the expansion engine sidecar
-npm run release       # → dist/Glyphio_<version>_<arch>.dmg
+npm run release       # → dist/Glyphio_<version>_universal.dmg
+                      #   (add `-- --native` for a quicker build for this Mac only)
 ```
 
 Requires Rust stable, Node 18+, and macOS Command Line Tools (full Xcode is not needed).

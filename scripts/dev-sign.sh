@@ -40,6 +40,7 @@ TRIPLE="$(rustc -Vv | sed -n 's/host: //p')"
 # Candidate engine binaries to sign (only those that exist are signed).
 CANDIDATES=(
   "$REPO_ROOT/src-tauri/binaries/glyphio-engine-$TRIPLE"
+  "$REPO_ROOT/src-tauri/binaries/glyphio-engine-universal-apple-darwin"
   "$REPO_ROOT/src-tauri/target/debug/glyphio-engine"
   "$REPO_ROOT/src-tauri/target/release/glyphio-engine"
 )

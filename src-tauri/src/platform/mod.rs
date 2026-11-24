@@ -97,6 +97,9 @@ pub trait WindowQuery: Send + Sync {
     fn display_bounds_containing_point(&self, x: f64, y: f64) -> Option<DisplayBounds>;
     /// Name of the application that currently has focus (empty if unknown).
     fn foreground_app_name(&self) -> String;
+    /// Whether the user's session is locked or switched away (fast user switching), so
+    /// nothing is being copied and watchers can rest.
+    fn session_locked(&self) -> bool;
 }
 
 pub trait PageInspector: Send + Sync {
@@ -121,6 +124,35 @@ pub trait InputInjector: Send + Sync {
 pub trait Pasteboard: Send + Sync {
     fn change_counter(&self) -> i64;
     fn is_concealed(&self) -> bool;
+    /// Replace the clipboard with an image: the PNG itself plus a format older apps paste
+    /// (TIFF on macOS).
+    fn write_png(&self, png: &[u8]) -> anyhow::Result<()>;
+}
+
+/// What the keys say on the user's keyboard. Global shortcuts are registered by physical key
+/// (W3C `code` names such as `KeyQ`), so on AZERTY the key that fires `KeyQ` is labelled A.
+pub trait KeyboardLayout: Send + Sync {
+    /// For each character key, its `code` name and what the active layout types with no
+    /// modifiers (`("KeyQ", "a")` on AZERTY). `None` when the platform cannot tell; labels then
+    /// fall back to the US names. On macOS this must be called on the main thread.
+    fn key_labels(&self) -> Option<Vec<(String, String)>>;
+}
+
+/// Length of a date or time in [`LocaleDates::format`], as the OS's own formatters name them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateStyle {
+    Short,
+    Medium,
+    Long,
+}
+
+/// The OS's own date formatting, so a banner timestamp reads the way the user's Mac writes
+/// dates.
+pub trait LocaleDates: Send + Sync {
+    /// `millis` since the epoch, formatted with the given date and time lengths in `locale`
+    /// (or the user's) and `zone` (an IANA name, or the user's). `None` when the platform
+    /// cannot format dates; callers then use a fixed pattern.
+    fn format(&self, millis: i64, date: DateStyle, time: DateStyle, locale: Option<&str>, zone: Option<&str>) -> Option<String>;
 }
 
 pub trait Permissions: Send + Sync {
@@ -194,6 +226,8 @@ pub struct Platform {
     pub process: Box<dyn ProcessControl>,
     pub shell: Box<dyn AppShell>,
     pub install: Box<dyn Installation>,
+    pub dates: Box<dyn LocaleDates>,
+    pub keyboard: Box<dyn KeyboardLayout>,
 }
 
 static CURRENT: OnceLock<Platform> = OnceLock::new();

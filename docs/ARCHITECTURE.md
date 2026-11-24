@@ -111,9 +111,15 @@ Every capture logs one line from `capture/trace.rs`:
 `capture-trace mode=visible acquire=120ms encode=88ms present=4ms total=212ms size=5120x2880`.
 It holds a mode name, fixed stage names and numbers only; the formatter takes no free text, so
 titles, URLs and clipboard content cannot reach it. `acquire` includes the user's selection time
-for picker and scrolling modes. Persist and clipboard happen in the editor page and are not yet
-traced. Launch logs `launch-timing state-built|tray-ready|engine-spawned|setup-done=<ms>` from
-`launch.rs`. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
+for picker and scrolling modes. Persist is traced natively (`Stage::Persist`). Launch logs
+`launch-timing state-built|tray-ready|stores-open|engine-spawned|setup-done=<ms>` from
+`launch.rs`. A launch renders the engine config only when its inputs changed
+(`SnippetStore::render_yaml_if_changed`, with a digest in `.glyphio-render-stamp`), opens History
+and the clipboard store lazily (or off the main thread once the menu bar is up), and a login
+launch after setup builds no web view at all. The Settings window loads its snippet editor
+(`ui/settings/snippet-editor.mjs`) and History view (`history-view.mjs`) with `import()` the
+first time they open, and is destroyed after five minutes hidden; the clipboard watcher slows to
+2 s after a quiet minute and 5 s while the session is locked. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
 (`visible`, `frontWindow` through the real backend) print percentiles.
 
 ### Engine supervision
@@ -277,6 +283,43 @@ Progress ("40%" with an oracle, else a frame count) is written to the active cap
 a capture that ended before the end of the page (limit, stall, pointer) carries the reason into its
 Succeeded presentation. The loop talks to its environment through `LoopControl`, so tests run with
 virtual time. The setting has no UI yet; it is read from `settings.json`.
+
+### Capture delivery
+
+`capture::finish` encodes once and then saves the capture natively (`persist_native`) before any
+window opens: the PNG, a 320 px thumbnail and the history row. With history switched off the row
+is a scratch row in an owner-only `history/scratch` folder, left out of the list and of retention,
+and removed at launch, when the live editor closes, and when the next capture replaces it. The
+editor and the silent worker then receive the row id and file path, load the image through the
+asset protocol, and only add the banner, copy and acknowledge, so killing the page mid-delivery
+still leaves the capture in history. The banner strip is drawn natively (`capture::banner`, with
+the bundled Inter font) from the same line rules as `ui/shared/banner.js`; the editor asks for the
+strip with `render_banner_strip`, and a silent capture never loads a page at all: the strip is
+stacked on the stored PNG and written to the pasteboard (PNG plus TIFF) by `capture::finish`.
+Golden images for each banner setting at 1x and 2x live in `src-tauri/tests/golden/banner`
+(`GLYPHIO_BLESS=1 cargo test banner` regenerates them). The pre-1.3 path, where the page encodes and saves itself,
+stays for one release behind the `legacyDelivery` setting.
+
+What follows a capture is the `captureDelivery` setting: `preview` (the default), `editor` or
+`silent`. A file without it is migrated from the old `silentCapture` switch (silent stays silent,
+everything else becomes the preview), and saving writes `silentCapture` back in step for an older
+build. A preview capture is copied exactly like a silent one, then `windows::open_preview` builds
+`ui/preview` per capture as a summoned surface, never focused, in the bottom-right corner of the
+active display, so it appears over full-screen apps without taking the keyboard. Its Edit opens the
+row in the editor, Discard deletes the row (the clipboard keeps what was copied), and the card
+closes itself after a few seconds unless the pointer is on it (`ui/preview/state.mjs`). Scratch
+rows are purged once no editor, preview or stored-capture window is left showing one. With
+`legacyDelivery` on, the preview falls back to the editor.
+
+Image bytes cross the IPC boundary raw, never as base64: the page sends the PNG as the invoke
+body and the other arguments as percent-encoded JSON in the `x-glyphio-args` header
+(`ui/shared/ipc-bytes.mjs` and `src-tauri/src/ipc_bytes.rs`), and Rust answers with a raw
+`Response` (`read_capture_png`). Every command that reads or writes image or file bytes is async
+and does the work in `spawn_blocking`, thumbnails are made natively from the content PNG
+(`capture::thumbnail_from_png`), and History's Copy and Save composite the banner natively
+(`copy_stored_capture`, `export_stored_capture`). In debug builds `watchdog.rs` posts a no-op to
+the main thread every 100 ms and logs any that run more than 250 ms late, naming the last command
+invoked and a tally of the commands that preceded stalls.
 
 ### Scroll stitching
 

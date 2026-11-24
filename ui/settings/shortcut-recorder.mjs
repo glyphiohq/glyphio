@@ -193,12 +193,44 @@ export function normalizeAccelerator(accelerator) {
   return parsed ? [...parsed.modifiers, parsed.key].join('+') : null;
 }
 
-/** Format an accelerator for a macOS user without changing its persisted representation. */
-export function formatAccelerator(accelerator) {
+// What each physical key types on the user's keyboard layout, as `{ code: text }` from the
+// `keyboard_layout` command. Shortcuts are stored and registered by physical key (the US name
+// of the key in that position), so on AZERTY the stored `Q` is pressed with the key labelled A.
+let activeLayout = null;
+
+/** Use this layout table for every label from now on; `null` goes back to the US names. */
+export function setKeyboardLayout(layout) {
+  activeLayout = layout && typeof layout === 'object' ? layout : null;
+}
+
+/** The W3C `code` of a stored key name: `Q` → `KeyQ`, `1` → `Digit1`, `Comma` → `Comma`. */
+export function keyCode(key) {
+  if (/^[A-Z]$/.test(key)) return `Key${key}`;
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  return key;
+}
+
+/**
+ * What the key is called on `layout`: the character it types there, upper-cased like a
+ * keycap, or the US label when the layout says nothing about it.
+ */
+export function keyLabel(key, layout = activeLayout) {
+  const typed = layout?.[keyCode(key)];
+  if (typeof typed === 'string' && typed.trim() && [...typed].length === 1) {
+    return typed.toLocaleUpperCase();
+  }
+  return DISPLAY_KEYS.get(key) ?? key.replace(/^Numpad/, 'Num ');
+}
+
+/**
+ * Format an accelerator for a macOS user without changing its persisted representation. The
+ * key is named as the active keyboard layout names it (see `setKeyboardLayout`).
+ */
+export function formatAccelerator(accelerator, layout = activeLayout) {
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return accelerator || 'Not set';
   const symbols = { Control: '⌃', Alt: '⌥', Shift: '⇧', Command: '⌘' };
-  const key = DISPLAY_KEYS.get(parsed.key) ?? parsed.key.replace(/^Numpad/, 'Num ');
+  const key = keyLabel(parsed.key, layout);
   return `${parsed.modifiers.map((modifier) => symbols[modifier]).join('')}${key}`;
 }
 

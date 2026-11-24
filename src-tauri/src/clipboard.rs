@@ -38,9 +38,28 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::AppState;
 
-/// How often the counter is checked. Fast enough that the entry is there by the time the
-/// picker opens, slow enough to be invisible: this is an integer comparison, not a read.
+/// How often the counter is checked while the clipboard is in use. Fast enough that the entry
+/// is there by the time the picker opens, slow enough to be invisible: this is an integer
+/// comparison, not a read.
 const POLL: Duration = Duration::from_millis(500);
+/// How often once nothing has been copied for [`IDLE_AFTER`]. A copy after a quiet spell is
+/// at most this late, and the history is only ever opened by a person, so it is never noticed.
+const IDLE_POLL: Duration = Duration::from_secs(2);
+const IDLE_AFTER: Duration = Duration::from_secs(60);
+/// How often to look again while the session is locked or switched away.
+const LOCKED_POLL: Duration = Duration::from_secs(5);
+
+/// The wait before the next look at the clipboard: quick while things are being copied,
+/// slower after a quiet minute, and resting while nobody is at the Mac.
+pub fn next_poll(since_last_change: Duration, locked: bool) -> Duration {
+    if locked {
+        LOCKED_POLL
+    } else if since_last_change < IDLE_AFTER {
+        POLL
+    } else {
+        IDLE_POLL
+    }
+}
 
 /// Largest image worth keeping. A copied screenshot is normal; a copied 200MB layered export
 /// is not something to quietly write to disk on every copy.
@@ -82,13 +101,23 @@ pub fn watch(app: &AppHandle) {
         // Whatever is already on the clipboard at launch was copied before we were asked to
         // watch, so adopt the counter without reading it.
         let seen = AtomicI64::new(crate::platform::current().pasteboard.change_counter());
+        let mut last_change = std::time::Instant::now();
+        let mut wait = POLL;
         loop {
-            std::thread::sleep(POLL);
-            let counter = crate::platform::current().pasteboard.change_counter();
+            std::thread::sleep(wait);
+            let platform = crate::platform::current();
+            let locked = platform.windows.session_locked();
+            wait = next_poll(last_change.elapsed(), locked);
+            if locked {
+                continue; // nobody is copying; don't even read the counter
+            }
+            let counter = platform.pasteboard.change_counter();
             if counter == seen.load(Ordering::Relaxed) {
                 continue;
             }
             seen.store(counter, Ordering::Relaxed);
+            last_change = std::time::Instant::now();
+            wait = POLL;
             if IGNORE.load(Ordering::Relaxed) == counter {
                 continue; // our own write; already in the history
             }
@@ -152,12 +181,20 @@ fn read_clipboard(app: &AppHandle) -> Option<NewClip> {
                 log::debug!("copied text too large to keep ({} bytes)", text.len());
                 return None;
             }
+            // Text in between makes a later copy of the same image a new copy again.
+            LAST_IMAGE.lock().unwrap().0 = None;
             return Some(NewClip::Text(text));
         }
     }
     let image = cb.read_image().ok()?;
     let (w, h) = (image.width(), image.height());
     if w == 0 || h == 0 {
+        return None;
+    }
+    // Copying the same image again (or an app re-asserting it) changes the counter but not
+    // the pixels; the PNG encode is the expensive part, so skip it for a repeat.
+    if !LAST_IMAGE.lock().unwrap().is_new(w, h, image.rgba()) {
+        log::debug!("copied image unchanged since the last one — not converted again");
         return None;
     }
     let rgba = image.rgba().to_vec();
@@ -169,6 +206,24 @@ fn read_clipboard(app: &AppHandle) -> Option<NewClip> {
         return None;
     }
     Some(NewClip::Image { png, width: w, height: h })
+}
+
+static LAST_IMAGE: std::sync::Mutex<SeenImage> = std::sync::Mutex::new(SeenImage(None));
+
+/// The last image the watcher converted, as a digest of its size and pixels.
+pub struct SeenImage(Option<(u32, u32, u64)>);
+
+impl SeenImage {
+    /// Whether these pixels differ from the last image seen; remembers them either way.
+    pub fn is_new(&mut self, w: u32, h: u32, rgba: &[u8]) -> bool {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        hasher.write(rgba);
+        let key = (w, h, hasher.finish());
+        let new = self.0 != Some(key);
+        self.0 = Some(key);
+        new
+    }
 }
 
 /// Put an entry back on the clipboard, ready to be pasted.
@@ -200,4 +255,31 @@ pub fn put_back(app: &AppHandle, entry: &ClipEntry) -> anyhow::Result<()> {
     ignore_own_write();
     let _ = app.state::<AppState>().clips.touch(&entry.id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::{fake::Fake, WindowQuery};
+
+    #[test]
+    fn the_watcher_slows_after_a_quiet_minute_and_rests_while_locked() {
+        let at_desk = Fake::default();
+        let away = Fake { locked: true, ..Default::default() };
+        let pace = |f: &Fake, idle: u64| next_poll(Duration::from_secs(idle), f.session_locked());
+        assert_eq!(pace(&at_desk, 0), POLL);
+        assert_eq!(pace(&at_desk, 59), POLL);
+        assert_eq!(pace(&at_desk, 60), IDLE_POLL);
+        assert_eq!(pace(&at_desk, 3600), IDLE_POLL);
+        assert_eq!(pace(&away, 0), LOCKED_POLL);
+    }
+
+    #[test]
+    fn the_same_pixels_are_only_converted_once() {
+        let mut seen = SeenImage(None);
+        assert!(seen.is_new(2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(!seen.is_new(2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(seen.is_new(2, 1, &[1, 2, 3, 4, 5, 6, 7, 9]), "different pixels");
+        assert!(seen.is_new(1, 2, &[1, 2, 3, 4, 5, 6, 7, 9]), "same bytes, different shape");
+    }
 }

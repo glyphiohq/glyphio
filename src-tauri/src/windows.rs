@@ -311,6 +311,9 @@ pub fn open_setup(app: &AppHandle) -> anyhow::Result<()> {
 
 /// Open (or focus, if already open) a named window.
 pub fn open(app: &AppHandle, name: &str) -> anyhow::Result<()> {
+    if name == "settings" {
+        settings_shown();
+    }
     if let Some(win) = app.get_webview_window(name) {
         // The editor pulls its one-shot pending capture at page load. If a capture fires
         // while an old editor window is open, focusing it would show the previous image —
@@ -611,11 +614,7 @@ pub fn open_scroll_overlay(
     // Born where the user is, not where Settings is — see `summoned`.
     summoned(app, || {
         let (origin, size) = crate::capture::display_bounds_under_cursor();
-        let url = if delivery.is_silent() {
-            "scroll-overlay/index.html?silent=1"
-        } else {
-            "scroll-overlay/index.html"
-        };
+        let url = format!("scroll-overlay/index.html?delivery={}", delivery.as_str());
         let label = format!(
             "scroll-overlay-{}",
             SCROLL_OVERLAY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -642,5 +641,144 @@ pub fn close_scroll_overlay(app: &AppHandle) {
     let label = CURRENT_SCROLL_OVERLAY.lock().unwrap().take();
     if let Some(win) = label.and_then(|l| app.get_webview_window(&l)) {
         let _ = win.close();
+    }
+}
+
+/// The small card that follows a capture: what was copied, with Edit and Discard.
+pub const PREVIEW: &str = "preview";
+const PREVIEW_SIZE: (f64, f64) = (300.0, 252.0);
+/// Gap between the card and the corner of the display it sits in.
+const PREVIEW_MARGIN: f64 = 20.0;
+
+/// The page's address for one capture; `error` says the copy failed and why.
+fn preview_url(id: &str, error: Option<&str>) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("id", id);
+    if let Some(error) = error {
+        query.append_pair("error", error);
+    }
+    format!("preview/index.html?{}", query.finish())
+}
+
+/// Bottom-right corner of the display the user is working on.
+fn preview_position(origin: (f64, f64), display: (f64, f64)) -> (f64, f64) {
+    (
+        origin.0 + (display.0 - PREVIEW_SIZE.0 - PREVIEW_MARGIN).max(0.0),
+        origin.1 + (display.1 - PREVIEW_SIZE.1 - PREVIEW_MARGIN).max(0.0),
+    )
+}
+
+/// Show the preview for a capture that has already been saved and copied.
+///
+/// Built per capture as a summoned surface, like the palette, so it is born on the Space the
+/// user is on, full-screen apps included (a kept window can only be shown on the Space it was
+/// made on; see [`toggle_palette`]). It is never focused: the user's app keeps the keyboard,
+/// and the card is clicked or ignored. A newer capture replaces the older card.
+pub fn open_preview(app: &AppHandle, id: &str, error: Option<&str>) -> anyhow::Result<()> {
+    if let Some(old) = app.get_webview_window(PREVIEW) {
+        let _ = old.destroy();
+    }
+    let url = preview_url(id, error);
+    summoned(app, || {
+        let (origin, display) = crate::capture::display_bounds_for_active_window();
+        let pos = preview_position(origin, display);
+        WebviewWindowBuilder::new(app, PREVIEW, WebviewUrl::App(url.into()))
+            .title("Glyphio Capture")
+            .inner_size(PREVIEW_SIZE.0, PREVIEW_SIZE.1)
+            .position(pos.0, pos.1)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .focused(false)
+            .build()?;
+        Ok(())
+    })
+}
+
+/// Dismiss the preview, if one is showing.
+pub fn close_preview(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(PREVIEW) {
+        let _ = win.close();
+    }
+}
+
+/// Whether any window still shows a capture that might be a scratch row (history off). The
+/// scratch file is purged once none does; `ignoring` is a window that is closing right now.
+pub fn shows_a_capture(app: &AppHandle, ignoring: &str) -> bool {
+    app.webview_windows().keys().any(|label| {
+        label != ignoring
+            && (label == "editor" || label == PREVIEW || label.starts_with("capture-"))
+    })
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn the_preview_sits_in_the_bottom_right_of_the_active_display() {
+        let (x, y) = preview_position((1440.0, -200.0), (1920.0, 1080.0));
+        assert_eq!(x, 1440.0 + 1920.0 - PREVIEW_SIZE.0 - PREVIEW_MARGIN);
+        assert_eq!(y, -200.0 + 1080.0 - PREVIEW_SIZE.1 - PREVIEW_MARGIN);
+        // A display smaller than the card keeps it on screen at the display's origin.
+        assert_eq!(preview_position((0.0, 0.0), (100.0, 100.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_preview_address_carries_the_capture_and_any_copy_error() {
+        assert_eq!(preview_url("abc", None), "preview/index.html?id=abc");
+        assert_eq!(
+            preview_url("abc", Some("Clipboard copy failed: busy & locked")),
+            "preview/index.html?id=abc&error=Clipboard+copy+failed%3A+busy+%26+locked"
+        );
+    }
+}
+
+/// How long a closed Settings window is kept, hidden, for a quick reopen. After that it is
+/// destroyed, and with it the web process it costs while nobody is looking.
+pub const SETTINGS_KEPT_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Counts Settings being shown and hidden, so a timer from an earlier close cannot destroy a
+/// window that has been reopened (and maybe closed again) since.
+static SETTINGS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn settings_shown() {
+    SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Settings was just hidden by its close button: destroy it after [`SETTINGS_KEPT_FOR`] unless
+/// it is shown again first.
+pub fn settings_hidden(app: &AppHandle) {
+    let epoch = SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SETTINGS_KEPT_FOR).await;
+        if !still_hidden_since(epoch, SETTINGS_EPOCH.load(std::sync::atomic::Ordering::SeqCst)) {
+            return;
+        }
+        if let Some(win) = app.get_webview_window("settings") {
+            if !win.is_visible().unwrap_or(true) {
+                let _ = win.destroy();
+            }
+        }
+    });
+}
+
+/// Whether nothing has shown or hidden Settings since the close that started this timer.
+fn still_hidden_since(epoch_at_close: u64, epoch_now: u64) -> bool {
+    epoch_at_close == epoch_now
+}
+
+#[cfg(test)]
+mod settings_lifetime_tests {
+    use super::still_hidden_since;
+
+    #[test]
+    fn only_the_latest_close_may_destroy_settings() {
+        assert!(still_hidden_since(3, 3));
+        assert!(!still_hidden_since(3, 4), "reopened since");
+        assert!(!still_hidden_since(3, 5), "reopened and closed again: that close's timer decides");
     }
 }

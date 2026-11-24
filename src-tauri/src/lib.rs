@@ -9,6 +9,7 @@ mod commands;
 mod engine;
 mod history;
 mod install;
+mod ipc_bytes;
 mod launch;
 mod logging;
 mod onboarding;
@@ -21,6 +22,7 @@ mod startup;
 mod sync;
 mod tray;
 mod updates;
+mod watchdog;
 mod windows;
 
 use std::sync::{Arc, Mutex};
@@ -38,9 +40,11 @@ use snippet_store::{ChangeEntity, ChangeOrigin, SnippetStore};
 pub struct AppState {
     pub paths: AppPaths,
     pub snippets: Arc<SnippetStore>,
-    pub history: HistoryStore,
-    /// Clipboard history — what you copy, searchable and pasteable again.
-    pub clips: ClipStore,
+    /// Opened on first use, or just after the menu bar is up (see `open_stores_soon`), so a
+    /// launch reaches the menu bar without waiting on two databases.
+    pub history: Lazy<HistoryStore>,
+    /// Clipboard history — what you copy, searchable and pasteable again. Lazy like `history`.
+    pub clips: Lazy<ClipStore>,
     /// Which list the palette should open on. Set by whatever summoned it, read once by the
     /// page on load — a window that is hidden rather than destroyed can't be told by an event
     /// it wasn't listening for.
@@ -108,15 +112,30 @@ pub fn run() {
     // Automation just to look for one. Decided before the stores create their files.
     let existing_install = paths.snippets_db.exists();
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
-    let history = HistoryStore::open(&paths).expect("open history store");
-    let clips = ClipStore::open(&paths).expect("open clipboard store");
+    let history: Lazy<HistoryStore> = {
+        let paths = paths.clone();
+        Lazy::new(Box::new(move || {
+            let history = HistoryStore::open(&paths).expect("open history store");
+            // Captures taken while history was off are kept only while a window shows them.
+            if let Err(e) = history.purge_scratch(None) {
+                log::warn!("could not empty the scratch captures: {e}");
+            }
+            history
+        }))
+    };
+    let clips: Lazy<ClipStore> = {
+        let paths = paths.clone();
+        Lazy::new(Box::new(move || ClipStore::open(&paths).expect("open clipboard store")))
+    };
     let settings = Settings::load(&paths.settings_json);
     let sync = sync::SyncState::new(paths.root.join("sync.toml"));
 
-    // Reflect current snippets into the engine config before the daemon starts.
-    snippets
-        .render_yaml_with_policy(&paths.engine_config, &settings.expansion_policy())
-        .expect("initial engine config render");
+    // Reflect current snippets into the engine config before the daemon starts, unless the
+    // config on disk was already made from exactly these snippets, groups and settings.
+    match snippets.render_yaml_if_changed(&paths.engine_config, &settings.expansion_policy()) {
+        Ok(rendered) => log::info!("engine config {}", if rendered { "rendered" } else { "unchanged" }),
+        Err(e) => panic!("initial engine config render: {e}"),
+    }
 
     launch::mark("state-built");
     let state = AppState {
@@ -184,6 +203,7 @@ pub fn run() {
             permissions::start_watcher(app.handle());
             permissions::sync_tray(app.handle());
             launch::mark("tray-ready");
+            open_stores_soon(app.handle());
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
 
@@ -290,10 +310,11 @@ pub fn run() {
             // Look for a newer release, quietly. Nothing is downloaded and no window opens —
             // the answer waits in Settings → About until the user goes looking for it.
             updates::check_in_background(app.handle());
+            watchdog::start(app.handle());
             launch::mark("setup-done");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(watched(tauri::generate_handler![
             commands::list_snippets,
             commands::create_snippet,
             commands::update_snippet,
@@ -310,7 +331,11 @@ pub fn run() {
             commands::save_capture,
             commands::update_capture,
             commands::list_captures,
-            commands::read_capture_data_url,
+            commands::get_capture,
+            commands::render_banner_strip,
+            commands::read_capture_png,
+            commands::copy_stored_capture,
+            commands::export_stored_capture,
             commands::save_file,
             commands::copy_image_to_clipboard,
             commands::ocr_image,
@@ -337,6 +362,7 @@ pub fn run() {
             permissions::permission_repair,
             permissions::permission_import_legacy_flags,
             commands::shortcut_status,
+            commands::keyboard_layout,
             commands::scroll_capture_run,
             commands::scroll_capture_cancel,
             commands::app_accessibility_status,
@@ -348,6 +374,9 @@ pub fn run() {
             commands::check_for_update,
             commands::install_update,
             commands::capture_delivery_finished,
+            commands::preview_edit,
+            commands::preview_discard,
+            commands::preview_close,
             commands::take_pending_payload,
             commands::list_clips,
             commands::palette_view,
@@ -384,7 +413,7 @@ pub fn run() {
             sync::set_group_team,
             sync::parse_invite,
             sync::apply_invite,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error building Glyphio")
         .run(|app_handle, event| match event {
@@ -406,6 +435,7 @@ pub fn run() {
                         let _ = win.hide();
                     }
                     api.prevent_close();
+                    windows::settings_hidden(app_handle);
                 }
                 // With this window going away Glyphio may be back to a menu-bar-only service:
                 // drop the Dock icon unless another real window is still up.
@@ -422,6 +452,13 @@ pub fn run() {
                 // lost, closed by the system) must not leave the capture waiting on it.
                 if windows::scroll_overlay_destroyed_unexpectedly(&label) {
                     tray::capture_selection_abandoned(app_handle);
+                }
+                // A capture taken with history off lives only as long as a window showing it.
+                let shown = label == "editor"
+                    || label == windows::PREVIEW
+                    || label.starts_with("capture-");
+                if shown && !windows::shows_a_capture(app_handle, &label) {
+                    let _ = app_handle.state::<AppState>().history.purge_scratch(None);
                 }
                 windows::sync_activation_policy(app_handle, Some(&label));
             }
@@ -469,4 +506,29 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+/// The command handler, with each command noted for the debug main-thread watchdog.
+fn watched(
+    handler: impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        watchdog::note_command(invoke.message.command());
+        handler(invoke)
+    }
+}
+
+/// A store opened the first time it is used. See [`AppState::history`].
+pub type Lazy<T> = std::sync::LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
+
+/// Open History and the clipboard store off the main thread once the menu bar is up, so the
+/// first capture or palette does not pay for it either.
+fn open_stores_soon(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        std::sync::LazyLock::force(&state.history);
+        std::sync::LazyLock::force(&state.clips);
+        launch::mark("stores-open");
+    });
 }

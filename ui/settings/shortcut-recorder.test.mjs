@@ -107,3 +107,34 @@ test('reserved chords are validated per platform', () => {
   assert.equal(validateAccelerator('Control+Shift+Space', [], 'windows').ok, true);
   assert.equal(validateAccelerator('Control+Shift+Space', [], 'macos').ok, true);
 });
+
+test('labels follow the keyboard layout: the physical key is named as the user sees it', async () => {
+  const { formatAccelerator, keyLabel, keyCode } = await import('./shortcut-recorder.mjs');
+  // AZERTY: the US Q position types "a", W types "z", the digit row types symbols, and the
+  // US semicolon position types "m".
+  const azerty = { KeyQ: 'a', KeyW: 'z', KeyA: 'q', KeyZ: 'w', KeyM: ',', Semicolon: 'm', Digit1: '&' };
+  assert.equal(formatAccelerator('Alt+Shift+Q', azerty), '⌥⇧A');
+  assert.equal(formatAccelerator('Alt+Shift+W', azerty), '⌥⇧Z');
+  assert.equal(formatAccelerator('Command+Semicolon', azerty), '⌘M');
+  assert.equal(formatAccelerator('Command+1', azerty), '⌘&');
+  // Dvorak: the US S position types "o".
+  assert.equal(formatAccelerator('Alt+Shift+S', { KeyS: 'o' }), '⌥⇧O');
+  // Keys the layout does not cover, or no layout at all, keep the US names and symbols.
+  assert.equal(formatAccelerator('Alt+Shift+X', azerty), '⌥⇧X');
+  assert.equal(formatAccelerator('Alt+Shift+Space', azerty), '⌥⇧Space');
+  assert.equal(formatAccelerator('Alt+Shift+Q', null), '⌥⇧Q');
+  assert.equal(keyLabel('ArrowUp', azerty), '↑');
+  // A dead key or multi-character output is not a keycap name.
+  assert.equal(keyLabel('Q', { KeyQ: 'ab' }), 'Q');
+  assert.equal(keyCode('Q'), 'KeyQ');
+  assert.equal(keyCode('7'), 'Digit7');
+  assert.equal(keyCode('Comma'), 'Comma');
+});
+
+test('the active layout applies until it is cleared', async () => {
+  const { formatAccelerator, setKeyboardLayout } = await import('./shortcut-recorder.mjs');
+  setKeyboardLayout({ KeyQ: 'a' });
+  assert.equal(formatAccelerator('Alt+Q'), '⌥A');
+  setKeyboardLayout(null);
+  assert.equal(formatAccelerator('Alt+Q'), '⌥Q');
+});

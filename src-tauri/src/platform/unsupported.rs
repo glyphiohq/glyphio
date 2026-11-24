@@ -8,7 +8,7 @@ use std::time::Duration;
 use image::RgbaImage;
 
 use super::{
-    AppShell, Autostart, BrowserMeta, DisplayBounds, FrontWindow, InputInjector, Installation, PageGeometry,
+    AppShell, Autostart, BrowserMeta, DateStyle, DisplayBounds, KeyboardLayout, LocaleDates, FrontWindow, InputInjector, Installation, PageGeometry,
     PageInspector, Pasteboard, PermissionKind, Permissions, PickKind, Platform, ProcessControl, Progress,
     RegionPicker, ScreenCapturer, WindowQuery,
 };
@@ -33,6 +33,8 @@ pub fn platform() -> Platform {
         process: Box::new(Unsupported),
         shell: Box::new(Unsupported),
         install: Box::new(Unsupported),
+        dates: Box::new(Unsupported),
+        keyboard: Box::new(Unsupported),
     }
 }
 
@@ -75,6 +77,9 @@ impl WindowQuery for Unsupported {
     fn foreground_app_name(&self) -> String {
         String::new()
     }
+    fn session_locked(&self) -> bool {
+        false
+    }
 }
 
 impl PageInspector for Unsupported {
@@ -112,6 +117,21 @@ impl Pasteboard for Unsupported {
     }
     fn is_concealed(&self) -> bool {
         false
+    }
+    fn write_png(&self, _: &[u8]) -> anyhow::Result<()> {
+        Err(unsupported("Copying an image"))
+    }
+}
+
+impl LocaleDates for Unsupported {
+    fn format(&self, _: i64, _: DateStyle, _: DateStyle, _: Option<&str>, _: Option<&str>) -> Option<String> {
+        None
+    }
+}
+
+impl KeyboardLayout for Unsupported {
+    fn key_labels(&self) -> Option<Vec<(String, String)>> {
+        None
     }
 }
 

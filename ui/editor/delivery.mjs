@@ -42,3 +42,13 @@ export function deliveryReport(outcome) {
 function errorMessage(error) {
   return error?.message || String(error);
 }
+
+// Where a pending capture's pixels come from. The app saves a capture natively before the
+// editor opens and hands over its row and file; the legacy path (one release, behind the
+// `legacyDelivery` setting) still sends the PNG inline and leaves saving to this page.
+export function pendingSource(pending) {
+  if (pending?.historyId) {
+    return { kind: 'file', historyId: pending.historyId, path: pending.filePath || '' };
+  }
+  return { kind: 'inline', dataUrl: pending?.pngDataUrl || '' };
+}

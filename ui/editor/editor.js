@@ -6,17 +6,19 @@
 import { DEFAULT_EDITOR_SHORTCUTS, PRODUCT_NAME } from '../shared/presentation.js';
 import { EditableCaptureArtifact } from './artifact.mjs';
 import { discardCapture as discardAndClose } from './discard.mjs';
-import { deliverCapture, deliveryReport } from './delivery.mjs';
+import { deliverCapture, deliveryReport, pendingSource } from './delivery.mjs';
 import { matchesShortcut, formatShortcut, IS_MAC } from '../shared/shortcuts.js';
 import { compositeBanner } from '../shared/banner.js';
 import { icon } from '../shared/icons.js';
+import { invokeBytes } from '../shared/ipc-bytes.mjs';
 
 // Glyphio: Tauri bridge (chrome.* APIs replaced by native commands/plugins).
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { save: saveDialog } = window.__TAURI__.dialog;
 
 const LAST_NOTE_KEY = 'glyphio.lastNote';
 let historySaved = false; // save the final artifact to history at most once per session
+let nativelySaved = false; // the capture arrived already saved by the app (see capture::persist_native)
 
 // --- DOM references -------------------------------------------------------
 
@@ -134,6 +136,7 @@ async function init() {
   if (isSilent) {
     await render({ autoCopy: false });
     await deliverInitialCapture();
+    await persistPrefilledNote();
     releaseCapture();
     return;
   }
@@ -158,8 +161,17 @@ async function init() {
     await render({ autoCopy: false });
     // Every capture lands in history and on the clipboard before delivery is acknowledged.
     // Note, banner and edit changes then persist to the row automatically.
-    if (!isHistoryMode) await deliverInitialCapture();
+    if (!isHistoryMode) {
+      await deliverInitialCapture();
+      await persistPrefilledNote();
+    }
   }
+}
+
+// A capture saved natively was stored before this page existed, so the note it was given
+// here (the last one typed this session) has to reach its row after the fact.
+async function persistPrefilledNote() {
+  if (nativelySaved && noteInput.value.trim()) await persistMeta();
 }
 
 async function loadSettings() {
@@ -202,12 +214,10 @@ async function deliverInitialCapture() {
  */
 async function loadPayload({ optional = false } = {}) {
   if (isHistoryMode) {
-    const list = await invoke('list_captures');
-    const row = list.find((c) => c.id === historyId);
+    const row = await invoke('get_capture', { id: historyId });
     if (!row) {
       throw new Error('This history entry is no longer available. It may have been deleted or evicted by retention.');
     }
-    const dataUrl = await invoke('read_capture_data_url', { id: historyId });
     meta = {
       id: row.id,
       capturedAt: row.capturedAt,
@@ -224,7 +234,7 @@ async function loadPayload({ optional = false } = {}) {
       bannerEnabled: row.bannerEnabled !== false,
       bannerBaked: Boolean(row.bannerBaked),
     };
-    await setContentFromBlob(await dataUrlToBlob(dataUrl));
+    await setContentFromBlob(await loadCaptureFile(row.fullPath, row.id));
   } else {
     if (!deliverySessionId) {
       if (optional) return false;
@@ -251,12 +261,35 @@ async function loadPayload({ optional = false } = {}) {
       dpr: p.dpr || 1,
       bannerBaked: false,
     };
-    await setContentFromBlob(await dataUrlToBlob(p.pngDataUrl));
+    const source = pendingSource(p);
+    if (source.kind === 'file') {
+      // Already saved natively before this page opened: load it from disk and edit that row.
+      savedId = source.historyId;
+      historySaved = true;
+      nativelySaved = true;
+      await setContentFromBlob(await loadCaptureFile(source.path, source.historyId));
+    } else {
+      await setContentFromBlob(await dataUrlToBlob(source.dataUrl));
+    }
   }
   const modeLabel = isHistoryMode ? `history · ${meta.mode}` : meta.mode;
   metaLineEl.textContent =
     `${modeLabel} · ${meta.imageWidthPx}×${meta.imageHeightPx}px · ${meta.pageUrl || meta.windowTitle}`;
   return true;
+}
+
+// A stored capture's PNG, read straight from disk through the asset protocol. Falls back to
+// the bytes command when the file URL cannot be fetched (an asset scope that does not cover
+// the history folder, say), so a capture always opens.
+async function loadCaptureFile(path, id) {
+  try {
+    const res = await fetch(convertFileSrc(path));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.blob();
+  } catch (err) {
+    console.warn('capture file URL failed, reading through the command instead:', err);
+    return new Blob([await invoke('read_capture_png', { id })], { type: 'image/png' });
+  }
 }
 
 // Drop a finished silent capture. The worker window stays parked for the next one, and a
@@ -581,15 +614,62 @@ async function render(_options = {}) {
   // Recompositing changes the canvas geometry — a live OCR overlay would misalign.
   if (ocrModeActive) exitOcrMode();
 
-  lastBannerPxH = artifact.render(({ content, metadata, banner }) => compositeBanner(canvas, content, {
-    meta: metadata,
-    settings,
-    note: banner.note,
-    enabled: banner.enabled,
-  }));
+  const { content, metadata, banner } = state;
+  const strip = banner.enabled ? await nativeBannerStrip(metadata, banner.note, content.width) : null;
+  if (strip === undefined) {
+    // The app could not draw it (an older build, or an error): draw it here as before.
+    lastBannerPxH = compositeBanner(canvas, content, {
+      meta: metadata,
+      settings,
+      note: banner.note,
+      enabled: banner.enabled,
+    });
+  } else {
+    lastBannerPxH = stackBanner(canvas, strip, content);
+  }
 
   currentBlob = await canvasToPngBlob(canvas);
 
+}
+
+// The banner strip, drawn by the app (capture/banner.rs) so the editor, the clipboard and a
+// silent capture all show the same pixels. Resolves to an ImageBitmap, to null when the
+// settings leave nothing to show, or to undefined when the page should draw it itself.
+async function nativeBannerStrip(metadata, note, width) {
+  try {
+    const bytes = await invoke('render_banner_strip', {
+      request: {
+        capturedAt: metadata.capturedAt,
+        windowTitle: metadata.windowTitle || metadata.title || '',
+        pageTitle: metadata.pageTitle || '',
+        pageUrl: metadata.pageUrl || '',
+        profile: metadata.profile || '',
+        dpr: metadata.dpr || 1,
+        note: note || '',
+        width,
+      },
+    });
+    const buffer = bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes).buffer;
+    if (!buffer.byteLength) return null;
+    return await createImageBitmap(new Blob([buffer], { type: 'image/png' }));
+  } catch (err) {
+    console.warn('native banner unavailable, drawing it in the page:', err);
+    return undefined;
+  }
+}
+
+// `strip` (or nothing) above `content`, on `target`. Returns the strip's height in pixels.
+function stackBanner(target, strip, content) {
+  const stripH = strip ? strip.height : 0;
+  target.width = content.width;
+  target.height = stripH + content.height;
+  const ctx = target.getContext('2d');
+  if (strip) {
+    ctx.drawImage(strip, 0, 0);
+    strip.close?.();
+  }
+  ctx.drawImage(content, 0, stripH);
+  return stripH;
 }
 
 // Banner layout/drawing lives in ../shared/banner.js (shared with the history list).
@@ -1508,7 +1588,7 @@ async function enterOcrMode() {
   selectTextBtn.disabled = true;
   let result;
   try {
-    result = await invoke('ocr_image', { pngBase64: contentCanvas.toDataURL('image/png') });
+    result = await invokeBytes(invoke, 'ocr_image', await canvasToPngBlob(contentCanvas));
   } finally {
     selectTextBtn.disabled = false;
   }
@@ -1587,7 +1667,7 @@ async function copyToClipboard() {
 // transient user activation (a real click), so copy-on-open — which has no click behind it —
 // was always refused with "not allowed by the user agent".
 async function writeBlobToClipboard(blob) {
-  await invoke('copy_image_to_clipboard', { pngBase64: await blobToDataUrl(blob) });
+  await invokeBytes(invoke, 'copy_image_to_clipboard', blob);
 }
 
 async function downloadPng() {
@@ -1598,8 +1678,7 @@ async function downloadPng() {
     filters: [{ name: 'PNG image', extensions: ['png'] }],
   });
   if (!path) return; // user cancelled
-  const dataUrl = await blobToDataUrl(currentBlob);
-  await invoke('save_file', { path, pngBase64: dataUrl });
+  await invokeBytes(invoke, 'save_file', currentBlob, { path });
   await saveToHistoryOnce();
   setStatus(`Saved ${path}`, 'ok');
 }
@@ -1617,9 +1696,8 @@ async function saveToHistoryOnce() {
   historySaved = true;
   try {
     const contentBlob = await canvasToPngBlob(state.content);
-    const fullDataUrl = await blobToDataUrl(contentBlob);
-    const thumbDataUrl = await makeThumbnailDataUrl(contentBlob, 320);
-    const row = await invoke('save_capture', {
+    // The thumbnail is made natively from the content PNG.
+    const row = await invokeBytes(invoke, 'save_capture', contentBlob, {
       meta: {
         capturedAt: state.metadata.capturedAt,
         url: state.metadata.windowTitle || '',
@@ -1634,8 +1712,6 @@ async function saveToHistoryOnce() {
         note: state.banner.note,
         bannerEnabled: state.banner.enabled,
       },
-      fullPngBase64: fullDataUrl,
-      thumbPngBase64: thumbDataUrl,
     });
     savedId = row?.id || '';
     if (!savedId) throw new Error('History did not return a capture id');
@@ -1653,7 +1729,7 @@ async function persistMeta() {
   const state = artifactState();
   if (!state) return;
   try {
-    await invoke('update_capture', {
+    await invokeBytes(invoke, 'update_capture', null, {
       id: savedId,
       patch: { note: state.banner.note, bannerEnabled: state.banner.enabled },
     });
@@ -1669,7 +1745,7 @@ async function persistContent() {
   if (!state) return;
   try {
     const contentBlob = await canvasToPngBlob(state.content);
-    await invoke('update_capture', {
+    await invokeBytes(invoke, 'update_capture', contentBlob, {
       id: savedId,
       patch: {
         note: state.banner.note,
@@ -1677,8 +1753,6 @@ async function persistContent() {
         imageWidthPx: state.content.width,
         imageHeightPx: state.content.height,
       },
-      fullPngBase64: await blobToDataUrl(contentBlob),
-      thumbPngBase64: await makeThumbnailDataUrl(contentBlob, 320),
     });
   } catch (err) {
     console.warn('history content update failed:', err);
@@ -1697,7 +1771,7 @@ function buildFilename() {
 async function retry() {
   setStatus('Re-capturing…', 'info');
   // Re-taking a capture from the editor lands in the editor, whatever the default delivery.
-  await invoke('trigger_capture', { mode: meta.mode, silent: false });
+  await invoke('trigger_capture', { mode: meta.mode, delivery: 'editor' });
   // The native adapter navigates this window to the new delivery-session id.
 }
 
@@ -1722,29 +1796,6 @@ function canvasToPngBlob(cvs) {
 
 function dataUrlToBlob(dataUrl) {
   return fetch(dataUrl).then((r) => r.blob());
-}
-
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.onerror = () => reject(fr.error);
-    fr.readAsDataURL(blob);
-  });
-}
-
-// 320px-wide thumbnail (aspect preserved), mirroring Checkpoint's makeThumbnail.
-async function makeThumbnailDataUrl(blob, targetW) {
-  const bmp = await createImageBitmap(blob);
-  const scale = targetW / bmp.width;
-  const w = Math.max(1, Math.round(bmp.width * scale));
-  const h = Math.max(1, Math.round(bmp.height * scale));
-  const oc = document.createElement('canvas');
-  oc.width = w;
-  oc.height = h;
-  oc.getContext('2d').drawImage(bmp, 0, 0, w, h);
-  bmp.close?.();
-  return oc.toDataURL('image/png');
 }
 
 function setStatus(text, kind = '') {

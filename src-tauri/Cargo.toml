@@ -38,11 +38,15 @@ log = "0.4"
 dirs = "5"
 base64 = "0.22"
 url = "2"
+percent-encoding = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Scrolling capture streams its rows into a PNG of unknown height (`capture/scroll/png_stream.rs`).
 # Both are already in the tree through `png`.
 flate2 = "1"
 crc32fast = "1"
+# The capture banner is drawn natively with the bundled Inter (`capture/banner.rs`).
+ab_glyph = "0.2"
+chrono-tz = "0.10"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = { version = "2.4", features = ["deep-link"] }
@@ -56,12 +60,12 @@ core-foundation = "0.10"
 libc = "0.2"
 # NSWorkspace only, to ask macOS which app is frontmost (the window list can't answer that
 # reliably across displays, and the system-wide accessibility element refuses to).
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSWindow", "NSResponder", "NSPasteboard", "NSImage"] }
 # The native login item (`SMAppService.mainApp`) and the launch Apple event that says whether
 # we were started by logging in. No scripting, no LaunchAgent plist.
 objc2 = "0.6"
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventManager", "NSAppleEventDescriptor", "NSError", "objc2-core-services", "NSData", "NSArray", "NSString", "NSDate", "NSFormatter", "NSDateFormatter", "NSLocale", "NSTimeZone"] }
 
 [features]
 # macOS diagnostics that call the OS directly (`src/platform/macos/probes`). Off by default so
@@ -91,6 +95,24 @@ required-features = ["macos-probes"]
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt"] }
+
+# Release builds trade compile time for a smaller, faster app (PERF-07). Fat LTO with one
+# codegen unit lets the optimiser inline across crates; `panic = "abort"` is deliberately NOT
+# set, because a panic inside a Tauri command must stay a recoverable error. Debug symbols stay
+# out of the shipped binary; `CARGO_PROFILE_RELEASE_STRIP=false` keeps them for a profiling
+# build.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# Workaround for the Command Line Tools 27.2 linker (ld-27106): with a deployment target set,
+# which Tauri always does, stripping makes it write dylibs dyld rejects ("mis-aligned LINKEDIT
+# string pool"), so rustc cannot load proc-macros (E0463). build-override covers only
+# proc-macros and build scripts, so the shipped binaries stay stripped. Delete this table once
+# Apple ships a fixed linker.
+[profile.release.build-override]
+strip = false
 
 [workspace]
 members = ["crates/snippet-store", "crates/sync-proto", "crates/sync-client"]

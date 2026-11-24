@@ -81,3 +81,11 @@ windows = { version = "0.61.1", features = [
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+
+# Workaround for the Command Line Tools 27.2 linker (ld-27106): with a deployment target set,
+# which Tauri always does, stripping makes it write dylibs dyld rejects ("mis-aligned LINKEDIT
+# string pool"), so rustc cannot load proc-macros (E0463). build-override covers only
+# proc-macros and build scripts, so the shipped binaries stay stripped. Delete this table once
+# Apple ships a fixed linker.
+[profile.release.build-override]
+strip = false

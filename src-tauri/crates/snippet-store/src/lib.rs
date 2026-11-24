@@ -33,6 +33,9 @@ pub use portability::{
 };
 pub use yaml::render_matches_yaml;
 
+/// The file in the engine config directory that records what the last render was made from.
+pub const RENDER_STAMP: &str = ".glyphio-render-stamp";
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
@@ -786,6 +789,40 @@ impl SnippetStore {
         self.render_yaml_with_policy(config_dir, &ExpansionPolicy::default())
     }
 
+    /// Render only when something that feeds the engine config changed since the last
+    /// render through here: the snippets, the groups, the policy, or this build. A stamp file
+    /// in `config_dir` remembers the inputs' digest, so a launch with nothing new writes no
+    /// files and the engine's watcher has nothing to reload. Returns whether it rendered.
+    pub fn render_yaml_if_changed(
+        &self,
+        config_dir: impl AsRef<Path>,
+        policy: &ExpansionPolicy,
+    ) -> Result<bool> {
+        let config_dir = config_dir.as_ref();
+        let stamp_path = config_dir.join(RENDER_STAMP);
+        let digest = self.render_digest(policy)?;
+        let rendered_before = config_dir.join("config").join("default.yml").exists()
+            && config_dir.join("match").is_dir();
+        if rendered_before && std::fs::read_to_string(&stamp_path).ok().as_deref() == Some(&digest) {
+            return Ok(false);
+        }
+        self.render_yaml_with_policy(config_dir, policy)?;
+        atomic_write(&stamp_path, digest.as_bytes())?;
+        Ok(true)
+    }
+
+    /// A digest of everything [`render_yaml_with_policy`](Self::render_yaml_with_policy) reads.
+    fn render_digest(&self, policy: &ExpansionPolicy) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(env!("CARGO_PKG_VERSION").as_bytes());
+        hash.update(serde_json::to_vec(&self.list()?)?);
+        hash.update(serde_json::to_vec(&self.list_groups()?)?);
+        hash.update(serde_json::to_vec(&policy.default_delivery)?);
+        hash.update(serde_json::to_vec(&policy.app_overrides)?);
+        Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     /// Regenerate snippets plus the expansion delivery policy. Policy files are generated from
     /// Settings rather than accepted as hand-authored engine configuration, so removing a rule
     /// also removes its stale app-specific artifact on the next render.
@@ -1159,6 +1196,30 @@ mod tests {
         assert!(!dir.path().join("config/00_delivery_1.yml").exists());
         let default = std::fs::read_to_string(dir.path().join("config/default.yml")).unwrap();
         assert!(default.contains("backend: Clipboard"));
+    }
+
+    #[test]
+    fn an_unchanged_store_is_not_rendered_again() {
+        let store = SnippetStore::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let policy = ExpansionPolicy::default();
+        assert!(store.render_yaml_if_changed(dir.path(), &policy).unwrap(), "first launch renders");
+        assert!(!store.render_yaml_if_changed(dir.path(), &policy).unwrap(), "nothing changed");
+
+        // A snippet edit, a policy change, or missing output each render again.
+        store
+            .create(NewSnippet { trigger: ":hi".into(), replacement: "hello".into(), ..Default::default() })
+            .unwrap();
+        assert!(store.render_yaml_if_changed(dir.path(), &policy).unwrap());
+        assert!(!store.render_yaml_if_changed(dir.path(), &policy).unwrap());
+
+        let mut paste = ExpansionPolicy::default();
+        paste.app_overrides.insert("com.apple.TextEdit".into(), ExpansionDelivery::Paste);
+        assert!(store.render_yaml_if_changed(dir.path(), &paste).unwrap());
+
+        std::fs::remove_dir_all(dir.path().join("match")).unwrap();
+        assert!(store.render_yaml_if_changed(dir.path(), &paste).unwrap());
+        assert!(dir.path().join("match").is_dir());
     }
 
     #[test]

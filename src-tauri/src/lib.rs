@@ -40,9 +40,11 @@ use snippet_store::{ChangeEntity, ChangeOrigin, SnippetStore};
 pub struct AppState {
     pub paths: AppPaths,
     pub snippets: Arc<SnippetStore>,
-    pub history: HistoryStore,
-    /// Clipboard history — what you copy, searchable and pasteable again.
-    pub clips: ClipStore,
+    /// Opened on first use, or just after the menu bar is up (see `open_stores_soon`), so a
+    /// launch reaches the menu bar without waiting on two databases.
+    pub history: Lazy<HistoryStore>,
+    /// Clipboard history — what you copy, searchable and pasteable again. Lazy like `history`.
+    pub clips: Lazy<ClipStore>,
     /// Which list the palette should open on. Set by whatever summoned it, read once by the
     /// page on load — a window that is hidden rather than destroyed can't be told by an event
     /// it wasn't listening for.
@@ -110,19 +112,30 @@ pub fn run() {
     // Automation just to look for one. Decided before the stores create their files.
     let existing_install = paths.snippets_db.exists();
     let snippets = Arc::new(SnippetStore::open(&paths.snippets_db).expect("open snippet store"));
-    let history = HistoryStore::open(&paths).expect("open history store");
-    // Captures taken while history was off are kept only while their editor is open.
-    if let Err(e) = history.purge_scratch(None) {
-        log::warn!("could not empty the scratch captures: {e}");
-    }
-    let clips = ClipStore::open(&paths).expect("open clipboard store");
+    let history: Lazy<HistoryStore> = {
+        let paths = paths.clone();
+        Lazy::new(Box::new(move || {
+            let history = HistoryStore::open(&paths).expect("open history store");
+            // Captures taken while history was off are kept only while a window shows them.
+            if let Err(e) = history.purge_scratch(None) {
+                log::warn!("could not empty the scratch captures: {e}");
+            }
+            history
+        }))
+    };
+    let clips: Lazy<ClipStore> = {
+        let paths = paths.clone();
+        Lazy::new(Box::new(move || ClipStore::open(&paths).expect("open clipboard store")))
+    };
     let settings = Settings::load(&paths.settings_json);
     let sync = sync::SyncState::new(paths.root.join("sync.toml"));
 
-    // Reflect current snippets into the engine config before the daemon starts.
-    snippets
-        .render_yaml_with_policy(&paths.engine_config, &settings.expansion_policy())
-        .expect("initial engine config render");
+    // Reflect current snippets into the engine config before the daemon starts, unless the
+    // config on disk was already made from exactly these snippets, groups and settings.
+    match snippets.render_yaml_if_changed(&paths.engine_config, &settings.expansion_policy()) {
+        Ok(rendered) => log::info!("engine config {}", if rendered { "rendered" } else { "unchanged" }),
+        Err(e) => panic!("initial engine config render: {e}"),
+    }
 
     launch::mark("state-built");
     let state = AppState {
@@ -190,6 +203,7 @@ pub fn run() {
             permissions::start_watcher(app.handle());
             permissions::sync_tray(app.handle());
             launch::mark("tray-ready");
+            open_stores_soon(app.handle());
             // A refused chord is not fatal; it is recorded, logged and shown in Settings.
             shortcuts::register(app.handle());
 
@@ -500,4 +514,19 @@ fn watched(
         watchdog::note_command(invoke.message.command());
         handler(invoke)
     }
+}
+
+/// A store opened the first time it is used. See [`AppState::history`].
+pub type Lazy<T> = std::sync::LazyLock<T, Box<dyn FnOnce() -> T + Send>>;
+
+/// Open History and the clipboard store off the main thread once the menu bar is up, so the
+/// first capture or palette does not pay for it either.
+fn open_stores_soon(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        std::sync::LazyLock::force(&state.history);
+        std::sync::LazyLock::force(&state.clips);
+        launch::mark("stores-open");
+    });
 }

@@ -111,9 +111,12 @@ Every capture logs one line from `capture/trace.rs`:
 `capture-trace mode=visible acquire=120ms encode=88ms present=4ms total=212ms size=5120x2880`.
 It holds a mode name, fixed stage names and numbers only; the formatter takes no free text, so
 titles, URLs and clipboard content cannot reach it. `acquire` includes the user's selection time
-for picker and scrolling modes. Persist and clipboard happen in the editor page and are not yet
-traced. Launch logs `launch-timing state-built|tray-ready|engine-spawned|setup-done=<ms>` from
-`launch.rs`. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
+for picker and scrolling modes. Persist is traced natively (`Stage::Persist`). Launch logs
+`launch-timing state-built|tray-ready|stores-open|engine-spawned|setup-done=<ms>` from
+`launch.rs`. A launch renders the engine config only when its inputs changed
+(`SnippetStore::render_yaml_if_changed`, with a digest in `.glyphio-render-stamp`), opens History
+and the clipboard store lazily (or off the main thread once the menu bar is up), and a login
+launch after setup builds no web view at all. `examples/bench_encode.rs` (synthetic 5K frame) and `examples/bench_capture.rs`
 (`visible`, `frontWindow` through the real backend) print percentiles.
 
 ### Engine supervision

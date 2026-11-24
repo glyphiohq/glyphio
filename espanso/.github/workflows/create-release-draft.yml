@@ -6,26 +6,8 @@ env:
   GH_TOKEN: ${{ github.token }}
 
 jobs:
-  set-context:
-    continue-on-error: false
-    env:
-      GITHUB_REF: ${{ github.ref_name }}
-      GITHUB_CONTEXT: ${{ toJson(github) }}
-      SET_RELEASE_VERSION: ${{ github.event.inputs.set-release-version }}
-    name: set-context
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check trigger branch
-        run: |
-          if [ $(echo "${GITHUB_REF}" | grep -Ec "^refs/heads/dev$") -eq 1 ] ; then
-            echo "  - ✅ The branch triggering this workflow is ${GITHUB_REF}."
-          else
-            echo "  - ❌ The branch triggering this workflow is ${GITHUB_REF} instead of refs/heads/dev"
-            exit 1
-          fi
   extract-version:
     name: extract-version
-    needs: "set-context"
     continue-on-error: false
     runs-on: ubuntu-latest
     outputs:
@@ -70,7 +52,6 @@ jobs:
           gh release create ${{ needs.extract-version.outputs.espanso_version }} \
             --title ${{ needs.extract-version.outputs.espanso_version }} \
             --notes "Automatically released by CI" \
-            --verify-tag \
             --prerelease \
             --target $COMMIT_HASH
 
@@ -264,15 +245,42 @@ jobs:
             --no-default-features \
             --features native-tls,modulo
           bash ./scripts/create_bundle.sh
-      - name: Create ZIP archive
+      - name: Codesign app bundle
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_CERTIFICATE_NAME: ${{ vars.MACOS_CERTIFICATE_NAME }}
+          MACOS_CI_KEYCHAIN_PWD: ${{ secrets.MACOS_CI_KEYCHAIN_PWD }}
         run: |
-          ditto -c -k --sequesterRsrc --keepParent target/mac/Espanso.app Espanso-Mac-Universal.zip
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" buildespanso.keychain
+          security default-keychain -s buildespanso.keychain
+          security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" buildespanso.keychain
+          security import certificate.p12 -k buildespanso.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" buildespanso.keychain
+          security list-keychains -d user -s buildespanso.keychain $(security list-keychains -d user | sed 's/"//g')
+          rm -f certificate.p12
+          security find-identity -v -p codesigning buildespanso.keychain
+          /usr/bin/codesign --force --deep --options runtime --timestamp -s "$MACOS_CERTIFICATE_NAME" target/mac/Espanso.app -v
+      - name: Create DMG archive
+        run: |
+          hdiutil create -volname "Espanso" \
+            -srcfolder target/mac/Espanso.app \
+            -ov -format UDZO \
+            Espanso-Mac-Universal.dmg
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit Espanso-Mac-Universal.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple Espanso-Mac-Universal.dmg
 
-      # This doesn't work:
-      #
-      # - name: Upload artifacts to Github Releases
-      #   run: |
-      #     gh release upload ${{ needs.extract-version.outputs.espanso_version }} Espanso-Mac-Universal.zip
-      #
-      # The problem with this is that it's not signed, only ziiped into `Espanso-Mac-Universal.zip`
-      # so when you try to install it, macOS refuses to excecute from the Applications folder
+      - name: Upload artifacts to Github Releases
+        run: |
+          gh release upload ${{ needs.extract-version.outputs.espanso_version }} Espanso-Mac-Universal.dmg

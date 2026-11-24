@@ -44,6 +44,14 @@ if [[ "$UNIVERSAL" == "1" ]]; then
     "$REPO_ROOT/espanso/target/aarch64-apple-darwin/$PROFILE_DIR/espanso" \
     "$REPO_ROOT/espanso/target/x86_64-apple-darwin/$PROFILE_DIR/espanso"
   TRIPLE="universal-apple-darwin"
+  # `tauri build --target universal-apple-darwin` compiles each architecture on its own, and
+  # each of those builds checks for its own `-<arch>-apple-darwin` sidecar before the
+  # universal one is bundled. Leave the thin slices there too.
+  mkdir -p "$REPO_ROOT/src-tauri/binaries"
+  for t in aarch64-apple-darwin x86_64-apple-darwin; do
+    cp "$REPO_ROOT/espanso/target/$t/$PROFILE_DIR/espanso" "$REPO_ROOT/src-tauri/binaries/glyphio-engine-$t"
+    chmod +x "$REPO_ROOT/src-tauri/binaries/glyphio-engine-$t"
+  done
 else
   log "Building engine ($PROFILE_DIR)…"
   build

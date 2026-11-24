@@ -29,7 +29,16 @@ for arch in "${ARCHES[@]}"; do
   SLICES+=("$slice")
 done
 lipo -create -output "$OUT" "${SLICES[@]}"
-rm -f "${SLICES[@]}"
+if [[ "$TRIPLE" == "universal-apple-darwin" ]]; then
+  # Each per-arch pass of `tauri build --target universal-apple-darwin` looks for its own
+  # `-<arch>-apple-darwin` sidecar, so keep the thin slices under those names.
+  for slice in "${SLICES[@]}"; do
+    arch="${slice##*.}"; [[ "$arch" == "arm64" ]] && arch="aarch64"
+    mv "$slice" "$REPO_ROOT/src-tauri/binaries/glyphio-ocr-$arch-apple-darwin"
+  done
+else
+  rm -f "${SLICES[@]}"
+fi
 codesign --force --sign "Glyphio Dev" --identifier "glyphio-ocr" "$OUT" 2>/dev/null \
   || echo "[build-ocr] note: dev identity missing — run scripts/dev-sign.sh first"
 echo "[build-ocr] done"
